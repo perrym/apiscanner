@@ -26,3 +26,5 @@ This tool is intended for educational and authorized security testing purposes o
 
 ## Contact
 For any questions, feedback, or responsible disclosure, please contact: pamsniffer@gmail.com
+
+Note *** some code is stiil in Dutch, this wil change in 2 changes ****

@@ -7,16 +7,20 @@ APISCAN is an extensible and modular Python-based security scanner for REST APIs
 
 2. OWASP API Security Top 10 Coverage
 OWASP API Risk	APISCAN Coverage	Module
-API1: Broken Object Level Authorization	Access control bypass via object ID manipulation	bola_audit.py
-API2: Broken Authentication	Weak login protections, session handling flaws, token misuse	broken_auth_audit.py
-API3: Broken Object Property Level Authorization	Mass assignment, unauthorized property manipulation	broken_object_property_audit.py
-API4: Unrestricted Resource Consumption	Abuse of API endpoints through large/batch requests	resource_consumption_audit.py
-API5: Broken Function Level Authorization	Partial coverage via role misuse checks	authorization_audit.py (partial)
-API6: Mass Assignment	Partially tested through property injection	broken_object_property_audit.py
-API7: Security Misconfiguration	Missing security headers, server misconfiguration detection	misconfiguration_audit.py
-API8: Injection	Partially tested via authentication and external API tests	broken_auth_audit.py, safe_consumption_audit.py
-API9: Improper Inventory Management	Exposed API documentation and debug endpoints	inventory_audit.py
-API10: Unsafe Consumption of 3rd-Party APIs	Injection and SSRF risks through external APIs	safe_consumption_audit.py
+
+| OWASP API Risk | APISCAN Coverage | Module |
+|:--|:--|:--|
+| API1: Broken Object Level Authorization | Access control bypass via object ID manipulation | `bola_audit.py` |
+| API2: Broken Authentication | Weak login protections, session handling flaws, token misuse | `broken_auth_audit.py` |
+| API3: Broken Object Property Level Authorization | Mass assignment, unauthorized property manipulation | `broken_object_property_audit.py` |
+| API4: Unrestricted Resource Consumption | Abuse of API endpoints through large/batch requests | `resource_consumption_audit.py` |
+| API5: Broken Function Level Authorization | Partial coverage via role misuse checks | `authorization_audit.py` *(partial)* |
+| API6: Mass Assignment | Partially tested through property injection | `broken_object_property_audit.py` |
+| API7: Security Misconfiguration | Missing security headers, server misconfiguration detection | `misconfiguration_audit.py` |
+| API8: Injection | Partially tested via authentication and external API tests | `broken_auth_audit.py`, `safe_consumption_audit.py` |
+| API9: Improper Inventory Management | Exposed API documentation and debug endpoints | `inventory_audit.py` |
+| API10: Unsafe Consumption of 3rd-Party APIs | Injection and SSRF risks through external APIs | `safe_consumption_audit.py` |
+
 
 3. Module Descriptions
 Each APISCAN module targets specific OWASP API risks with realistic attack simulations. The tests include fuzzing, timing analysis, authorization bypass attempts, response reflection analysis, security header evaluation, and concurrency stress tests.
@@ -43,17 +47,5 @@ For any questions, feedback, or responsible disclosure, please contact: pamsniff
 
 Note *** some code is stiil in Dutch, this wil change in 2 changes ****
 
-## OWASP API Security Top 10 Coverage
 
-| OWASP API Risk | APISCAN Coverage | Module |
-|:--|:--|:--|
-| API1: Broken Object Level Authorization | Access control bypass via object ID manipulation | `bola_audit.py` |
-| API2: Broken Authentication | Weak login protections, session handling flaws, token misuse | `broken_auth_audit.py` |
-| API3: Broken Object Property Level Authorization | Mass assignment, unauthorized property manipulation | `broken_object_property_audit.py` |
-| API4: Unrestricted Resource Consumption | Abuse of API endpoints through large/batch requests | `resource_consumption_audit.py` |
-| API5: Broken Function Level Authorization | Partial coverage via role misuse checks | `authorization_audit.py` *(partial)* |
-| API6: Mass Assignment | Partially tested through property injection | `broken_object_property_audit.py` |
-| API7: Security Misconfiguration | Missing security headers, server misconfiguration detection | `misconfiguration_audit.py` |
-| API8: Injection | Partially tested via authentication and external API tests | `broken_auth_audit.py`, `safe_consumption_audit.py` |
-| API9: Improper Inventory Management | Exposed API documentation and debug endpoints | `inventory_audit.py` |
-| API10: Unsafe Consumption of 3rd-Party APIs | Injection and SSRF risks through external APIs | `safe_consumption_audit.py` |
+

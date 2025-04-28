@@ -1,4 +1,4 @@
-# APISCAN 0.1.0-alpha - API Security Assessment Tool (by Perry Mertens)
+# APISCAN 0.1.0-alpha - (REST) API Security Assessment Tool (by Perry Mertens)
 
 APISCAN is an extensible, modular security auditing framework for REST APIs, based on the OWASP API Security Top 10 (2023) risks.
 

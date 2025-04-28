@@ -1,4 +1,9 @@
-#!/usr/bin/env python3
+# Ultimate Swagger Generator
+# 
+# Licensed under the MIT License. 
+# Copyright (c) 2025 Perry Mertens
+#
+# See the LICENSE file for full license text.
 """
 Ultimate Swagger Generator - Met geavanceerde authenticatie en endpoint detectie
 Enhanced version with better API detection capabilities

@@ -1,4 +1,8 @@
-#!/usr/bin/env python3
+# 
+# Licensed under the MIT License. 
+# Copyright (c) 2025 Perry Mertens
+#
+# See the LICENSE file for full license text.
 """
 misconfiguration_audit_pro.py – PRO versie
 Met:

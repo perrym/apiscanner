@@ -1,3 +1,8 @@
+# 
+# Licensed under the MIT License. 
+# Copyright (c) 2025 Perry Mertens
+#
+# See the LICENSE file for full license text.
 # broken_auth_audit.py
 import requests
 import json

@@ -1,4 +1,8 @@
-#!/usr/bin/env python3
+# 
+# Licensed under the MIT License. 
+# Copyright (c) 2025 Perry Mertens
+#
+# See the LICENSE file for full license text.
 """
 ssrf_audit.py – OWASP API7:2023 (Server-Side Request Forgery)
 ================================================================

@@ -1,3 +1,8 @@
+# 
+# Licensed under the MIT License. 
+# Copyright (c) 2025 Perry Mertens
+#
+# See the LICENSE file for full license text.
 """inventory_audit.py – OWASP API9:2023 (Improper Inventory Management)
 =====================================================================
 Detecteert verouderde, ongedocumenteerde of debug‑achtige endpoints en hosts.

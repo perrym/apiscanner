@@ -1,3 +1,8 @@
+# 
+# Licensed under the MIT License. 
+# Copyright (c) 2025 Perry Mertens
+#
+# See the LICENSE file for full license text.
 # resource_consumption_audit.py
 # Updated with debug logging, lower thresholds, and parameter extraction
 import logging

@@ -1,3 +1,8 @@
+# 
+# Licensed under the MIT License. 
+# Copyright (c) 2025 Perry Mertens
+#
+# See the LICENSE file for full license text.
 """safe_consumption_audit.py – Enhanced OWASP API10:2023 Auditor
 =================================================
 Veilige versie met:

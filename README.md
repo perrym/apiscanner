@@ -3,7 +3,9 @@
 APISCAN is an extensible, modular security auditing framework for REST APIs, based on the OWASP API Security Top 10 (2023) risks.
 
 1. Summary
-APISCAN is an extensible and modular Python-based security scanner for REST APIs. It automates the detection of vulnerabilities based on the OWASP API Security Top 10 (2023) standard. APISCAN parses OpenAPI/Swagger specifications, runs active tests against API endpoints, and produces clear reports in Markdown, JSON, and CSV formats. It focuses on realistic attack simulation techniques, evidence-based findings, and extensibility for future expansion.
+APISCAN is an extensible and modular Python-based security scanner for REST APIs. 
+It automates the detection of vulnerabilities based on the OWASP API Security Top 10 (2023) standard. 
+APISCAN parses OpenAPI/Swagger specifications, runs active tests against API endpoints, and produces clear reports in Markdown, JSON, and CSV formats. It focuses on realistic attack simulation techniques, evidence-based findings, and extensibility for future expansion.
 
 2. OWASP API Security Top 10 Coverage
 OWASP API Risk	APISCAN Coverage	Module

@@ -32,6 +32,12 @@ APISCAN currently provides strong coverage for the most critical API security ri
 
 APISCAN supports OpenAPI/Swagger specification parsing, advanced payload generation, concurrent testing, and evidence-based reporting.
 
+## Start scanner 
+python apiscan.py --url http://localhost:8888 --token eyJhbGciOiJSUzI1NiJ9JvbGUiOiJ1c2VyIn0XzR-FysKYIa-iV4lxAffjlAitMKyxVqRfVAf2aCXMJLspQxSXMPlAgYoVI9OiRIV_ptJphS7IsQyNwgOCPQHIFhR_mCog4BVax3ZEHk1WM_dp4p4sfQ9DqfXCwyVUZ3t8z-WkxNxYbFpj4rPtEp18T0zWdlnZS3nBp31K9y4qidJog89JqxNRVTlFugX0ySdUSlafwLoiSUeUqwOKkC8qIGTfc4uCvFAHF32pXPc1LzWJnMC_2ZtK5yMYlmWAHBjcCQ6HQTKeW7mPFibYVq4lMT2jjiBTLBg_xUdEnN8fFLy_NH0HogFZZX5c6Dph67s80bqHIoewMXETrTS1c1-mQ --swagger openapi-spec.json 
+
+# When you are missing a swagger file
+python swagger_generatorv1.py --url https://localhost:8888  --output api_spec.json --depth 3 "--aggressive        
+
 ## Features
 - Modular structure per OWASP risk category
 - Realistic attack simulation (fuzzing, timing attacks, header tampering)

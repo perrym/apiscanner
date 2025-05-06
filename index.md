@@ -1,5 +1,11 @@
+---
+title: APISCAN – OWASP API Security Scanner
+layout: default
+---
 
-🔗 [Bekijk de GitHub repository van apiscanner](https://github.com/perrym/apiscanner)
+[![View on GitHub](https://img.shields.io/badge/GitHub-View%20Repository-blue?logo=github)](https://github.com/perrym/apiscanner)
+
+---
 
 # APISCAN.py 0.2.0-alpha - (REST) API Security Assessment Tool (by Perry Mertens April 2025)
 
@@ -96,7 +102,7 @@ This project is licensed under the MIT License - see the [LICENSE](./LICENSE) fi
 This tool is intended for educational and authorized security testing purposes only. Unauthorized use against systems without permission is prohibited.
 
 ## Contact
-For any questions, feedback, or responsible disclosure, please contact: pamsniffer@gmail.com
+For any questions, feedback, or responsible disclosure, please contact: **pamsniffer@gmail.com**
 
 
 

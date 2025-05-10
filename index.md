@@ -37,6 +37,58 @@ OWASP API Risk	APISCAN.PY Coverage	Module
 3. Module Descriptions
 Each APISCAN module targets specific OWASP API risks with realistic attack simulations. The tests include fuzzing, timing analysis, authorization bypass attempts, response reflection analysis, security header evaluation, and concurrency stress tests.
 
+
+---
+
+### 3. Extra Features (Nieuw)
+
+**Authenticatie-ondersteuning**  
+APISCAN ondersteunt verschillende authenticatievormen via CLI-argumenten:
+- `--token`: Bearer tokens
+- `--basic-auth gebruiker:wachtwoord`
+- `--apikey` + `--apikey-header`: API Key-authenticatie
+- `--ntlm domein\gebruiker:pass`: NTLM-authenticatie
+- `--client-cert` + `--client-key`: mTLS met client-certificaten
+- OAuth2 via `--client-id`, `--client-secret`, `--token-url`, `--auth-url`, `--redirect-uri`
+
+**Rapportage**
+- Automatische directory aanmaak per scan (`audit_<api-url>_<datum>/`)
+- Per API-kwetsbaarheid een apart rapport in `.txt`
+- Samenvattend rapport `api_summary_report.txt`
+- Automatische generatie van een professioneel `.docx` eindrapport
+
+**Gebruiksvriendelijke CLI**
+- Automatische validatie van Swagger-bestanden
+- Herbruikbare sessieconfiguratie met threading-optimalisatie
+
+**Documentatieformaten**
+- Markdown
+- JSON
+- DOCX
+- TXT logs
+
+---
+
+###  Voorbeeldgebruik
+
+```bash
+python apiscan.py --url https://api.example.com \
+  --swagger openapi.json \
+  --token eyJhbGciOi... \
+  --threads 5
+```
+
+**Extra authenticatievoorbeelden:**
+
+```bash
+--apikey abcdef123456 --apikey-header X-API-Key
+--basic-auth admin:password
+--ntlm DOMAIN\\user:pass
+--client-cert cert.pem --client-key key.pem
+--client-id myapp --client-secret s3cr3t --token-url https://login/token --auth-url https://login/auth --redirect-uri http://localhost
+```
+
+
 4. Conclusion and Future Enhancements
 APISCAN currently provides strong coverage for the most critical API security risks. Future enhancements could include more in-depth Injection testing (SQL, SSTI), advanced function-level authorization validation, and fuzzing based on OpenAPI schemas.
 
@@ -45,26 +97,45 @@ APISCAN supports OpenAPI/Swagger specification parsing, advanced payload generat
 pip install -r requirements.txt
 
 ## Start scanner without or with token 
-python apiscan.py --url http://sample.com --token eyJhbGciOiJSUzI1NiJ9JvbGUiOiJ1c2VyIn0XzR-FysKYIa-iV4lxAffjlAitMKyxVqRfVAf2aCXMJLspQxSXMPlAgYoVI9OiRIV_ptJphS7IsQyNwgOCPQHIFhR_mCog4BVax3ZEHk1WM_dp4p4sfQ9D3t8z-WkxNxYbFpj4rPtEp18T0zWdlnZS3nBp31K9y4qidJog89JqxNRVTlFugX0ySdUSlafwLoiSUeUqwOKkC8qIGTfc4uCvFAHF32pXPc1LzWJnMC_2ZtK5yMYlmWAHBjcCQ6HQTKeW7mPFibYVq4lMT2jjiBTLBg_xUdEnN8fFLy_NH0HogFZZX5c6Dph67s80bqHIoewMXETrTS1c1-mQ --swagger openapi-spec.json 
+python apiscan.py --url http://sample.com --token eyJhbGciOiJSUzI1NiJ9JvbGUiOiJ1c2VyIn0XzR-FysKYIa-iV4lxAffjlAitMKyxVqRfVAf2aCXMJLspQxSXMPlAgYoVI9OiRIV_ptJphS7IsQyNwgOCPQHIFhR_mCog4BVax3ZEHk1WM_dp4p4sfQ9DqfXCwyVUZ3t8z-WkxNxYbFpj4rPtEp18T0zWdlnZS3nBp31K9y4qidJog89JqxNRVTlFugX0ySdUSlafwLoiSUeUqwOKkC8qIGTfc4uCvFAHF32pXPc1LzWJnMC_2ZtK5yMYlmWAHBjcCQ6HQTKeW7mPFibYVq4lMT2jjiBTLBg_xUdEnN8fFLy_NH0HogFZZX5c6Dph67s80bqHIoewMXETrTS1c1-mQ --swagger openapi-spec.json 
 
-APISCAN 0.1.0-alpha API Security Scanner Perry Mertens 2025
+APISCAN 0.2.0-alpha API Security Scanner Perry Mertens 2025
 
 options:
-  -h, --help         show this help message and exit
-  --url URL          Base URL of the API
-  --swagger SWAGGER  Path to Swagger/OpenAPI-JSON
-  --token TOKEN      Bearer-token or auth-token
-  --threads THREADS  Number of threads
-  --api1             Only perform API1-audit
-  --api2             Only perform API2-audit
-  --api3             Only perform API3-audit
-  --api4             Only perform API4-audit
-  --api5             Only perform API5-audit
-  --api6             Only perform API6-audit
-  --api7             Only perform API7-audit
-  --api8             Only perform API8-audit
-  --api9             Only perform API9-audit
-  --api10            Only perform API10-audit
+  -h, --help            show this help message and exit
+  --url URL             Base URL of the API
+  --swagger SWAGGER     Path to Swagger/OpenAPI-JSON
+  --postman POSTMAN     Path to Postman Collection v2.1 JSON
+  --token TOKEN         Bearer-token of auth-token
+  --basic-auth BASIC_AUTH
+                        Basic auth in de vorm gebruiker:password
+  --apikey APIKEY       API key voor toegang tot API
+  --apikey-header APIKEY_HEADER
+                        Headernaam voor de API key
+  --ntlm NTLM           NTLM auth in de vorm domein\gebruiker:pass
+  --client-cert CLIENT_CERT
+                        Pad naar client certificaat (PEM)
+  --client-key CLIENT_KEY
+                        Pad naar private key voor client certificaat (PEM)
+  --client-id CLIENT_ID
+  --client-secret CLIENT_SECRET
+  --token-url TOKEN_URL
+  --auth-url AUTH_URL
+  --redirect-uri REDIRECT_URI
+  --threads THREADS
+  --cert-password CERT_PASSWORD
+                        Wachtwoord voor client certificaat
+  --debug               Enable debug output
+  --api1                Voer alleen API1-audit uit
+  --api2                Voer alleen API2-audit uit
+  --api3                Voer alleen API3-audit uit
+  --api4                Voer alleen API4-audit uit
+  --api5                Voer alleen API5-audit uit
+  --api6                Voer alleen API6-audit uit
+  --api7                Voer alleen API7-audit uit
+  --api8                Voer alleen API8-audit uit
+  --api9                Voer alleen API9-audit uit
+  --api10               Voer alleen API10-audit uit
 
 
 # When you are missing a swagger file without or with token 
@@ -103,9 +174,5 @@ This project is licensed under the MIT License - see the [LICENSE](./LICENSE) fi
 This tool is intended for educational and authorized security testing purposes only. Unauthorized use against systems without permission is prohibited.
 
 ## Contact
-For any questions, feedback, or responsible disclosure, please contact: **pamsniffer@gmail.com**
-
-
-
-
+For any questions, feedback, or responsible disclosure, please contact: pamsniffer@gmail.com
 

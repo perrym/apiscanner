@@ -367,7 +367,7 @@ def main() -> None:
             print(f"-> Safe API consumption check {ep}")
         sc = SafeConsumptionAuditor(base_url=args.url, session=sess)
         safe_issues = sc.test_endpoints(safe_eps)
-        (output_dir / "api_safe_consumption_report.txt").write_text(sc.generate_report("markdown"), "utf-8")
+        (output_dir / "api_safe_consumption_report.txt").write_text(sc.generate_report(), "utf-8")
         styled_print(f"API10 complete – {len(safe_issues)} issues", "done")
 
     summary = {

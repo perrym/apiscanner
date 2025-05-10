@@ -177,6 +177,7 @@ def create_audit_report(output_dir: Path):
             clean_findings = ''.join(c for c in findings if c.isprintable() or c in '\n\r\t')
             doc.add_paragraph(clean_findings)
         else:
+            print(f"[!] Report file missing: {report_file}")
             doc.add_paragraph("No findings reported for this risk")
 
         doc.add_heading('Recommendations', level=2)

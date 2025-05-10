@@ -1,0 +1,33 @@
+# APISCAN - CHANGELOG
+Version: 2025.05.07
+Author: Perry Mertens
+
+## Added Features:
+  - Added support for multiple authentication mechanisms:
+  - Multithreading
+  - Bearer Token
+  - Basic Authentication
+  - API Key (customizable header)
+  - NTLM Authentication
+  - Client Certificate Authentication (mTLS)
+  - OAuth2 Client Credentials Flow
+  - OAuth2 Authorization Code Flow (interactive browser login)
+
+  -  Integrated unified session creation via `configure_authentication()` from `auth_utils.py`.
+
+## Enhancements:
+  -  Fully restructured to keep all logic inside the `main()` function:
+  - Prevents variable scope issues
+  - Clean execution from CLI
+
+  -  Added centralized logging:
+  - Logs are saved to timestamped file: `apiscan_YYYYMMDD_HHMMSS.log`
+  - Log output is also printed to console
+  - Includes connection attempts, warnings, and errors
+
+## Bug Fixes:
+-  Fixed `NameError: name 'args' is not defined` caused by code being placed outside `main()`.
+
+## Notes:
+- This version is now suitable for scheduled use, auditing APIs with different authentication schemes.
+- Swagger is required for test execution.

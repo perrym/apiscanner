@@ -3,4 +3,4 @@
 # Copyright (c) 2025 Perry Mertens
 #
 # See the LICENSE file for full license text.
-__version__ = "0.1.0-alpha"
+__version__ = "0.3.0-alpha"

@@ -32,3 +32,6 @@ Author: Perry Mertens
 - This version is now suitable for scheduled use, auditing APIs with different authentication schemes.
 - Swagger is required for test execution.
 - working on beter reporting
+- next version beter reporting function
+- next version PAYLOADS more then 300
+- postman will be fixed in next version

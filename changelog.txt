@@ -31,3 +31,4 @@ Author: Perry Mertens
 ## Notes:
 - This version is now suitable for scheduled use, auditing APIs with different authentication schemes.
 - Swagger is required for test execution.
+- working on beter reporting

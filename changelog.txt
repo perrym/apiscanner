@@ -12,6 +12,7 @@ Author: Perry Mertens
   - Client Certificate Authentication (mTLS)
   - OAuth2 Client Credentials Flow
   - OAuth2 Authorization Code Flow (interactive browser login)
+  - Bola report function is updated.
 
   -  Integrated unified session creation via `configure_authentication()` from `auth_utils.py`.
 
@@ -31,7 +32,7 @@ Author: Perry Mertens
 ## Notes:
 - This version is now suitable for scheduled use, auditing APIs with different authentication schemes.
 - Swagger is required for test execution.
-- working on beter reporting
+- working on beter reporting (bola done)
 - next version beter reporting function
 - next version PAYLOADS more then 300
 - postman will be fixed in next version

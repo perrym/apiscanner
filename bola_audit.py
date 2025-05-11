@@ -12,6 +12,9 @@ from typing import List, Dict, Optional
 import logging
 from dataclasses import dataclass
 import time
+from urllib.parse import urlparse
+from datetime import datetime
+timestamp=datetime.now().isoformat()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -22,14 +25,15 @@ class TestResult:
     test_case: str
     method: str
     url: str
-    status_code: int = 0
-    is_vulnerable: bool = False
-    response_time: float = 0.0
-    params: Optional[Dict] = None
-    headers: Optional[Dict] = None
-    error: Optional[str] = None
+    status_code: int
+    response_time: float
+    is_vulnerable: bool
     response_sample: Optional[str] = None
     request_sample: Optional[str] = None
+    params: Optional[dict] = None
+    headers: Optional[dict] = None
+    error: Optional[str] = None
+    timestamp: Optional[str] = None
 
 class BOLAAuditor:
     def __init__(self, session: requests.Session):
@@ -172,62 +176,146 @@ class BOLAAuditor:
         sanitized=re.sub(r'(password|token|secret)"?\s*:\s*"[^"]+"',r'\1":"*****"',text,flags=re.I)
         return (sanitized[:max_length]+'...') if len(sanitized)>max_length else sanitized
 
-    def generate_report(self, results: List[TestResult]) -> str:
-        # Lijst van unieke gescande endpoints
-        scanned = sorted({(r.method, r.url.split('?')[0]) for r in results})
-        # Groepeer testresultaten per endpoint
-        eps = {}
-        for r in results:
-            key = f"{r.method} {r.url.split('?')[0]}"
-            eps.setdefault(key, []).append(r)
+    def generate_report(self, results: List['TestResult']) -> str:
+        SENSITIVE_PATTERNS = {
+            "token_leak": re.compile(r'"access[_-]?token"\s*:\s*"[A-Za-z0-9\-_.]{15,}"', re.IGNORECASE),
+            "password_leak": re.compile(r'"password"\s*:\s*".{6,}"', re.IGNORECASE),
+            "pii_leak": re.compile(r'("ssn|social_security|credit_card)"\s*:\s*"\d{3}-\d{2}-\d{4}"', re.IGNORECASE)
+        }
+
+        CVSS_SCORES = {
+            "token_leak": 7.5,
+            "password_leak": 9.0,
+            "pii_leak": 9.1,
+            "200_ok_no_auth": 5.3,
+            "error_only": 2.5,
+            "unknown": 3.0
+        }
+
+        FALSE_POSITIVE_PATTERNS = [
+            re.compile(r'test(user|email|password)@example\.com', re.IGNORECASE),
+            re.compile(r'\b(test|demo|example)\b', re.IGNORECASE)
+        ]
+
+        findings = {"🚨 Critical": [], "🛑 High": [], "⚠️ Medium": [], "ℹ️ Low": []}
+
+        for result in results:
+            result.cvss_score = CVSS_SCORES["unknown"]  # default
+            if not result.is_vulnerable:
+                if result.error or result.status_code >= 400:
+                    result.cvss_score = CVSS_SCORES["error_only"]
+                    findings["ℹ️ Low"].append(result)
+                continue
+
+            response_text = ""
+            try:
+                if result.response_sample:
+                    response_text = json.dumps(result.response_sample) if isinstance(result.response_sample, dict) else str(result.response_sample)
+            except Exception:
+                pass
+
+            is_false_positive = any(fp.search(response_text) for fp in FALSE_POSITIVE_PATTERNS)
+            matched_patterns = []
+
+            for name, pattern in SENSITIVE_PATTERNS.items():
+                if pattern.search(response_text):
+                    matched_patterns.append(name)
+                    result.response_sample = pattern.sub(r'\1: "[REDACTED]"', response_text)
+
+            if not is_false_positive and matched_patterns:
+                result.metadata = {
+                    "matched_patterns": matched_patterns,
+                    "response_preview": result.response_sample[:1000] +
+                    ("..." if len(result.response_sample) > 1000 else "")
+                }
+
+                if "token_leak" in matched_patterns and "password_leak" in matched_patterns:
+                    result.cvss_score = max(CVSS_SCORES["token_leak"], CVSS_SCORES["password_leak"]) + 0.5
+                    findings["🚨 Critical"].append(result)
+                else:
+                    result.cvss_score = max(CVSS_SCORES.get(pat, 7.0) for pat in matched_patterns)
+                    findings["🛑 High"].append(result)
+            elif result.status_code == 200 and not is_false_positive:
+                result.cvss_score = CVSS_SCORES["200_ok_no_auth"]
+                findings["⚠️ Medium"].append(result)
+            else:
+                result.cvss_score = CVSS_SCORES["error_only"]
+                findings["ℹ️ Low"].append(result)
 
         report = [
-            '# API Security Audit - BOLA Test Results',
-            f"**Totaal gescande endpoints**: {len(scanned)}",
-            f"**Totaal testcases**: {len(results)}", 
-            f"**Vulnerabilities gevonden**: {sum(r.is_vulnerable for r in results)}",
+            "# API Security Assessment - BOLA Report",
+            "## Executive Summary",
+            f"- **Target**: {self._get_base_url(results)}",
+            f"- **Scan Date**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            "### Risk Distribution",
+            "| Severity | Count | Description |",
+            "|----------|-------|-------------|",
+            "| 🚨 Critical | {} | Multiple sensitive items exposed |".format(len(findings["🚨 Critical"])),
+            "| 🛑 High | {} | Single sensitive item exposed |".format(len(findings["🛑 High"])),
+            "| ⚠️ Medium | {} | 200 OK on unprotected endpoint |".format(len(findings["⚠️ Medium"])),
+            "| ℹ️ Low | {} | Errors or minor issues |".format(len(findings["ℹ️ Low"])),
+            "\n## Detailed Findings"
         ]
-        report.append('\n## Scanned Endpoints')
-        for method, url in scanned:
-            report.append(f"- {method} {url}")
 
-        report.append('\n## Vulnerable Endpoints')
-        for ep, tests in eps.items():
-            if not any(t.is_vulnerable for t in tests):
+        for severity in ["🚨 Critical", "🛑 High", "⚠️ Medium", "ℹ️ Low"]:
+            items = findings[severity]
+            if not items:
                 continue
-            status = "⚠️ **KWETSBAAR**"
-            report.extend([
-                f"\n### {ep}",
-                f"**Status**: {status}",
-                f"**Number of test cases**: {len(tests)}", 
-                f"**Vulnerabilities**: {sum(t.is_vulnerable for t in tests)}\n",
-                '#### Testresultaten:'
-            ])
-            for t in sorted(tests, key=lambda x: x.is_vulnerable, reverse=True):
-                icon = "🔴" if t.is_vulnerable else "🟢"
-                line = f"{icon} **{t.test_case}**: HTTP {t.status_code} | {t.response_time:.2f}s"
-                if t.is_vulnerable:
-                    line += " | **BOLA DETECTED**"
-                if t.params:
-                    line += f" | Params: {t.params}"
-                report.append(line)
-                if t.error:
-                    report.append(f"  - Fout: `{t.error}`")
-                if t.request_sample:
-                    report.append(f"  - Request: `{t.request_sample}`")
-                if t.response_sample:
-                    report.append(f"  - Response sample:\n```\n{t.response_sample}\n```")
+
+            report.append(f"\n### {severity} Risk Findings")
+            for idx, result in enumerate(items, 1):
+                report.extend([
+                    f"#### Finding {idx}: {result.test_case}",
+                    "| Metric | Value |",
+                    "|--------|-------|",
+                    f"| CVSS Score | {result.cvss_score:.1f} |",
+                    f"| Endpoint | `{result.method} {result.url}` |",
+                    f"| Status Code | {result.status_code} |",
+                    f"| Response Time | {result.response_time:.2f}s |",
+                    f"| Timestamp | {getattr(result, 'timestamp', 'N/A')} |"
+                ])
+
+                if hasattr(result, 'metadata'):
+                    report.extend([
+                        "\n**Matched Patterns**:",
+                        "- " + "\n- ".join(result.metadata["matched_patterns"]),
+                        "\n**Response Preview**:",
+                        f"```json\n{result.metadata['response_preview']}\n```"
+                    ])
+
+                if result.params:
+                    report.append("\n**Request Parameters:**")
+                    report.append(f"```json\n{json.dumps(result.params, indent=2)}\n```")
+
+                report.append("---")
 
         report.extend([
-            '\n## Summary',
-            f"- **Vulnerable endpoints**: {sum(any(t.is_vulnerable for t in vs) for vs in eps.values())}/{len(scanned)}",
-            '- **Recommended actions**:',
-            '  - Implement proper authorization checks',
-            '  - Use unpredictable identifiers',
-            '  - Log and monitor access patterns'
+            "\n## Remediation Recommendations",
+            "1. **Access Control**",
+            "   - Implement role-based access control (RBAC)",
+            "   - Validate ownership for object access\n",
+            "2. **Data Protection**",
+            "   - Encrypt sensitive data at rest and in transit",
+            "   - Use UUIDs instead of sequential IDs\n",
+            "3. **Monitoring**",
+            "   - Log all authorization attempts",
+            "   - Implement anomaly detection for bulk access\n",
+            "\n## Scan Details",
+            f"- Total Endpoints Tested: {len({(r.method, r.url) for r in results})}",
+            f"- Total Test Cases Executed: {len(results)}",
+            "- Scan Configuration:",
+            f"  - Sensitive Data Patterns: {len(SENSITIVE_PATTERNS)}",
+            f"  - False Positive Filters: {len(FALSE_POSITIVE_PATTERNS)}"
         ])
-        return '\n'.join(report)
 
+        return "\n".join(report)
+
+    def _get_base_url(self, results):
+        if not results:
+            return "N/A"
+        parsed = urlparse(results[0].url)
+        return f"{parsed.scheme}://{parsed.netloc}"
+            
     def save_report(self, results: List[TestResult], path: str):
         Path(path).write_text(self.generate_report(results), encoding='utf-8')
 

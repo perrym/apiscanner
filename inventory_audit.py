@@ -29,9 +29,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
 import argparse as _arg
-
 import requests
-
+from report_utils import ReportGenerator
 Issue = Dict[str, Any]
 Endpoint = Dict[str, str]
 
@@ -118,24 +117,22 @@ class InventoryAuditor:
             })
 
     def generate_report(self, fmt: str = "markdown") -> str:
-        if not self._issues:
-            return "No inventory issues found."
-        if fmt == "json":
-            return json.dumps(self._issues, indent=2)
-        lines: List[str] = [
-            "# API Security Audit – Improper Inventory Management (API9:2023)",
-            f"Scan: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            f"Target: {self.base_url}",
-            "\n## Findings",
-        ]
-        by_issue: Dict[str, List[Issue]] = defaultdict(list)
-        for i in self._issues:
-            by_issue[i["issue"]].append(i)
-        for issue, items in by_issue.items():
-            lines.append(f"\n### {issue} ({len(items)})")
-            for it in items:
-                lines.append(f"* {it['target']} – {it['detail']}")
-        return "\n".join(lines)
+        return ReportGenerator(
+            issues=self._issues,
+            scanner="Inventory (API09)",
+            base_url=self.base_url
+        ).generate_markdown() if fmt == "markdown" else ReportGenerator(
+            issues=self._issues,
+            scanner="Inventory (API09)",
+            base_url=self.base_url
+        ).generate_json()
+        
+        
+    def save_report(self, path: str, fmt: str = "markdown"):
+        ReportGenerator(self._issues, scanner="Inventory (API09)", base_url=self.base_url).save(path, fmt=fmt)
+
+
+
 
 
 # ------------------------------------------------------------------

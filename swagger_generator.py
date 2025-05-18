@@ -73,10 +73,10 @@ class UltimateSwaggerGenerator:
             r'(?i)/_ah/api',
             r'(?i)/_api',
             r'(?i)/ajax/',
-            r'(?i)/async/'
-            r'(?i)/backend/'
-            r'(?i)/v2/'
-            r'(?i)/v3/'
+            r'(?i)/async/',
+            r'(?i)/backend/',
+            r'(?i)/v2/',
+            r'(?i)/v3/',
         ]
         self.param_patterns = [
             r'id=[^&]+',
@@ -84,7 +84,7 @@ class UltimateSwaggerGenerator:
             r'limit=\d+',
             r'search=[^&]+',
             r'filter=[^&]+',
-            r'sort=[^&]+'
+            r'sort=[^&]+,'
         ]
         self.auth_tokens = {}
         self.login_url = None
@@ -213,6 +213,83 @@ class UltimateSwaggerGenerator:
             '/admin_login',
             '/admin_logon',
             '/admissions',
+            '/admon',
+            '/ads',
+            '/adsl',
+            '/adv',
+            '/advanced',
+            '/advanced_search',
+            '/advertise',
+            '/advertisement',
+            '/advertising',
+            '/adview',
+            '/advisories',
+            '/affiliate',
+            '/affiliates',
+            '/africa',
+            '/agenda',
+            '/agent',
+            '/agents',
+            '/ajax',
+            '/album',
+            '/word',
+            '/wordpress',
+            '/work',
+            '/Work',
+            '/workplace',
+            '/workshop',
+            '/workshops',
+            '/world',
+            '/worldwide',
+            '/wp',
+            '/wp-content',
+            '/wp-includes',
+            '/wp-login',
+            '/wp-register',
+            '/writing',
+            '/ws',
+            '/wss',
+            '/wstats',
+            '/wusage',
+            '/wwhelp',
+            '/www',
+            '/wwwboard',
+            '/wwwjoin',
+            '/wwwlog',
+            '/wwwstats',
+            '/X',
+            '/x',
+            '/xbox',
+            '/xcache',
+            '/xdb',
+            '/xfer',
+            '/XML',
+            '/xml',
+            '/xmlrpc',
+            '/xsl',
+            '/xsql',
+            '/xx',
+            '/xxx',
+            '/xyz',
+            '/yahoo',
+            '/Yahoo',
+            '/z',
+            '/zap',
+            '/zh',
+            '/zh_CN',
+            '/zh_TW',
+            '/zip',
+            '/zipfiles',
+            '/zips',
+            '/_admin',
+            '/_images',
+            '/_mem_bin',
+            '/_pages',
+            '/_vti_aut',
+            '/_vti_bin',
+            '/_vti_cnf',
+            '/_vti_log',
+            '/_vti_pvt',
             '/_vti_rpc',
         ]
         
@@ -548,20 +625,26 @@ class UltimateSwaggerGenerator:
         )
 
     def _is_api_endpoint(self, url: str) -> bool:
-        """Determine if a URL is an API endpoint"""
+        #Determine if a URL is an API endpoint
         path = urlparse(url).path.lower()
         query = urlparse(url).query.lower()
         return (
             any(re.search(pattern, path) for pattern in self.api_patterns) or
             'api' in path or
+            path.endswith('.json') or
             'json' in path or
             'xml' in path or
             'data' in path or
             'v1' in path or
             'v2' in path or
+            'token=' in query or 
+            'auth=' in query or
+            'bearer' in self.session.headers.get("Authorization", "").lower() or
             any(param in query for param in ['format=json', 'type=api', 'output=json'])
         )
 
+
+    
     def save_swagger(self, filename: str):
         """Save the Swagger specification"""
         with open(filename, 'w') as f:

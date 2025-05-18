@@ -138,11 +138,11 @@ RISK_INFO = {
 
 
 def create_audit_report(output_dir: Path):
-    """Create comprehensive DOCX report from all scan results"""
+    #Create comprehensive DOCX report from all scan results
     doc = Document()
     
     # Add title page
-    doc.add_heading('API Security Audit Report. This program is created by Perry Mertens April 2025 (c)', 0)
+    doc.add_heading('API Security Scanner. This program is created by Perry Mertens April 2025 (c)', 0)
     doc.add_paragraph('Generated on: ' + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     doc.add_page_break()
     
@@ -177,7 +177,6 @@ def create_audit_report(output_dir: Path):
             clean_findings = ''.join(c for c in findings if c.isprintable() or c in '\n\r\t')
             doc.add_paragraph(clean_findings)
         else:
-            print(f"[!] Report file missing: {report_file}")
             doc.add_paragraph("No findings reported for this risk")
 
         doc.add_heading('Recommendations', level=2)
@@ -209,7 +208,7 @@ def create_audit_report(output_dir: Path):
     print(f"📄 Comprehensive report saved to: {report_path}")
 
 def main():
-    output_dir = Path(".")  # Adjust if needed
+    output_dir = Path(".")  
     create_audit_report(output_dir)
 
 if __name__ == "__main__":

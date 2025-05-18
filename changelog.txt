@@ -1,6 +1,7 @@
 # APISCAN - CHANGELOG
-Version: 2025.05.07
+Version: 2025.18.07
 Author: Perry Mertens
+Version 0.8.0
 
 ## Added Features:
   - Added support for multiple authentication mechanisms:
@@ -12,16 +13,15 @@ Author: Perry Mertens
   - Client Certificate Authentication (mTLS)
   - OAuth2 Client Credentials Flow
   - OAuth2 Authorization Code Flow (interactive browser login)
-  - Bola report function is updated.
-
-  -  Integrated unified session creation via `configure_authentication()` from `auth_utils.py`.
+  - report function is updated.
+  - Integrated unified session creation via `configure_authentication()` from `auth_utils.py`.
 
 ## Enhancements:
-  -  Fully restructured to keep all logic inside the `main()` function:
+  - Fully restructured to keep all logic inside the `main()` function:
   - Prevents variable scope issues
   - Clean execution from CLI
 
-  -  Added centralized logging:
+  - extra work to do
   - Logs are saved to timestamped file: `apiscan_YYYYMMDD_HHMMSS.log`
   - Log output is also printed to console
   - Includes connection attempts, warnings, and errors

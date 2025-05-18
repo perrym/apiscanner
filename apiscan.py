@@ -12,7 +12,6 @@ import sys
 import logging
 import time
 from datetime import datetime
-from pathlib import Path
 from urllib.parse import urljoin
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -34,6 +33,7 @@ from inventory_audit import InventoryAuditor
 from safe_consumption_audit import SafeConsumptionAuditor
 from version import __version__
 from auth_utils import configure_authentication
+logger = logging.getLogger("apiscan")
 
 # Verbeterde console-outputfunctie
 def styled_print(message: str, status: str = "info"):
@@ -63,7 +63,7 @@ MAX_THREADS = 20
 def validate_swagger_path(path: str) -> Path:
     p = Path(path).resolve()
     if not p.exists():
-        raise ValueError("Swagger pad bestaat niet")
+        raise ValueError("Swagger path does not exist")
     return p
 
 # Onderdruk logging van externe modules
@@ -75,8 +75,8 @@ def check_api_reachable(url: str, session: requests.Session, retries: int = 3, d
             resp = session.get(url, timeout=5)
 
             print(f"Response status code: {resp.status_code}")
-            print(f"Response headers:\n{json.dumps(dict(resp.headers), indent=2)}")
-            print(f"Response content (truncated):\n{resp.text[:1000]}")
+            #print(f"Response headers:\n{json.dumps(dict(resp.headers), indent=2)}")
+            #print(f"Response content (truncated):\n{resp.text[:1000]}")
 
             if not resp.content:
                 print("Empty response body — possible backend crash or misconfigured handler.")
@@ -129,10 +129,10 @@ def create_output_directory(base_url: str) -> Path:
 # Tijdelijk base_url uit CLI halen voor logpad
 temp_url = sys.argv[sys.argv.index("--url") + 1] if "--url" in sys.argv else "unknown"
 def main() -> None:
-    parser = argparse.ArgumentParser(description=f"APISCAN {__version__} API Security Scanner Perry Mertens 2025")
+    parser = argparse.ArgumentParser(description=f"APISCAN {__version__} API Security Scanner Perry Mertens 2025 (c)")
     parser.add_argument("--url", required=True, help="Base URL of the API")
     parser.add_argument("--swagger", help="Path to Swagger/OpenAPI-JSON")
-    parser.add_argument("--postman", help="Path to Postman Collection v2.1 JSON")
+    #parser.add_argument("--postman", help="Path to Postman Collection v2.1 JSON")
     parser.add_argument("--token", help="Bearer-token of auth-token")
     parser.add_argument("--basic-auth", help="Basic auth in de vorm gebruiker:password")
     parser.add_argument("--apikey", help="API key voor toegang tot API")
@@ -145,25 +145,28 @@ def main() -> None:
     parser.add_argument("--token-url")
     parser.add_argument("--auth-url")
     parser.add_argument("--redirect-uri")
-    #parser.add_argument("--scope", nargs="*")
-    #parser.add_argument("--flow", choices=["client", "auth"])
     parser.add_argument("--threads", type=int, default=2)
     parser.add_argument("--cert-password", help="Wachtwoord voor client certificaat")
     parser.add_argument("--debug", action="store_true", help="Enable debug output")
+    
+    # Voeg API selectie argumenten toe
     for i in range(1, 11):
         parser.add_argument(f"--api{i}", action="store_true", help=f"Voer alleen API{i}-audit uit")
 
     args = parser.parse_args()
-
+    
+    # Controleer of er API's zijn geselecteerd, anders scan alle API's
+    selected_apis = [i for i in range(1, 11) if getattr(args, f"api{i}")] or list(range(1, 11))
     
     args.url = normalize_url(args.url)
+    
     # Create output and log directory
     output_dir = create_output_directory(args.url)
     log_dir = output_dir / "log"
     log_dir.mkdir(exist_ok=True)
     LOGFILE = log_dir / f"apiscan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
-    # Setup file-only logging
+    # Setup logging
     file_handler = logging.FileHandler(LOGFILE, encoding="utf-8")
     file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 
@@ -175,17 +178,10 @@ def main() -> None:
     logger = logging.getLogger("apiscan")
     logger.propagate = False
 
+    # Verwijder dubbele directory creatie
     output_dir = create_output_directory(args.url)
-
-    # Zet logging naar log-bestand (geen console)
     log_dir = output_dir / "log"
     log_dir.mkdir(exist_ok=True)
-    logger = logging.getLogger("apiscan")
-
-    output_dir = create_output_directory(args.url)
-
-    logger = logging.getLogger(__name__)
-    logger.propagate = False
 
     sess = configure_authentication(args)
     adapter = HTTPAdapter(pool_connections=args.threads * 4, pool_maxsize=args.threads * 4, max_retries=3)
@@ -194,10 +190,9 @@ def main() -> None:
 
     check_api_reachable(args.url, sess)
 
-    # Swagger bestandsverwerking met uitgebreide validatie
+    # Swagger verwerking
     if args.swagger:
         try:
-            # Valideer pad
             swagger_path = Path(args.swagger).resolve()
             if not swagger_path.exists():
                 raise FileNotFoundError(f"Swagger bestand niet gevonden: {swagger_path}")
@@ -209,7 +204,6 @@ def main() -> None:
             logger.info(f"Loading Swagger from: {swagger_path}")
             styled_print(f"Loading validated Swagger file: {swagger_path}", "info")
 
-            # Initialiseer auditor en laad spec
             bola = BOLAAuditor(sess)
             spec = bola.load_swagger(swagger_path)
             
@@ -227,24 +221,21 @@ def main() -> None:
         logger.error("Geen Swagger bestand opgegeven")
         sys.exit("Geen Swagger specificatie opgegeven - gebruik --swagger")
 
-    # Audit configuratie
-    selected_apis = [i for i in range(1, 11) if getattr(args, f"api{i}")] or list(range(1, 11))
-    logger.info(f"Uitgevoerde audits: {selected_apis}")
-    
-    # Output directory
-    output_dir = create_output_directory(args.url)
-    logger.info(f"Resultaat directory: {output_dir}")
-    print(f"[+] Alle resultaten worden opgeslagen in: {output_dir}")
-
+      
     output_dir = create_output_directory(args.url)
     logger.info(f"Output directory: {output_dir}")
     print(f"[+] Results saved to: {output_dir}")
 
-    # Volledige scanning-logica per API
-    if 1 in  selected_apis:
+    # Full scanning logic per API
+    if 1 in selected_apis:
         print(f" API1 – BOLA tests ({args.threads} threads)")
         logger.info("Running API1 – BOLA")
         bola_results = []
+
+        bola = BOLAAuditor(sess)
+        spec = bola.load_swagger(args.swagger)
+        endpoints = bola.get_object_endpoints(spec)
+
         with ThreadPoolExecutor(max_workers=min(args.threads, MAX_THREADS)) as ex:
             futures = []
             for ep in endpoints:
@@ -255,10 +246,15 @@ def main() -> None:
                     bola_results.extend(fut.result())
                 except Exception as e:
                     logger.error(f"BOLA test error: {e}")
-        report = bola.generate_report(bola_results)
+
+        bola.issues = [r.to_dict() for r in bola_results]
+        bola.base_url = args.url  # ✅ Fix hier
+        report = bola.generate_report()
         (output_dir / "api_bola_report.txt").write_text(report, "utf-8")
+
         found = sum(1 for r in bola_results if getattr(r, 'is_vulnerable', False))
         styled_print(f"API1 complete – {found} vulnerabilities found", "done")
+
 
     if 2 in  selected_apis:
         print(" API2 – Broken Authentication")

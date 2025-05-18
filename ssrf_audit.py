@@ -32,6 +32,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import quote_plus, urljoin, urlparse
 import requests
+from report_utils import ReportGenerator
+
 
 # ---------------------------------------------------------------------------#
 # Typedefs
@@ -483,59 +485,20 @@ class SSRFAuditor:
     # Reporting
     # ------------------------------------------------------------------#
     def generate_report(self, fmt: str = "markdown") -> str:
-        if not self._findings:
-            return "No SSRF vulnerabilities found."
-
-        if fmt == "json":
-            return json.dumps(self._findings, indent=2)
-
-        if fmt == "csv":
-            import csv
-            from io import StringIO
-
-            buf = StringIO()
-            writer = csv.DictWriter(buf, fieldnames=self._findings[0].keys())
-            writer.writeheader()
-            writer.writerows(self._findings)
-            return buf.getvalue()
-
-        # Markdown
-        out: List[str] = [
-            "# API Security Audit – Server-Side Request Forgery (API7:2023)",
-            f"Scan: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            f"Target: {self.base_url}",
-            f"Configuration: {self.concurrency} threads, timeout {self.timeout}s",
-            "\n## Findings",
-        ]
+        return ReportGenerator(
+            issues=self._findings,
+            scanner="SSRF (API10)",
+            base_url=self.base_url
+        ).generate_markdown() if fmt == "markdown" else ReportGenerator(
+            issues=self._findings,
+            scanner="SSRF (API10)",
+            base_url=self.base_url
+        ).generate_json()
         
-        severity_order = ["Critical", "High", "Medium", "Low"]
-        for sev in severity_order:
-            issues = [f for f in self._findings if f["severity"] == sev]
-            if not issues:
-                continue
-            out.append(f"\n### {sev} risks ({len(issues)})")
-            for i in issues:
-                out.append(
-                    f"* **{i['endpoint']}** – param `{i['parameter']}` → "
-                    f"`{i['payload']}`  \n  ↳ {i['result']} "
-                    f"(response time: {i['response_time']})"
-                )
-        
-        # Summary
-        out.append("\n## Summary")
-        counts = {sev: len([f for f in self._findings if f["severity"] == sev]) 
-                for sev in severity_order}
-        out.append(f"Total findings: {len(self._findings)}")
-        out.append(", ".join([f"{k}: {v}" for k, v in counts.items() if v > 0]))
-        
-        # Recommendations
-        out.append("\n## Recommendations")
-        out.append("- Implement allowlist-based input validation for URLs")
-        out.append("- Block access to internal IP addresses from the API")
-        out.append("- Disable unused URL schemes (file://, gopher://)")
-        out.append("- Monitor unusual time delays in responses")
-        
-        return "\n".join(out)
+    def save_report(self, path: str, fmt: str = "markdown"):
+        ReportGenerator(self._findings, scanner="SSRF", base_url=self.base_url).save(path, fmt=fmt)
+
+
 
 # ---------------------------------------------------------------------------#
 # CLI

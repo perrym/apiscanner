@@ -5,16 +5,36 @@
 # See the LICENSE file for full license text.
 import json
 import re
+import sys
 import requests
 from urllib.parse import urljoin
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import  Any, List, Dict, Optional
 import logging
 from dataclasses import dataclass
 import time
 from urllib.parse import urlparse
 from datetime import datetime
+from report_utils import ReportGenerator
+
 timestamp=datetime.now().isoformat()
+
+
+def classify_risk(status_code: int, response_body: str = "") -> str:
+    """Return risk classification based on status code and (optional) response body."""
+    if status_code == 200:
+        return "High"  # Access to sensitive data
+    elif status_code == 500:
+        return "Critical"  # Server error, possible vulnerability
+    elif status_code == 403:
+        return "Medium"  # Access correctly denied
+    elif status_code == 400:
+        return "Low"  # Bad input or validation error
+    elif status_code == 404:
+        return "Low"  # Nonexistent object, normal
+    else:
+        return "Low"
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -34,6 +54,21 @@ class TestResult:
     headers: Optional[dict] = None
     error: Optional[str] = None
     timestamp: Optional[str] = None
+
+    def to_dict(self):  # Zorg dat dit binnen de class valt!
+        return {
+            "flow": f"{self.method} {self.url}",
+            "endpoint": self.url,
+            "status_code": self.status_code,
+            "response_time": self.response_time,
+            "description": self.test_case,
+            "severity": classify_risk(self.status_code, self.response_sample),
+            "timestamp": self.timestamp or datetime.now().isoformat(),
+            "request_parameters": self.params or {},
+            "headers": self.headers or {},
+            "response_body": (str(self.response_sample) if self.response_sample else "")
+        }
+
 
 class BOLAAuditor:
     def __init__(self, session: requests.Session):
@@ -65,6 +100,24 @@ class BOLAAuditor:
             logger.error(f"Error loading Swagger: {e}", exc_info=True)
             return None
 
+    def get_endpoints(self) -> List[Dict]:
+            return getattr(self, "_last_endpoints", [])
+
+    def run_audit(self, base_url: str, swagger_path: str) -> List[Dict[str, Any]]:
+        print("→ BOLA audit gestart")
+        self.base_url = base_url
+        spec = self.load_swagger(swagger_path)
+        if not spec:
+            return []
+        endpoints = self.get_object_endpoints(spec)
+        self._last_endpoints = endpoints
+        all_results = []
+        for ep in endpoints:
+            all_results.extend(self.test_endpoint(base_url, ep))  # ✅ juiste call
+        self.issues = [r.to_dict() for r in all_results]
+        return self.issues
+
+       
     def get_object_endpoints(self, swagger_spec: Dict) -> List[Dict]:
         """Identify all endpoints with object references"""
         endpoints = []
@@ -150,9 +203,11 @@ class BOLAAuditor:
         if not endpoint.get('parameters'): return results
         for name,vals in self._generate_test_values(endpoint['parameters']).items():
             time.sleep(self.test_delay)
+            print(f"→ Testing {endpoint['method']} {endpoint['path']} [{name}]")
             results.append(self._test_object_access(base_url,endpoint,name,vals))
         return results
 
+            
     def _test_object_access(self, base_url, endpoint, name, vals)->TestResult:
         try:
             url = urljoin(base_url,endpoint['path'])
@@ -176,148 +231,19 @@ class BOLAAuditor:
         sanitized=re.sub(r'(password|token|secret)"?\s*:\s*"[^"]+"',r'\1":"*****"',text,flags=re.I)
         return (sanitized[:max_length]+'...') if len(sanitized)>max_length else sanitized
 
-    def generate_report(self, results: List['TestResult']) -> str:
-        SENSITIVE_PATTERNS = {
-            "token_leak": re.compile(r'"access[_-]?token"\s*:\s*"[A-Za-z0-9\-_.]{15,}"', re.IGNORECASE),
-            "password_leak": re.compile(r'"password"\s*:\s*".{6,}"', re.IGNORECASE),
-            "pii_leak": re.compile(r'("ssn|social_security|credit_card)"\s*:\s*"\d{3}-\d{2}-\d{4}"', re.IGNORECASE)
-        }
+    def generate_report(self, fmt: str = "markdown") -> str:
+        return ReportGenerator(self.issues, scanner="Bola", base_url=self.base_url).generate_markdown()
 
-        CVSS_SCORES = {
-            "token_leak": 7.5,
-            "password_leak": 9.0,
-            "pii_leak": 9.1,
-            "200_ok_no_auth": 5.3,
-            "error_only": 2.5,
-            "unknown": 3.0
-        }
-
-        FALSE_POSITIVE_PATTERNS = [
-            re.compile(r'test(user|email|password)@example\.com', re.IGNORECASE),
-            re.compile(r'\b(test|demo|example)\b', re.IGNORECASE)
-        ]
-
-        findings = {"🚨 Critical": [], "🛑 High": [], "⚠️ Medium": [], "ℹ️ Low": []}
-
-        for result in results:
-            result.cvss_score = CVSS_SCORES["unknown"]  # default
-            if not result.is_vulnerable:
-                if result.error or result.status_code >= 400:
-                    result.cvss_score = CVSS_SCORES["error_only"]
-                    findings["ℹ️ Low"].append(result)
-                continue
-
-            response_text = ""
-            try:
-                if result.response_sample:
-                    response_text = json.dumps(result.response_sample) if isinstance(result.response_sample, dict) else str(result.response_sample)
-            except Exception:
-                pass
-
-            is_false_positive = any(fp.search(response_text) for fp in FALSE_POSITIVE_PATTERNS)
-            matched_patterns = []
-
-            for name, pattern in SENSITIVE_PATTERNS.items():
-                if pattern.search(response_text):
-                    matched_patterns.append(name)
-                    result.response_sample = pattern.sub(r'\1: "[REDACTED]"', response_text)
-
-            if not is_false_positive and matched_patterns:
-                result.metadata = {
-                    "matched_patterns": matched_patterns,
-                    "response_preview": result.response_sample[:1000] +
-                    ("..." if len(result.response_sample) > 1000 else "")
-                }
-
-                if "token_leak" in matched_patterns and "password_leak" in matched_patterns:
-                    result.cvss_score = max(CVSS_SCORES["token_leak"], CVSS_SCORES["password_leak"]) + 0.5
-                    findings["🚨 Critical"].append(result)
-                else:
-                    result.cvss_score = max(CVSS_SCORES.get(pat, 7.0) for pat in matched_patterns)
-                    findings["🛑 High"].append(result)
-            elif result.status_code == 200 and not is_false_positive:
-                result.cvss_score = CVSS_SCORES["200_ok_no_auth"]
-                findings["⚠️ Medium"].append(result)
-            else:
-                result.cvss_score = CVSS_SCORES["error_only"]
-                findings["ℹ️ Low"].append(result)
-
-        report = [
-            "# API Security Assessment - BOLA Report",
-            "## Executive Summary",
-            f"- **Target**: {self._get_base_url(results)}",
-            f"- **Scan Date**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            "### Risk Distribution",
-            "| Severity | Count | Description |",
-            "|----------|-------|-------------|",
-            "| 🚨 Critical | {} | Multiple sensitive items exposed |".format(len(findings["🚨 Critical"])),
-            "| 🛑 High | {} | Single sensitive item exposed |".format(len(findings["🛑 High"])),
-            "| ⚠️ Medium | {} | 200 OK on unprotected endpoint |".format(len(findings["⚠️ Medium"])),
-            "| ℹ️ Low | {} | Errors or minor issues |".format(len(findings["ℹ️ Low"])),
-            "\n## Detailed Findings"
-        ]
-
-        for severity in ["🚨 Critical", "🛑 High", "⚠️ Medium", "ℹ️ Low"]:
-            items = findings[severity]
-            if not items:
-                continue
-
-            report.append(f"\n### {severity} Risk Findings")
-            for idx, result in enumerate(items, 1):
-                report.extend([
-                    f"#### Finding {idx}: {result.test_case}",
-                    "| Metric | Value |",
-                    "|--------|-------|",
-                    f"| CVSS Score | {result.cvss_score:.1f} |",
-                    f"| Endpoint | `{result.method} {result.url}` |",
-                    f"| Status Code | {result.status_code} |",
-                    f"| Response Time | {result.response_time:.2f}s |",
-                    f"| Timestamp | {getattr(result, 'timestamp', 'N/A')} |"
-                ])
-
-                if hasattr(result, 'metadata'):
-                    report.extend([
-                        "\n**Matched Patterns**:",
-                        "- " + "\n- ".join(result.metadata["matched_patterns"]),
-                        "\n**Response Preview**:",
-                        f"```json\n{result.metadata['response_preview']}\n```"
-                    ])
-
-                if result.params:
-                    report.append("\n**Request Parameters:**")
-                    report.append(f"```json\n{json.dumps(result.params, indent=2)}\n```")
-
-                report.append("---")
-
-        report.extend([
-            "\n## Remediation Recommendations",
-            "1. **Access Control**",
-            "   - Implement role-based access control (RBAC)",
-            "   - Validate ownership for object access\n",
-            "2. **Data Protection**",
-            "   - Encrypt sensitive data at rest and in transit",
-            "   - Use UUIDs instead of sequential IDs\n",
-            "3. **Monitoring**",
-            "   - Log all authorization attempts",
-            "   - Implement anomaly detection for bulk access\n",
-            "\n## Scan Details",
-            f"- Total Endpoints Tested: {len({(r.method, r.url) for r in results})}",
-            f"- Total Test Cases Executed: {len(results)}",
-            "- Scan Configuration:",
-            f"  - Sensitive Data Patterns: {len(SENSITIVE_PATTERNS)}",
-            f"  - False Positive Filters: {len(FALSE_POSITIVE_PATTERNS)}"
-        ])
-
-        return "\n".join(report)
-
+   
     def _get_base_url(self, results):
         if not results:
             return "N/A"
         parsed = urlparse(results[0].url)
         return f"{parsed.scheme}://{parsed.netloc}"
             
-    def save_report(self, results: List[TestResult], path: str):
-        Path(path).write_text(self.generate_report(results), encoding='utf-8')
+    def save_report(self, path: str, fmt: str = "markdown"):
+        ReportGenerator(self.issues, scanner="Bola", base_url=self.base_url).save(path, fmt=fmt)
+
 
 if __name__=='__main__':
     import argparse
@@ -330,14 +256,17 @@ if __name__=='__main__':
     auditor = BOLAAuditor(session)
     spec = auditor.load_swagger(args.swagger)
     if spec is None:
-        import sys; sys.exit("❌ Swagger cannot be loaded.")
+        import sys; sys.exit("Swagger cannot be loaded.")
     endpoints = auditor.get_object_endpoints(spec)
     if not endpoints:
         logger.warning("No object endpoints found.")
     results = []
     for ep in endpoints:
         results.extend(auditor.test_endpoint(args.base_url, ep))
-    report = auditor.generate_report(results)
+    
+    
+    auditor.issues = [r.to_dict() for r in results]  
+    report = auditor.generate_report()
     print(report)
-    auditor.save_report(results, args.output)
+    auditor.save_report(args.output)
     print(f"\nReport saved: {args.output}")

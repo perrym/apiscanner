@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
+from report_utils import ReportGenerator
 
 import requests
 
@@ -198,54 +199,14 @@ class BusinessFlowAuditor:
         return self._issues
 
     def generate_report(self, fmt: str = "markdown") -> str:
-        if not self._issues:
-            return "No abuse of business flows detected."
+        gen = ReportGenerator(self._issues, scanner="BusinessFlows", base_url=self.base_url)
+        return gen.generate_markdown() if fmt == "markdown" else gen.generate_json()
 
-        if fmt == "json":
-            return json.dumps(self._issues, indent=2)
+    def save_report(self, path: str, fmt: str = "markdown"):
+        ReportGenerator(self._issues, scanner="BusinessFlows", base_url=self.base_url).save(path, fmt=fmt)
 
-        # Statistics
-        total_issues = len(self._issues)
-        by_severity = defaultdict(int)
-        for issue in self._issues:
-            by_severity[issue["severity"]] += 1
-
-        lines = [
-            "# API Security Audit – Sensitive Business Flows (API6:2023)",
-            f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            f"Tested URL: {self.base_url}",
-            "\n## Summary",
-            f"- Total issues found: {total_issues}",
-            f"- Critical: {by_severity.get('Critical', 0)}",
-            f"- High: {by_severity.get('High', 0)}",
-            f"- Medium: {by_severity.get('Medium', 0)}",
-            f"- Low: {by_severity.get('Low', 0)}",
-            "\n## Findings",
-        ]
-
-        by_sev: Dict[str, List[Issue]] = defaultdict(list)
-        for issue in self._issues:
-            by_sev[issue["severity"]].append(issue)
-
-        for severity in ("Critical", "High", "Medium", "Low"):
-            if not by_sev[severity]:
-                continue
-            lines.append(f"\n### {severity} risks ({len(by_sev[severity])})")
-            for issue in by_sev[severity]:
-                lines.append(f"#### {issue['flow']} – {issue['endpoint']}")
-                lines.append(f"- **Description**: {issue['description']}")
-                lines.append(f"- **Timestamp**: {issue['timestamp']}")
-                if issue.get("request"):
-                    lines.append("- **Request data**:")
-                    lines.append(f"  ```json\n  {json.dumps(issue['request'], indent=2)}\n  ```")
-                if issue.get("response_headers") is not None:
-                    lines.append("- **Response headers**:")
-                    lines.append(f"  ```json\n  {json.dumps(dict(issue['response_headers']), indent=2)}\n  ```")
-                if issue.get("response_body") is not None:
-                    lines.append("- **Response body**:")
-                    lines.append(f"  ```\n  {issue['response_body']}\n  ```")
-        return "\n".join(lines)
-
+    
+    
     def _log(self, flow: Flow, desc: str, sev: str, req: Optional[dict] = None, resp: Optional[requests.Response] = None):
         with self._lock:
             self._issues.append({

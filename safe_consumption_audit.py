@@ -21,11 +21,12 @@ from __future__ import annotations
 import json
 import ssl
 import socket
+import urllib3
 import urllib.parse as urlparse
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Optional
 import re
 import time
 import requests
@@ -33,6 +34,10 @@ from tqdm import tqdm
 from colorama import Fore, Style  # Optioneel voor kleur
 import concurrent.futures
 from functools import partial
+import logging 
+from report_utils import ReportGenerator
+
+logging.getLogger("urllib3").setLevel(logging.CRITICAL)
 
 Issue = Dict[str, Any]
 
@@ -51,12 +56,14 @@ class SafeConsumptionAuditor:
     HPP_PARAMS = ['id', 'q']
     SSRF_PAYLOADS = ['http://169.254.169.254/latest/meta-data/', 'file:///etc/passwd', 'gopher://127.0.0.1:6379/_PING']
     GRAPHQL_INTROSPECTION_QUERY = '{ __schema { types { name } } }'
-
-    def __init__(self, session: Optional[requests.Session] = None, timeout: int = 8):
+    
+    def __init__(self, base_url: str, session: Optional[requests.Session] = None, timeout: int = 8):
+        self.base_url = base_url.rstrip('/')
         self.session = session or self._create_secure_session()
         self.timeout = timeout
-        self.issues: List[Issue] = []
+        self.issues: List[Dict[str, Any]] = []
         self.rate_limit = 0.5  # seconds between requests
+
 
     def _create_secure_session(self) -> requests.Session:
         sess = requests.Session()
@@ -143,18 +150,19 @@ class SafeConsumptionAuditor:
     def _test_basic_security(self, host: str):
         print(f"[INFO] Basic security test for {host}")
         try:
-            url = f"https://{host}"
+            url = self.base_url  # gebruik altijd de base_url
             r = self.session.get(url, timeout=self.timeout)
             if r.status_code >= 400:
                 self._log('Basic security fail', url, 'Medium', response_sample=r.text)
         except Exception as e:
             self._log('Basic security error', host, 'Medium')
 
+
     def _test_crlf_injection(self, host: str):
         print(f"[INFO] CRLF Injection tests for {host}")
         for payload in self.CRLF_PAYLOADS:
             try:
-                url = f"https://{host}/?q={payload}"
+                url = f"{self.base_url}/?q={payload}"
                 r = self.session.get(url, timeout=self.timeout)
                 if 'evil' in r.text.lower():
                     self._log('CRLF Injection', url, 'High', payload=payload, response_sample=r.text)
@@ -165,7 +173,7 @@ class SafeConsumptionAuditor:
         print(f"[INFO] HTTP Parameter Pollution tests for {host}")
         for param in self.HPP_PARAMS:
             try:
-                url = f"https://{host}/?{param}=1&{param}=2"
+                url = f"{self.base_url}/?{param}=1&{param}=2"
                 r = self.session.get(url, timeout=self.timeout)
                 if ',' in r.text:
                     self._log('HPP detected', url, 'Medium', response_sample=r.text)
@@ -196,16 +204,18 @@ class SafeConsumptionAuditor:
         print(f"[INFO] Kubernetes API test for {host}")
         try:
             for port in [6443, 2379]:
-                r = self.session.get(f"https://{host}:{port}/version", timeout=self.timeout, verify=False)
+                url = f"{self.base_url}:{port}/version"
+                r = self.session.get(url, timeout=self.timeout, verify=False)
                 if r.status_code == 200:
                     self._log('Kubernetes API open', f"{host}:{port}", 'High', response_sample=r.text)
         except:
             pass
 
+
     def _test_graphql_introspection(self, host: str):
         print(f"[INFO] GraphQL introspection test for {host}")
         try:
-            url = f"https://{host}/graphql"
+            url = f"{self.base_url}/graphql"
             r = self.session.post(url, json={'query': self.GRAPHQL_INTROSPECTION_QUERY}, timeout=self.timeout)
             if 'data' in r.json():
                 self._log('GraphQL introspection available', url, 'Medium', response_sample=str(r.json()))
@@ -215,7 +225,7 @@ class SafeConsumptionAuditor:
     def _test_sensitive_data_exposure(self, host: str):
         print(f"[INFO] Sensitive data exposure test for {host}")
         try:
-            url = f"https://{host}/api/v1/config"
+            url = f"{self.base_url}/api/v1/config"
             r = self.session.get(url, timeout=self.timeout)
             for term in ['password', 'secret', 'token']:
                 if term in r.text.lower():
@@ -281,22 +291,25 @@ class SafeConsumptionAuditor:
 
                 except Exception as e:
                     self._log('Endpoint testing failed', f'{url} - {e}', 'Medium')
-                    print(f"{Fore.RED}  ✗ Error: {e}{Style.RESET_ALL}")
+                    print(f"{Fore.RED}   Error: {e}{Style.RESET_ALL}")
 
         print(f"{Fore.CYAN}[INFO] Scan completed. Found {len(self.issues)} issues.{Style.RESET_ALL}")
         return self.issues
 
     def generate_report(self, fmt: str = 'markdown') -> str:
-        if not self.issues:
-            return 'No issues found.'
-        if fmt == 'json':
-            return json.dumps({'meta': {'date': datetime.now().isoformat()}, 'findings': self.issues}, indent=2)
-        lines = ['# Safe Consumption Report', f"Scan date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"]
-        for entry in self.issues:
-            line = f"- [{entry['severity']}] {entry['issue']} @ {entry['target']}"
-            if 'payload' in entry:
-                line += f" | payload: {entry['payload']}"
-            if 'response_sample' in entry:
-                line += f" | response: {entry['response_sample']!r}"
-            lines.append(line)
+        return ReportGenerator(
+            issues=self.issues,
+            scanner="SafeConsumption",
+            base_url=self.base_url
+        ).generate_markdown() if fmt == "markdown" else ReportGenerator(
+            issues=self.issues,
+            scanner="SafeConsumption",
+            base_url=self.base_url
+        ).generate_json()
+
+
         return '\n'.join(lines)
+
+    def save_report(self, path: str, fmt: str = 'markdown'):
+        ReportGenerator(self.issues, scanner="SafeConsumption", base_url=self.base_url).save(path, fmt=fmt)
+

@@ -10,6 +10,7 @@ import json
 from datetime import datetime
 from urllib.parse import urljoin
 from copy import deepcopy
+from report_utils import ReportGenerator
 
 # Configure debug logging
 logging.basicConfig(level=logging.DEBUG, format='[OPA DEBUG] %(message)s')
@@ -285,33 +286,16 @@ class ObjectPropertyAuditor:
         logging.warning(f"Found issue: {issue_type} at {endpoint} ({severity})")
 
     def generate_report(self, fmt="markdown"):
-        """Generate audit report"""
-        if not self.issues:
-            return "No property-level authorization issues found."
-            
-        if fmt == "markdown":
-            report = [
-                "# Broken Object Property Level Authorization Report",
-                f"**API Base URL**: {self.base_url}",
-                f"**Scan Date**: {datetime.now().isoformat()}",
-                f"**Total Issues Found**: {len(self.issues)}",
-                "\n## Issues\n"
-            ]
-            
-            for issue in self.issues:
-                report.append(f"### {issue['type']} - {issue['severity']}")
-                report.append(f"- **Endpoint**: `{issue['endpoint']}`")
-                report.append(f"- **Description**: {issue['description']}")
-                
-                if issue.get('data'):
-                    report.append("- **Evidence**:")
-                    report.append(f"```json\n{json.dumps(issue['data'], indent=2)}\n```")
-                
-                report.append("")
-            
-            return "\n".join(report)
-        else:
-            return json.dumps(self.issues, indent=2)
+        gen = ReportGenerator(
+            issues=self.issues,
+            scanner="ObjectProperty (API03)",
+            base_url=self.base_url
+        )
+        return gen.generate_markdown() if fmt == "markdown" else gen.generate_json()
+
+    def save_report(self, path: str, fmt: str = "markdown"):
+        ReportGenerator(self.issues, scanner="ObjectProperty (API03)", base_url=self.base_url).save(path, fmt=fmt)
+
 
 if __name__ == "__main__":
     # Test with Swagger-style endpoint

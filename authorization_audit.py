@@ -14,6 +14,7 @@ import base64
 import re
 from typing import Tuple
 from collections import Counter
+from report_utils import ReportGenerator
 
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -392,106 +393,20 @@ class AuthorizationAuditor:
             "timestamp": datetime.now().isoformat()
         })
         
-        
     def generate_report(self, output_format: str = "markdown"):
-        """Generate report with cloud-specific findings"""
-        if not self.authz_issues:
-            return "No authorization issues found"
-
-        if output_format == "json":
-            return json.dumps({
-                "meta": {
-                    "scan_date": datetime.now().isoformat(),
-                    "target": self.base_url,
-                    "cloud_detected": self._detect_cloud_provider()
-                },
-                "findings": self.authz_issues
-            }, indent=2)
-        return self._generate_markdown_report()
-
-    def _generate_markdown_report(self) -> str:
-         # 0. Bereken samenvatting
-        counts = Counter(iss["severity"] for iss in self.authz_issues)
-        high_eps = sorted({iss["url"] for iss in self.authz_issues if iss["severity"] == "High"})
-
-        # 1. Header + samenvatting
-        md_lines = [
-            f"# Authorization Audit Report for {self.base_url}",
-            "",
-            "## Summary",
-            f"- 🛑 High: {counts['High']} issues",
-            f"- ⚠️ Medium: {counts['Medium']} issues",
-            f"- ℹ️ Low: {counts['Low']} issues",
-        ]
-        if high_eps:
-            md_lines += ["", "### Endpoints with High-severity issues"]
-            md_lines += [f"- `{ep}`" for ep in high_eps]
-        md_lines.append("")  # lege regel vóór details
-
-        # 2. Organiseer issues per endpoint
-        per_endpoint: Dict[str, List[Dict]] = {}
-        for issue in self.authz_issues:
-            per_endpoint.setdefault(issue["url"], []).append(issue)
-
-        # 3. Voor elke endpoint: bestaande grouped-logic
-        for url, issues in per_endpoint.items():
-            md_lines.append(f"## Endpoint: `{url}`")
-            grouped: Dict[
-                Tuple[str, Optional[str], int, Optional[Tuple]],
-                Dict[str, Any]
-            ] = {}
-
-            for iss in issues:
-                # parse zoals eerder…
-                m = re.match(r"^(?P<base>.+?) - (?P<method>\w+) as (?P<role>\w+)$", iss["description"])
-                if m:
-                    base, method, role = m.group("base"), m.group("method"), m.group("role")
-                else:
-                    base, method, role = iss["description"], None, None
-
-                details = iss.get("details", {})
-                status = details.get("status_code", details.get("status", 0))
-                rh = details.get("response_headers")
-                rh_key = tuple(sorted(rh.items())) if isinstance(rh, dict) else None
-
-                key = (base, role, status, rh_key)
-                grp = grouped.setdefault(key, {
-                    "methods": set(), "first_ts": iss["timestamp"], "details": details
-                })
-                grp["methods"].update([method] if method else [])
-                grp["first_ts"] = min(grp["first_ts"], iss["timestamp"])
-
-            # render grouped entries
-            for (base, role, status, rh_key), info in grouped.items():
-                title = f"{base} as {role}" if role else base
-                methods = ", ".join(sorted(info["methods"])) if info["methods"] else ""
-                ts = info["first_ts"]
-                line = f"- **{title}**"
-                if methods:
-                    line += f" — methods: {methods}"
-                line += f"  \n  _First timestamp_: {ts}"
-                md_lines.append(line)
-
-                md_lines.append("  - Details:")
-                if status:
-                    md_lines.append(f"    - **status_code**: `{status}`")
-                for k, v in info["details"].items():
-                    if k in ("status_code", "response_headers"):
-                        continue
-                    md_lines.append(f"    - **{k}**: `{v}`")
-                if rh_key:
-                    md_lines.append("    - **response_headers:**")
-                    for h, val in rh_key:
-                        md_lines.append(f"      - `{h}`: `{val}`")
-
-            md_lines.append("")  # lege regel tussen endpoints
-
-        return "\n".join(md_lines)
-
-
+        return ReportGenerator(
+            issues=self.authz_issues,
+            scanner="Authorization",
+            base_url=self.base_url
+        ).generate_markdown() if output_format == "markdown" else ReportGenerator(
+            issues=self.authz_issues,
+            scanner="Authorization",
+            base_url=self.base_url
+        ).generate_json()
     
-
-
+    def save_report(self, path: str, fmt: str = "markdown"):
+        ReportGenerator(self.authz_issues, scanner="Authorization", base_url=self.base_url).save(path, fmt=fmt)
+   
     def _detect_cloud_provider(self) -> Optional[str]:
         """Detect if running on a cloud platform"""
         if "amazonaws.com" in self.base_url:

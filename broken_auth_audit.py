@@ -8,6 +8,7 @@ import requests
 import json
 import re
 from datetime import datetime, timedelta
+from report_utils import ReportGenerator
 
 class AuthAuditor:
     """Test Broken Authentication according to OWASP API2:2023"""
@@ -155,48 +156,14 @@ class AuthAuditor:
             'response': response
         })
     
-    def generate_report(self, output_format='markdown'):
-        """Generate a security report in Markdown or JSON."""
-        if not self.auth_issues:
-            return "No broken-authentication issues found. 🎉"
-        if output_format == 'json':
-            return json.dumps(self.auth_issues, indent=2)
-        return self._generate_markdown_report()
     
-    def _generate_markdown_report(self):
-        """Generate a clean Markdown report"""
-        report = [
-            "# API2: Broken Authentication Audit",
-            f"**Date**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            f"**Base URL**: `{self.base_url}`",
-            "",
-            "**Legend**: 🟢 No issues | 🔴 Issue detected",
-            "",
-            "## Summary",
-            f"- 🛑 **Total issues**: {len(self.auth_issues)}",
-            f"- 🔴 **Critical**: {len([i for i in self.auth_issues if i['severity']=='Critical'])}",
-            f"- 🔶 **High**: {len([i for i in self.auth_issues if i['severity']=='High'])}",
-            f"- ⚠️ **Medium**: {len([i for i in self.auth_issues if i['severity']=='Medium'])}",
-            f"- ✅ **Low**: {len([i for i in self.auth_issues if i['severity']=='Low'])}",
-            "",
-            "## Detailed Findings by Severity",]
-        by_sev = {'Critical': [], 'High': [], 'Medium': [], 'Low': []}
-        for issue in self.auth_issues:
-            by_sev[issue['severity']].append(issue)
-        for severity, issues in by_sev.items():
-            if not issues:
-                continue
-            report.append(f"\n### {severity} Risks")
-            for issue in issues:
-                report.append(f"#### `{issue['endpoint']}`")
-                report.append(f"- 🔴 **Description**: {issue['description']}")
-                report.append(f"- ⏱️ **Timestamp**: {issue['timestamp']}")
-                if issue.get('request'):
-                    report.append("- 📥 **Request payload**:")
-                    report.append(f"  ```json\n{json.dumps(issue['request'], indent=2)}\n  ```")
-                if issue.get('response'):
-                    report.append("- 📤 **Response snippet**:")
-                    report.append(f"  ```\n{issue['response']}\n  ```")
-        return "\n".join(report)
-
-# Einde broken_auth_audit.py
+    def generate_report(self, output_format='markdown'):
+        gen = ReportGenerator(
+            issues=self.auth_issues,
+            scanner="BrokenAuth (API02)",
+            base_url=self.base_url
+        )
+        return gen.generate_markdown() if output_format == 'markdown' else gen.generate_json()
+    
+    def save_report(self, path: str, fmt: str = 'markdown'):
+        ReportGenerator(self.auth_issues, scanner="BrokenAuth (API02)", base_url=self.base_url).save(path, fmt=fmt)

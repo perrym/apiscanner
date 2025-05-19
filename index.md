@@ -1,13 +1,15 @@
 ---
 title: APISCAN – OWASP API Security Scanner
 layout: default
+description: Free and open-source API security scanner built in Python. Detects OWASP API Top 10 risks using Swagger/OpenAPI specs with detailed reports in DOCX, JSON, and Markdown formats.
 ---
 
 [![View on GitHub](https://img.shields.io/badge/GitHub-View%20Repository-blue?logo=github)](https://github.com/perrym/apiscanner)
 
 ---
 
-# APISCAN.py 0.8.0-alpha - 
+# APISCAN 0.8.0-alpha - is a free and extensible API security auditing framework, built in Python, that targets the **OWASP API Security Top 10**.  
+# It supports **OpenAPI/Swagger specs**, performs **active scans** on endpoints, and produces nice reports.
 ## OWASP based (REST) API Security Assessment Tool (by Perry Mertens April 2025)
 
 APISCAN is an extensible, modular security auditing framework for REST APIs, based on the OWASP API Security Top 10 (2023) risks.
@@ -49,7 +51,12 @@ APISCAN ondersteunt verschillende authenticatievormen via CLI-argumenten:
 - `--apikey` + `--apikey-header`: API Key-authenticatie
 - `--ntlm domein\gebruiker:pass`: NTLM-authenticatie
 - `--client-cert` + `--client-key`: mTLS met client-certificaten
-- OAuth2 via `--client-id`, `--client-secret`, `--token-url`, `--auth-url`, `--redirect-uri`
+- `--OAuth2 ` 
+-`--client-id`,
+-`--client-secret`,
+-`--token-url`,
+-`--auth-url`, 
+-`--redirect-uri`
 
 **Rapportage**
 - Automatische directory aanmaak per scan (`audit_<api-url>_<datum>/`)

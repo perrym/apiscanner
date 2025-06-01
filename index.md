@@ -1,5 +1,5 @@
 ---
-title: APISCAN – OWASP API Security Scanner
+title: APISCAN – apiscanner OWASP API Security Scanner
 layout: default
 description: Free and open-source API security scanner built in Python. Detects OWASP API Top 10 risks using Swagger/OpenAPI specs with detailed reports in DOCX, JSON, and Markdown formats.
 ---
@@ -8,7 +8,7 @@ description: Free and open-source API security scanner built in Python. Detects 
 
 ---
 
-# APISCAN 0.8.9-alpha - is a free and extensible API security auditing framework, built in Python, that targets the **OWASP API Security Top 10**.  
+# APISCAN apiscanner 0.8.9-alpha - is a free and extensible API security auditing framework, built in Python, that targets the **OWASP API Security Top 10**.  
 # It supports **OpenAPI/Swagger specs**, performs **active scans** on endpoints, and produces nice reports.
 ## OWASP based (REST) API Security Assessment Tool (by Perry Mertens April 2025)
 

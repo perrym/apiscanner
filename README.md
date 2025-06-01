@@ -1,6 +1,6 @@
 # APISCAN.py 0.8.0-alpha - (REST) API Security Assessment Tool (by Perry Mertens April 2025)
 
-# update to 0.8.0-alpha
+# update to 0.8.9-alpha
 APISCAN is an extensible, modular security auditing framework for REST APIs, based on the OWASP API Security Top 10 (2023) risks.
 
 1. Summary

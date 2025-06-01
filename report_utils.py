@@ -37,51 +37,80 @@ class ReportGenerator:
 
         lines = [
             f"## API Security Audit Report by Perry Mertens 2025 (c)",
-            f"Scanner: {self.scanner}",
-            f"Scan Time: {self.timestamp}",
-            f"Base URL: {self.base_url}",
-            "\n### Summary",
+            f"**Scanner**: {self.scanner}",
+            f"**Scan Time**: {self.timestamp}",
+            f"**Base URL**: {self.base_url}",
+            "\n---\n",
+            "###  Summary",
             "| Severity | Count | Description |",
-            "|----------------|-------|-------------------------------|"
+            "|----------|-------|-------------------------------|"
         ]
         for level in ["Critical", "High", "Medium", "Low"]:
             emoji = severity_emojis.get(level, "")
             desc = severity_descriptions.get(level, "")
-            lines.append(f"| {emoji} {level:<10} | {len(grouped[level])} | {desc} |")
+            lines.append(f"| {emoji} {level:<8} | {len(grouped[level])} | {desc} |")
 
-        lines.append("\n### Detailed Findings")
+        lines.append("\n---\n")
+        lines.append("###  Detailed Findings")
+
         for level in ["Critical", "High", "Medium", "Low"]:
             if not grouped[level]:
                 continue
-            lines.append(f"\n{severity_emojis.get(level, '')} **{level} Risk Findings**")
+            lines.append(f"\n#### {severity_emojis.get(level, '')} {level} Risk Findings")
+
             for i, issue in enumerate(grouped[level], 1):
                 title = issue.get('flow') or issue.get('name') or issue.get('issue', 'Unnamed')
-                lines.append(f"\n{i}. **{title}**")
+                lines.append(f"\n**{i}. {title}**")
                 if issue.get('endpoint'):
-                    lines.append(f"   - Endpoint: `{issue['endpoint']}`")
+                    lines.append(f"- **Endpoint**: `{issue['endpoint']}`")
                 if issue.get('status_code'):
-                    lines.append(f"   - Status Code: {issue['status_code']}")
+                    lines.append(f"- **Status Code**: `{issue['status_code']}`")
                 if issue.get('response_time'):
-                    lines.append(f"   - Response Time: {issue['response_time']}s")
-                lines.append(f"   - Timestamp: {issue.get('timestamp', self.timestamp)}")
+                    lines.append(f"- **Response Time**: `{issue['response_time']}s`")
+                lines.append(f"- **Timestamp**: `{issue.get('timestamp', self.timestamp)}`")
                 if issue.get('description'):
-                    lines.append(f"   - Description: {issue['description']}")
+                    lines.append(f"- **Description**: {issue['description']}")
+
+                # Request Headers
+                if issue.get('request_headers'):
+                    headers = json.dumps(issue['request_headers'], indent=2)
+                    if len(headers) > 1000:
+                        headers = headers[:1000] + "\n... (truncated)"
+                    lines.append(f"- **Request Headers**:\n```json\n{headers}\n```")
+
+                # Payload
                 if issue.get('payload'):
-                    lines.append(f"   - Payload:\n     ```text\n     {issue['payload']}\n     ```")
+                    lines.append(f"- **Payload**:\n```text\n{issue['payload']}\n```")
+
+                # Request Parameters
+                if issue.get('request'):
+                    req = issue['request']
+                    if isinstance(req, (dict, list)):
+                        req = json.dumps(req, indent=2)
+                    lines.append(f"- **Request Parameters**:\n```json\n{req}\n```")
+
+                # Response Headers
+                if issue.get('response_headers'):
+                    rh = json.dumps(issue['response_headers'], indent=2)
+                    if len(rh) > 1000:
+                        rh = rh[:1000] + "\n... (truncated)"
+                    lines.append(f"- **Response Headers**:\n```json\n{rh}\n```")
+
+                # Response Body
+                if issue.get('response_body'):
+                    body = issue['response_body']
+                    max_len = 4000 if level in ["Critical", "High"] else 2000
+                    if len(body) > max_len:
+                        body = body[:max_len] + "\n... (truncated)"
+                    lines.append(f"- **Response Body**:\n```json\n{body}\n```")
+
+                # Optional raw response sample
                 if issue.get('response') or issue.get('response_sample'):
                     val = issue.get('response') or issue.get('response_sample')
-                    lines.append(f"   - Response:\n     ```text\n     {val}\n     ```")
-                if issue.get('request'):
-                    request_str = issue['request']
-                    if isinstance(request_str, (dict, list)):
-                        request_str = json.dumps(request_str, indent=2)
-                    lines.append(f"   - Request Parameters:\n     ```json\n     {request_str}\n     ```")
-                if issue.get('response_headers'):
-                    lines.append(f"   - Response Headers:\n     ```json\n     {json.dumps(issue['response_headers'], indent=2)}\n     ```")
-                if issue.get('response_body'):
-                    lines.append(f"   - Response Body:\n     ```\n     {issue['response_body'][:2000]}\n     ```")
+                    lines.append(f"- **Raw Response Sample**:\n```text\n{val}\n```")
 
-        lines.append("\n### Recommendations")
+        lines.append("\n---\n")
+        lines.append("### Recommendations")
         lines.append("1. Validate all input properly.")
         lines.append("2. Use access controls and minimize sensitive exposure.")
         lines.append("3. Enable rate limiting where applicable.")
@@ -89,6 +118,8 @@ class ReportGenerator:
 
         return "\n".join(lines)
 
+
+    
     def generate_json(self) -> str:
         return json.dumps({
             "scanner": self.scanner,

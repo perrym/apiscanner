@@ -15,6 +15,7 @@ Version 0.8.0
   - OAuth2 Authorization Code Flow (interactive browser login)
   - report function is updated.
   - Integrated unified session creation via `configure_authentication()` from `auth_utils.py`.
+  - SWAGGER_GENERATOR is now mulitthreaded and search beter
 
 ## Enhancements:
   - Fully restructured to keep all logic inside the `main()` function:
@@ -35,4 +36,4 @@ Version 0.8.0
 - working on beter reporting (bola done)
 - next version beter reporting function
 - next version PAYLOADS more then 300
-- postman will be fixed in next version
+- seperate tool postman-to-swagger in repostiory postman-to-swagger

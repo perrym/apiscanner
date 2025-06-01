@@ -23,37 +23,100 @@ logger = logging.getLogger("apiscan")
 # Constants
 CALLBACK_PORT = 65432  # Willekeurige vrije poort
 SECRET_KEY = "dummy_key" 
-
 def configure_authentication(args) -> requests.Session:
-    # Configure authentication with permanent SSL bypass for testing
+    """
+    Configures authentication for the API scanner based on command-line arguments.
+
+    Supported flows:
+    - token: Bearer token (--token)
+    - client: OAuth2 Client Credentials (--client-id/--client-secret/--token-url)
+    - basic: Basic Authentication (--username/--password)
+    - ntlm: NTLM Authentication (--username/--password or --ntlm)
+
+    Args:
+        args: Parsed command-line arguments (from argparse)
+
+    Returns:
+        requests.Session: Configured session with authentication
+    """
     sess = requests.Session()
-    
-    # Permanent SSL verification disable met éénmalige waarschuwing
-    sess.verify = False
-    logger.warning("⚠️  SSL certificate verification is permanently disabled - voor testdoeleinden")
-    
-    # Schakel specifieke waarschuwingen uit
-    from urllib3.exceptions import InsecureRequestWarning
-    requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+    sess.verify = False  # Disabled SSL verification for testing purposes
+    logger.warning("SSL verification is disabled (for testing only)")
 
-    # Rest van de authenticatie handlers blijft hetzelfde
-    auth_handlers = [
-        _handle_client_cert_auth,
-        _handle_bearer_token,
-        _handle_oauth_client_credentials,
-        _handle_oauth_authorization_code,
-        _handle_basic_auth,
-        _handle_ntlm_auth,
-        _handle_api_key
-    ]
+    # Backward compatibility: allow --token without --flow
+    if hasattr(args, 'token') and args.token and not hasattr(args, 'flow'):
+        sess.headers.update({"Authorization": _format_bearer_token(args.token)})
+        logger.info("Bearer token used (auto-detected)")
+        return sess
 
-    for handler in auth_handlers:
-        result = handler(args, sess)
-        if result:
-            return result
+    if not hasattr(args, 'flow') or not args.flow:
+        logger.error("No authentication flow specified. Use --flow [token|client|basic|ntlm]")
+        sys.exit(1)
 
-    logger.debug("Geen authenticatie geconfigureerd - anonieme toegang")
-    return sess
+    if args.flow == "token":
+        if not hasattr(args, 'token') or not args.token:
+            logger.error("--flow token requires --token")
+            sys.exit(1)
+        sess.headers.update({"Authorization": _format_bearer_token(args.token)})
+        logger.info("Bearer token authentication configured")
+        return sess
+
+    elif args.flow == "client":
+        required = ['client_id', 'client_secret', 'token_url']
+        missing = [r for r in required if not hasattr(args, r) or not getattr(args, r)]
+        if missing:
+            logger.error(f"--flow client requires: {', '.join(missing)}")
+            sys.exit(1)
+
+        try:
+            client = BackendApplicationClient(client_id=args.client_id)
+            oauth = OAuth2Session(client=client)
+            scope = args.scope.split(" ") if hasattr(args, 'scope') and isinstance(args.scope, str) else getattr(args, 'scope', None)
+
+            token = oauth.fetch_token(
+                token_url=args.token_url,
+                client_id=args.client_id,
+                client_secret=args.client_secret,
+                scope=scope
+            )
+            sess.headers.update({"Authorization": f"Bearer {token['access_token']}"})
+            logger.info(f"OAuth2 token successfully retrieved from {args.token_url}")
+        except Exception as e:
+            logger.error(f"OAuth error: {str(e)}")
+            sys.exit(1)
+        return sess
+
+    elif args.flow == "basic":
+        if not hasattr(args, 'username') or not hasattr(args, 'password') or not args.username or not args.password:
+            logger.error("--flow basic requires --username and --password")
+            sys.exit(1)
+        sess.auth = HTTPBasicAuth(args.username, args.password)
+        logger.info("Basic authentication configured")
+        return sess
+
+    elif args.flow == "ntlm":
+        if hasattr(args, 'ntlm') and args.ntlm:
+            try:
+                domain, user, pwd = re.match(r"(.+)\\(.+):(.+)", args.ntlm).groups()
+                sess.auth = HttpNtlmAuth(f"{domain}\\{user}", pwd)
+            except Exception:
+                logger.error("Invalid NTLM format. Use: DOMAIN\\username:password")
+                sys.exit(1)
+        elif hasattr(args, 'username') and hasattr(args, 'password') and args.username and args.password:
+            sess.auth = HttpNtlmAuth(args.username, args.password)
+        else:
+            logger.error("--flow ntlm requires --ntlm DOMAIN\\user:pwd OR --username and --password")
+            sys.exit(1)
+        logger.info("NTLM authentication configured")
+        return sess
+
+    logger.error(f"Unknown flow type: {args.flow}. Use one of: token, client, basic, ntlm")
+    sys.exit(1)
+
+
+def _format_bearer_token(token: str) -> str:
+    """Formatteert een token als 'Bearer token' indien nodig"""
+    return f"Bearer {token}" if not token.startswith("Bearer ") else token
 
 def _get_ssl_verification_setting(args) -> bool:
     #Determine SSL verification setting from arguments

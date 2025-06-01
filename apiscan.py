@@ -12,6 +12,7 @@ import sys
 import logging
 import time
 from datetime import datetime
+from typing import Dict, List, Set, Any, Optional, Tuple
 from urllib.parse import urljoin
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -132,7 +133,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=f"APISCAN {__version__} API Security Scanner Perry Mertens 2025 (c)")
     parser.add_argument("--url", required=True, help="Base URL of the API")
     parser.add_argument("--swagger", help="Path to Swagger/OpenAPI-JSON")
-    #parser.add_argument("--postman", help="Path to Postman Collection v2.1 JSON")
     parser.add_argument("--token", help="Bearer-token of auth-token")
     parser.add_argument("--basic-auth", help="Basic auth in de vorm gebruiker:password")
     parser.add_argument("--apikey", help="API key voor toegang tot API")
@@ -145,6 +145,8 @@ def main() -> None:
     parser.add_argument("--token-url")
     parser.add_argument("--auth-url")
     parser.add_argument("--redirect-uri")
+    parser.add_argument("--flow", help="Authentication flow to use: token, client, basic, ntlm")
+    parser.add_argument("--scope", help="OAuth2 scope(s), space-separated (optional for --flow client)")
     parser.add_argument("--threads", type=int, default=2)
     parser.add_argument("--cert-password", help="Wachtwoord voor client certificaat")
     parser.add_argument("--debug", action="store_true", help="Enable debug output")
@@ -191,6 +193,11 @@ def main() -> None:
     check_api_reachable(args.url, sess)
 
     # Swagger verwerking
+    if not args.swagger and args.postman:
+        print(f"[+] Generating OpenAPI from Postman collection: {args.postman}")
+        builder = SwaggerBuilder(postman_path=args.postman)
+        args.swagger = builder.build_and_save("converted_from_postman.json")
+        
     if args.swagger:
         try:
             swagger_path = Path(args.swagger).resolve()

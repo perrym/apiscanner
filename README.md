@@ -42,6 +42,17 @@ APISCAN ondersteunt verschillende authenticatievormen via CLI-argumenten:
 - `--client-cert` + `--client-key`: mTLS met client-certificaten
 - OAuth2 via `--client-id`, `--client-secret`, `--token-url`, `--auth-url`, `--redirect-uri`
 
+**Using Oauth2**
+python apiscan.py \
+  --url https://api.com \
+  --swagger ./openapi.json \
+  --flow client \
+  --client-id abc123 \
+  --client-secret xyz456 \
+  --token-url https://dev-xxxxx.okta.com/oauth2/default/v1/token \
+  --scope myapi.read
+
+
 **Rapportage**
 - Automatische directory aanmaak per scan (`audit_<api-url>_<datum>/`)
 - Per API-kwetsbaarheid een apart rapport in `.txt`

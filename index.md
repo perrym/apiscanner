@@ -1,6 +1,7 @@
 ---
 title: APISCAN - Apiscanner OWASP API Security Scanner
 description: Free and open-source API security scanner built in Python...
+<meta name="google-site-verification" content="google58f792b96d0dc10d.html" />
 ---
 
 [![View on GitHub](https://img.shields.io/badge/GitHub-View%20Repository-blue?logo=github)](https://github.com/perrym/apiscanner)

@@ -6,11 +6,11 @@
 <meta charset="utf-8"/>
 <title>APISCAN - OWASP API Security Scanner</title>
 <meta content="width=device-width, initial-scale=1" name="viewport"/>
-<meta content="Free and open-source apiscanner scanner by perrym scanner built in Python that checks for OWASP API Top 10 vulnerabilities." name="description"/>
+<meta content="Open-source apiscanner scanner by perrym scanner built in Python that checks for OWASP API Top 10 vulnerabilities." name="description"/>
 <meta content="index, follow" name="robots"/>
 <meta content="OWASP, API security, Python, REST API , Swagger, OpenAPI, Perry Mertens" name="keywords"/>
 <meta content="APISCANNER – OWASP API Security Scanner" property="og:title"/>
-<meta content="Free Python-based API security auditing tool targeting OWASP API Top 10" property="og:description"/>
+<meta content="Python-based API security auditing tool targeting OWASP API Top 10" property="og:description"/>
 <style>
         body {
             font-family: Arial, sans-serif;
@@ -86,24 +86,6 @@ APISCAN parses OpenAPI/Swagger specifications, runs active tests against API end
 <tr><td>API10: Unsafe Consumption of 3rd-Party APIs</td><td>Injection and SSRF risks through external APIs</td><td><code>safe_consumption_audit.py</code></td></tr>
 </tbody>
 </table>
-
-<p>| OWASP API Risk | APISCAN Coverage | Module |
-|:--|:--|:--|
-| API1: Broken Object Level Authorization | Access control bypass via object ID manipulation | <code>bola_audit.py</code> |
-| API2: Broken Authentication | Weak login protections, session handling flaws, token misuse | <code>broken_auth_audit.py</code> |
-| API3: Broken Object Property Level Authorization | Mass assignment, unauthorized property manipulation | <code>broken_object_property_audit.py</code> |
-| API4: Unrestricted Resource Consumption | Abuse of API endpoints through large/batch requests | <code>resource_consumption_audit.py</code> |
-| API5: Broken Function Level Authorization | Partial coverage via role misuse checks | <code>authorization_audit.py</code> <em>(partial)</em> |
-| API6: Mass Assignment | Partially tested through property injection | <code>broken_object_property_audit.py</code> |
-| API7: Security Misconfiguration | Missing security headers, server misconfiguration detection | <code>misconfiguration_audit.py</code> |
-| API8: Injection | Partially tested via authentication and external API tests | <code>broken_auth_audit.py</code>, <code>safe_consumption_audit.py</code> |
-| API9: Improper Inventory Management | Exposed API documentation and debug endpoints | <code>inventory_audit.py</code> |
-| API10: Unsafe Consumption of 3rd-Party APIs | Injection and SSRF risks through external APIs | <code>safe_consumption_audit.py</code> |</p>
-<ol start="3">
-<li>Module Descriptions
-Each APISCAN module targets specific OWASP API risks with realistic attack simulations. The tests include fuzzing, timing analysis, authorization bypass attempts, response reflection analysis, security header evaluation, and concurrency stress tests.</li>
-</ol>
-<hr/>
 <h3>3. Extra Features (Nieuw)</h3>
 <p><strong>Authenticatie-ondersteuning</strong><br/>
 APISCAN ondersteunt verschillende authenticatievormen via CLI-argumenten:

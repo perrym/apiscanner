@@ -6,11 +6,11 @@
 <meta charset="utf-8"/>
 <title>APISCAN - OWASP API Security Scanner</title>
 <meta content="width=device-width, initial-scale=1" name="viewport"/>
-<meta content="Open-source apiscanner scanner by perrym scanner built in Python that checks for OWASP API Top 10 vulnerabilities." name="description"/>
+<meta content="Free and open-source apiscanner scanner by perrym scanner built in Python that checks for OWASP API Top 10 vulnerabilities." name="description"/>
 <meta content="index, follow" name="robots"/>
-<meta content="OWASP, API security, Python, REST API , Swagger, OpenAPI, Perry Mertens" name="keywords"/>
+<meta content="OWASP, API security, Python, REST API audit, Swagger, OpenAPI, Perry Mertens" name="keywords"/>
 <meta content="APISCANNER – OWASP API Security Scanner" property="og:title"/>
-<meta content="Python-based API security auditing tool targeting OWASP API Top 10" property="og:description"/>
+<meta content="Free Python-based API security auditing tool targeting OWASP API Top 10" property="og:description"/>
 <style>
         body {
             font-family: Arial, sans-serif;
@@ -86,6 +86,12 @@ APISCAN parses OpenAPI/Swagger specifications, runs active tests against API end
 <tr><td>API10: Unsafe Consumption of 3rd-Party APIs</td><td>Injection and SSRF risks through external APIs</td><td><code>safe_consumption_audit.py</code></td></tr>
 </tbody>
 </table>
+
+<ol start="3">
+<li>Module Descriptions
+Each APISCAN module targets specific OWASP API risks with realistic attack simulations. The tests include fuzzing, timing analysis, authorization bypass attempts, response reflection analysis, security header evaluation, and concurrency stress tests.</li>
+</ol>
+<hr/>
 <h3>3. Extra Features (Nieuw)</h3>
 <p><strong>Authenticatie-ondersteuning</strong><br/>
 APISCAN ondersteunt verschillende authenticatievormen via CLI-argumenten:

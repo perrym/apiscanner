@@ -1,216 +1,123 @@
 <!DOCTYPE html>
-
 <html lang="en">
 <head>
-<meta content="VvYq2k5BFp5dpIL6JpQhoe90sWEXZTEBbaynlEKCWRE" name="google-site-verification"/>
-<meta charset="utf-8"/>
-<title>APISCAN - OWASP API Security Scanner</title>
-<meta content="width=device-width, initial-scale=1" name="viewport"/>
-<meta content="Free and open-source apiscanner scanner by perrym scanner built in Python that checks for OWASP API Top 10 vulnerabilities." name="description"/>
-<meta content="index, follow" name="robots"/>
-<meta content="OWASP, API security, Python, REST API audit, Swagger, OpenAPI, Perry Mertens" name="keywords"/>
-<meta content="APISCANNER – OWASP API Security Scanner" property="og:title"/>
-<meta content="Free Python-based API security auditing tool targeting OWASP API Top 10" property="og:description"/>
-<style>
-        body {
-            font-family: Arial, sans-serif;
-            margin: 2rem auto;
-            max-width: 960px;
-            padding: 1rem;
-            line-height: 1.6;
-            background-color: #f9f9f9;
-            color: #333;
-        }
-        h1, h2, h3 {
-            color: #2c3e50;
-        }
-        pre, code {
-            background-color: #f4f4f4;
-            padding: 0.3rem 0.6rem;
-            border-radius: 4px;
-            font-family: Consolas, monospace;
-        }
-        table {
-            border-collapse: collapse;
-            width: 100%;
-            margin-top: 1rem;
-        }
-        table, th, td {
-            border: 1px solid #ccc;
-        }
-        th, td {
-            padding: 0.6rem;
-            text-align: left;
-        }
-        a {
-            color: #0077cc;
-        }
+    <meta charset="UTF-8">
+	<meta content="VvYq2k5BFp5dpIL6JpQhoe90sWEXZTEBbaynlEKCWRE" name="google-site-verification"/>
+    <title>APISCAN – OWASP API Security Scanner</title>
+    <meta name="description" content="Free and extensible Python-based API security scanner targeting the OWASP API Top 10.">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="index, follow">
+    <meta name="keywords" content="API security, OWASP, Swagger, OpenAPI, Python, REST API scanning, Perry Mertens">
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 960px; margin: 2rem auto; padding: 1rem; line-height: 1.6; }
+        h1, h2, h3 { color: #333; }
+        table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+        th, td { border: 1px solid #ccc; padding: 0.5rem; text-align: left; }
+        th { background-color: #f2f2f2; }
+        pre { background: #f6f8fa; padding: 1rem; border-radius: 5px; overflow-x: auto; }
+        code { background: #eee; padding: 2px 4px; border-radius: 3px; }
+        a { color: #0366d6; text-decoration: none; }
     </style>
 </head>
 <body>
-<hr/>
-<p>title: APISCAN - Apiscanner OWASP API Security Scanner</p>
-<h2>description: Free and open-source API security scanner built in Python...</h2>
-<p><a href="https://github.com/perrym/apiscanner"><img alt="View on GitHub" src="https://img.shields.io/badge/GitHub-View%20Repository-blue?logo=github"/></a></p>
-<hr/>
-<h1>APISCAN apiscanner 0.8.9-alpha - is a free and extensible API security auditing framework, built in Python, that targets the <strong>OWASP API Security Top 10</strong>.</h1>
-<h1>It supports <strong>OpenAPI/Swagger specs</strong>, performs <strong>active scans</strong> on endpoints, and produces nice reports.</h1>
-<h2>OWASP based (REST) API Security Assessment Tool (by Perry Mertens April 2025)</h2>
-<p>APISCAN is an extensible, modular security auditing framework for REST APIs, based on the OWASP API Security Top 10 (2023) risks.</p>
-<ol>
-<li><p>Summary
-APISCAN is an extensible and modular Python-based security scanner for REST APIs. 
-It automates the detection of vulnerabilities based on the OWASP API Security Top 10 (2023) standard. 
-APISCAN parses OpenAPI/Swagger specifications, runs active tests against API endpoints, and produces clear reports in Markdown, JSON, and CSV formats. It focuses on realistic attack simulation techniques, evidence-based findings, and extensibility for future expansion.</p></li>
-<li></li>
-</ol>
-<h3>OWASP API Security Top 10 Coverage</h3>
-<table>
-<thead>
-<tr>
-<th>OWASP API Risk</th>
-<th>APISCAN Coverage</th>
-<th>Module</th>
-</tr>
-</thead>
-<tbody>
-<tr><td>API1: Broken Object Level Authorization</td><td>Access control bypass via object ID manipulation</td><td><code>bola_audit.py</code></td></tr>
-<tr><td>API2: Broken Authentication</td><td>Weak login protections, session handling flaws, token misuse</td><td><code>broken_auth_audit.py</code></td></tr>
-<tr><td>API3: Broken Object Property Level Authorization</td><td>Mass assignment, unauthorized property manipulation</td><td><code>broken_object_property_audit.py</code></td></tr>
-<tr><td>API4: Unrestricted Resource Consumption</td><td>Abuse of API endpoints through large/batch requests</td><td><code>resource_consumption_audit.py</code></td></tr>
-<tr><td>API5: Broken Function Level Authorization</td><td>Partial coverage via role misuse checks</td><td><code>authorization_audit.py</code> <em>(partial)</em></td></tr>
-<tr><td>API6: Mass Assignment</td><td>Partially tested through property injection</td><td><code>broken_object_property_audit.py</code></td></tr>
-<tr><td>API7: Security Misconfiguration</td><td>Missing security headers, server misconfiguration detection</td><td><code>misconfiguration_audit.py</code></td></tr>
-<tr><td>API8: Injection</td><td>Partially tested via authentication and external API tests</td><td><code>broken_auth_audit.py</code>, <code>safe_consumption_audit.py</code></td></tr>
-<tr><td>API9: Improper Inventory Management</td><td>Exposed API documentation and debug endpoints</td><td><code>inventory_audit.py</code></td></tr>
-<tr><td>API10: Unsafe Consumption of 3rd-Party APIs</td><td>Injection and SSRF risks through external APIs</td><td><code>safe_consumption_audit.py</code></td></tr>
-</tbody>
-</table>
+    <h1>🔐 APISCAN – OWASP API Security Scanner</h1>
+    <p><strong>Version:</strong> 0.8.9-alpha<br>
+    <strong>Author:</strong> Perry Mertens<br>
+    <strong>License:</strong> MIT</p>
 
-<ol start="3">
-<li>Module Descriptions
-Each APISCAN module targets specific OWASP API risks with realistic attack simulations. The tests include fuzzing, timing analysis, authorization bypass attempts, response reflection analysis, security header evaluation, and concurrency stress tests.</li>
-</ol>
-<hr/>
-<h3>3. Extra Features (Nieuw)</h3>
-<p><strong>Authenticatie-ondersteuning</strong><br/>
-APISCAN ondersteunt verschillende authenticatievormen via CLI-argumenten:
-- <code>--token</code>: Bearer tokens
-- <code>--basic-auth gebruiker:wachtwoord</code>
-- <code>--apikey</code> + <code>--apikey-header</code>: API Key-authenticatie
-- <code>--ntlm domein\gebruiker:pass</code>: NTLM-authenticatie
-- <code>--client-cert</code> + <code>--client-key</code>: mTLS met client-certificaten
-- <code>--OAuth2</code> 
--<code>--client-id</code>,
--<code>--client-secret</code>,
--<code>--token-url</code>,
--<code>--auth-url</code>, 
--<code>--redirect-uri</code></p>
-<p><strong>Rapportage</strong>
-- Automatische directory aanmaak per scan (<code>audit_&lt;api-url&gt;_&lt;datum&gt;/</code>)
-- Per API-kwetsbaarheid een apart rapport in <code>.txt</code>
-- Samenvattend rapport <code>api_summary_report.txt</code>
-- Automatische generatie van een professioneel <code>.docx</code> eindrapport</p>
-<p><strong>Gebruiksvriendelijke CLI</strong>
-- Automatische validatie van Swagger-bestanden
-- Herbruikbare sessieconfiguratie met threading-optimalisatie</p>
-<p><strong>Documentatieformaten</strong>
-- Markdown
-- JSON
-- DOCX
-- TXT logs</p>
-<hr/>
-<h3>Voorbeeldgebruik</h3>
-<p><code>bash
-python apiscan.py --url https://api.example.com \
+    <h2>Overview</h2>
+    <p><strong>APISCAN</strong> is a free, extensible API security auditing tool built in Python that targets the 
+    <a href="https://owasp.org/www-project-api-security/">OWASP API Security Top 10 (2023)</a>. It supports Swagger/OpenAPI specifications, performs active vulnerability scans, and generates clear reports in multiple formats.</p>
+
+    <h2>Features</h2>
+    <ul>
+        <li>Active scanning of REST APIs using OpenAPI/Swagger definitions.</li>
+        <li>Realistic vulnerability detection (e.g., fuzzing, timing, injection, SSRF).</li>
+        <li>Modular audits for each OWASP API Top 10 risk.</li>
+        <li>CLI with extensive authentication support.</li>
+        <li>Output in DOCX, Markdown, JSON, and TXT.</li>
+    </ul>
+
+    <h2>Supported Risks</h2>
+    <table>
+        <thead>
+            <tr><th>OWASP API Risk ID</th><th>Description</th><th>Module</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>API1</td><td>Broken Object Level Authorization</td><td><code>bola_audit.py</code></td></tr>
+            <tr><td>API2</td><td>Broken Authentication</td><td><code>broken_auth_audit.py</code></td></tr>
+            <tr><td>API3</td><td>Broken Object Property Level Authorization</td><td><code>broken_object_property_audit.py</code></td></tr>
+            <tr><td>API4</td><td>Unrestricted Resource Consumption</td><td><code>resource_consumption_audit.py</code></td></tr>
+            <tr><td>API5</td><td>Broken Function Level Authorization</td><td><code>authorization_audit.py</code></td></tr>
+            <tr><td>API6</td><td>Sensitive Business Logic</td><td><code>business_flow_audit.py</code></td></tr>
+            <tr><td>API7</td><td>SSRF (Server-Side Request Forgery)</td><td><code>ssrf_audit.py</code></td></tr>
+            <tr><td>API8</td><td>Security Misconfiguration</td><td><code>misconfiguration_audit.py</code></td></tr>
+            <tr><td>API9</td><td>Improper Inventory Management</td><td><code>inventory_audit.py</code></td></tr>
+            <tr><td>API10</td><td>Unsafe Consumption of 3rd-Party APIs</td><td><code>safe_consumption_audit.py</code></td></tr>
+        </tbody>
+    </table>
+
+    <h2>Example Usage</h2>
+    <pre><code>python apiscan.py --url https://api.example.com \
   --swagger openapi.json \
   --token eyJhbGciOi... \
-  --threads 5
-</code></p>
-<p><strong>Extra authenticatievoorbeelden:</strong></p>
-<p><code>bash
---apikey abcdef123456 --apikey-header X-API-Key
---basic-auth admin:password
---ntlm DOMAIN\\user:pass
---client-cert cert.pem --client-key key.pem
---client-id myapp --client-secret s3cr3t --token-url https://login/token --auth-url https://login/auth --redirect-uri http://localhost
-</code></p>
-<ol start="4">
-<li>Conclusion and Future Enhancements
-APISCAN currently provides strong coverage for the most critical API security risks. Future enhancements could include more in-depth Injection testing (SQL, SSTI), advanced function-level authorization validation, and fuzzing based on OpenAPI schemas.</li>
-</ol>
-<p>APISCAN supports OpenAPI/Swagger specification parsing, advanced payload generation, concurrent testing, and evidence-based reporting.</p>
-<h2>Install first  python requirements</h2>
-<p>pip install -r requirements.txt</p>
-<h2>Start scanner without or with token</h2>
-<p>python apiscan.py --url http://sample.com --token eyJhbGciOiJSUzI1NiJ9JvbGUiOiJ1c2VyIn0XzR-FysKYIa-iV4lxAffjlAitMKyxVqRfVAf2aCXMJLspQxSXMPlAgYoVI9OiRIV<em>ptJphS7IsQyNwgOCPQHIFhR</em>mCog4BVax3ZEHk1WM<em>dp4p4sfQ9DqfXCwyVUZ3t8z-WkxNxYbFpj4rPtEp18T0zWdlnZS3nBp31K9y4qidJog89JqxNRVTlFugX0ySdUSlafwLoiSUeUqwOKkC8qIGTfc4uCvFAHF32pXPc1LzWJnMC</em>2ZtK5yMYlmWAHBjcCQ6HQTKeW7mPFibYVq4lMT2jjiBTLBg<em>xUdEnN8fFLy</em>NH0HogFZZX5c6Dph67s80bqHIoewMXETrTS1c1-mQ --swagger openapi-spec.json </p>
-<p>APISCAN 0.2.0-alpha API Security Scanner Perry Mertens 2025</p>
-<p>options:
-  -h, --help            show this help message and exit
-  --url URL             Base URL of the API
-  --swagger SWAGGER     Path to Swagger/OpenAPI-JSON
-  --postman POSTMAN     Path to Postman Collection v2.1 JSON
-  --token TOKEN         Bearer-token of auth-token
-  --basic-auth BASIC<em>AUTH
-                        Basic auth in de vorm gebruiker:password
-  --apikey APIKEY       API key voor toegang tot API
-  --apikey-header APIKEY</em>HEADER
-                        Headernaam voor de API key
-  --ntlm NTLM           NTLM auth in de vorm domein\gebruiker:pass
-  --client-cert CLIENT<em>CERT
-                        Pad naar client certificaat (PEM)
-  --client-key CLIENT</em>KEY
-                        Pad naar private key voor client certificaat (PEM)
-  --client-id CLIENT<em>ID
-  --client-secret CLIENT</em>SECRET
-  --token-url TOKEN<em>URL
-  --auth-url AUTH</em>URL
-  --redirect-uri REDIRECT<em>URI
-  --threads THREADS
-  --cert-password CERT</em>PASSWORD
-                        Wachtwoord voor client certificaat
-  --debug               Enable debug output
-  --api1                Voer alleen API1-audit uit
-  --api2                Voer alleen API2-audit uit
-  --api3                Voer alleen API3-audit uit
-  --api4                Voer alleen API4-audit uit
-  --api5                Voer alleen API5-audit uit
-  --api6                Voer alleen API6-audit uit
-  --api7                Voer alleen API7-audit uit
-  --api8                Voer alleen API8-audit uit
-  --api9                Voer alleen API9-audit uit
-  --api10               Voer alleen API10-audit uit</p>
-<h1>When you are missing a swagger file without or with token</h1>
-<p>python swagger<em>generator.py --url https://sample.com  --output api</em>spec.json --depth 3 --aggressive        </p>
-<p>URL Swagger Generator by Perry Mertens 2024</p>
-<p>options:
-  -h, --help            show this help message and exit
-  --url URL             Base URL
-  --output OUTPUT       Output file
-  --depth DEPTH         Crawl depth
-  --aggressive          Aggressive mode
-  --username USERNAME   Basic auth username
-  --password PASSWORD   Basic auth password
-  --token TOKEN         Bearer token for authentication
-  --token-header TOKEN<em>HEADER
-                        Header name for token
-  --login-url LOGIN</em>URL
-                        Login form URL
-  --login-data LOGIN_DATA
-                        Login form data as JSON string
-  --header HEADER       Custom header (format: Header-Name:value)</p>
-<h2>Features</h2>
+  --threads 4</code></pre>
+
+    <h3>Authentication Options</h3>
+    <ul>
+        <li><code>--token</code> (Bearer token)</li>
+        <li><code>--basic-auth</code> (username:password)</li>
+        <li><code>--apikey</code> + <code>--apikey-header</code></li>
+        <li><code>--ntlm</code> (domain\user:password)</li>
+        <li><code>--client-cert</code> + <code>--client-key</code> (mTLS)</li>
+        <li><code>--client-id</code>, <code>--client-secret</code>, <code>--token-url</code>, <code>--auth-url</code>, <code>--redirect-uri</code> (OAuth2)</li>
+    </ul>
+
+    <h3>Swagger Generation</h3>
+    <pre><code>python swaggergenerator.py --url https://api.example.com --output openapi.json --depth 3 --aggressive</code></pre>
+
+    <h2>Output</h2>
+    <ul>
+        <li>Individual .txt reports per OWASP test</li>
+        <li>Summary report: <code>api_summary_report.txt</code></li>
+        <li>Professional .docx report</li>
+        <li>Session logs</li>
+    </ul>
+
+    <h2>Installation</h2>
+    <pre><code>pip install -r requirements.txt</code></pre>
+
+    <h2>License</h2>
+    <p>This project is licensed under the MIT License – see the LICENSE file.</p>
+
+    <h2>Disclaimer</h2>
+    <p>This tool is intended for educational and authorized security testing purposes only. Unauthorized use is prohibited.</p>
+
+    <h2>Contact</h2>
+    <p>Email: <a href="mailto:pamsniffer@gmail.com">pamsniffer@gmail.com</a><br>
+       GitHub: <a href="https://github.com/perrym/apiscanner">https://github.com/perrym/apiscanner</a></p>
+<h2>Command-Line Parameters</h2>
 <ul>
-<li>Modular structure per OWASP risk category</li>
-<li>Realistic attack simulation (fuzzing, timing attacks, header tampering)</li>
-<li>Clear Markdown, JSON, and txten docx output formats</li>
-<li>Designed for both developers and security auditors</li>
+<li><strong>`--url`</strong>: Base URL of the API</li>
+<li><strong>`--swagger`, `help="Path to Swagger/OpenAPI-JSON`</strong>: Path to Swagger/OpenAPI-JSON</li>
+<li><strong>`--token`, `help="Bearer-token of auth-token`</strong>: Bearer-token of auth-token</li>
+<li><strong>`--basic-auth`</strong>: Basic auth in de vorm gebruiker:password</li>
+<li><strong>`--apikey`</strong>: API key voor toegang tot API</li>
+<li><strong>`--apikey-header`, `default="X-API-Key`</strong>: Headernaam voor de API key</li>
+<li><strong>`--ntlm`</strong>: NTLM auth in de vorm domein\\gebruiker:pass</li>
+<li><strong>`--client-cert`</strong>: </li>
+<li><strong>`--client-key`</strong>: </li>
+<li><strong>`--client-id`</strong>: </li>
+<li><strong>`--client-secret`</strong>: </li>
+<li><strong>`--token-url`</strong>: </li>
+<li><strong>`--auth-url`</strong>: </li>
+<li><strong>`--redirect-uri`</strong>: </li>
+<li><strong>`--flow`</strong>: Authentication flow to use: token, client, basic, ntlm</li>
+<li><strong>`--scope`</strong>: </li>
+<li><strong>`--threads`</strong>: </li>
+<li><strong>`--cert-password`</strong>: Wachtwoord voor client certificaat</li>
+<li><strong>`--debug`</strong>: Enable debug output</li>
+<li><strong>`f"--api{i}`, `help=f"Voer alleen API{i}-audit uit`:</strong>: </li>
 </ul>
-<h2>License</h2>
-<p>This project is licensed under the MIT License - see the <a href="./LICENSE">LICENSE</a> file for details.</p>
-<h2>Disclaimer</h2>
-<p>This tool is intended for educational and authorized security testing purposes only. Unauthorized use against systems without permission is prohibited.</p>
-<h2>Contact</h2>
-<p>For any questions, feedback, or responsible disclosure, please contact: pamsniffer@gmail.com</p>
 </body>
 </html>

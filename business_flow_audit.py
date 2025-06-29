@@ -1,8 +1,8 @@
-#
-# Licensed under the MIT License.
-# Copyright (c) 2025 Perry Mertens
-#
-# See the LICENSE file for full license text.
+##################################
+# APISCAN - API Security Scanner #
+# Licensed under the MIT License #
+# Author: Perry Mertens, 2025    #
+##################################
 from __future__ import annotations
 import argparse
 import json
@@ -79,7 +79,7 @@ class BusinessFlowAuditor:
                         self._endpoint_cache[(method, full_path)] = details
             return flows
         except Exception as e:
-            print(f"⚠️ Error loading Swagger: {e}")
+            print(f" Error loading Swagger: {e}")
             return []
 
     def _generate_body_from_schema(self, endpoint_spec: dict) -> dict:
@@ -198,27 +198,70 @@ class BusinessFlowAuditor:
         
         return self._issues
 
-    def generate_report(self, fmt: str = "markdown") -> str:
-        gen = ReportGenerator(self._issues, scanner="BusinessFlows", base_url=self.base_url)
-        return gen.generate_markdown() if fmt == "markdown" else gen.generate_json()
 
-    def save_report(self, path: str, fmt: str = "markdown"):
-        ReportGenerator(self._issues, scanner="BusinessFlows", base_url=self.base_url).save(path, fmt=fmt)
 
+    def _filtered_issues(self) -> List[Issue]:
+        uniq = {}
+        for it in self._issues:
+            sc = it.get("status_code")
+            if not self._is_processed(type("Resp", (), {"status_code": sc})):
+                continue  # skip 404/422/500 noise
+            key = (it["endpoint"], it["description"], sc)
+            uniq.setdefault(key, it)
+        return list(uniq.values())
+
+    def generate_report(self, fmt: str = "html") -> str:
+        gen = ReportGenerator(
+            self._filtered_issues(),
+            scanner="API6:2023 - Sensitive Business Flows",   # titel in header
+            base_url=self.base_url,
+        )
+        return gen.generate_html() if fmt == "html" else gen.generate_markdown()
     
     
-    def _log(self, flow: Flow, desc: str, sev: str, req: Optional[dict] = None, resp: Optional[requests.Response] = None):
+    def save_report(self, path: str, fmt: str = "html") -> None:
+        ReportGenerator(
+            self._filtered_issues(),
+            scanner="API6:2023 - Sensitive Business Flows",
+            base_url=self.base_url,
+        ).save(path, fmt=fmt)
+    
+    def _log(self,flow: Flow,desc: str,sev: str,req: Optional[dict] = None,resp: Optional[requests.Response] = None,) -> None:
+        """Voeg één bevinding toe; sla over bij ontbrekend HTTP-antwoord."""
+        # Skip wanneer er geen of een “0”-response is
+        if resp is None or getattr(resp, "status_code", 0) in (0, None):
+            return
+
+        url = self._abs_url(flow["url"])
+
+        entry: Issue = {
+            "url": url,
+            "endpoint": url,                             # gebruikt door HTML-rapport
+            "method": flow.get("method", "POST"),
+            "description": desc,
+            "severity": sev,
+            "status_code": getattr(resp, "status_code", None),
+            "timestamp": datetime.now().isoformat(),
+            "request_headers": {},
+            "request_body": None,
+            "response_headers": {},
+            "response_body": "",
+        }
+
+        # Vul request/response-velden als die aanwezig zijn
+        if resp is not None:
+            entry["response_headers"] = dict(resp.headers)
+            entry["response_body"] = resp.text[:2048]
+            if resp.request is not None:
+                entry["request_headers"] = dict(resp.request.headers)
+                entry["request_body"] = resp.request.body
+
+        if req:
+            entry["request"] = req
+
+        # Thread-safe toevoegen
         with self._lock:
-            self._issues.append({
-                "flow": flow.get("name"),
-                "endpoint": self._abs_url(flow["url"]),
-                "description": desc,
-                "severity": sev,
-                "timestamp": datetime.now().isoformat(),
-                "request": req,
-                "response_headers": dict(resp.headers) if resp else {},
-                "response_body": resp.text if resp else ""
-            })
+            self._issues.append(entry)
 
     def _run_tests_for_flow(self, flow: Flow):
         for test in (
@@ -334,16 +377,16 @@ class BusinessFlowAuditor:
             self._log(flow, "Missing CSRF protection - request succeeded without Origin/Referer", "High", resp=r)
 
     def _test_concurrency(self, flow: Flow):
-        def _invoke() -> Optional[requests.Response]:
+        def _invoke():
             return self._send(flow)
 
         with ThreadPoolExecutor(max_workers=self.concurrency) as pool:
-            futures = [pool.submit(_invoke) for _ in range(self.concurrency)]
-            responses = [f.result() for f in as_completed(futures)]
+            responses = [f.result() for f in as_completed(pool.submit(_invoke) for _ in range(self.concurrency))]
 
-        success = [r for r in responses if r and r.status_code == 200]
-        if len(success) == self.concurrency:
-            self._log(flow, f"No throttling at {self.concurrency} parallel requests", "High", resp=success[0])
+        processed = [r for r in responses if self._is_processed(r)]
+        if processed and len(processed) == self.concurrency:
+            self._log(flow, f"No throttling at {self.concurrency} parallel *processed* requests", "High", resp=processed[0])
+
 
     def _test_duplicate_submission(self, flow: Flow):
         r1 = self._send(flow)
@@ -387,11 +430,36 @@ class BusinessFlowAuditor:
                 break
 
     def _test_rate_limit_sequential(self, flow: Flow):
+        """
+        Max 25 opeenvolgende verzoeken:
+        * Stop zodra we een 429/503 zien  → goed afgebroken
+        * Stop zodra we een niet-verwerkte fout zien (404/422/5xx) → test niet relevant
+        * Log pas een issue wanneer er minstens één _verwerkt_ antwoord was
+            en we tóch geen 429/503 kregen.
+        """
+        processed_seen = False
         for _ in range(25):
             r = self._send(flow)
-            if r and r.status_code in {429, 503}:
+            if not r:
+                continue
+
+            if r.status_code in {429, 503}:
+                return  # rate-limiting aanwezig
+
+            if not self._is_processed(r):
+                # Endpoint werd niet echt uitgevoerd; test ongeldig
                 return
-        self._log(flow, "No rate-limiting after 25 rapid requests", "High", resp=r)
+
+            processed_seen = True
+
+        if processed_seen:
+            self._log(
+                flow,
+                "No rate-limiting after 25 rapid *processed* requests",
+                "Medium",
+                resp=r,
+            )
+
 
     def _test_method_override(self, flow: Flow):
         for verb in ("PUT", "DELETE", "PATCH"):
@@ -408,62 +476,3 @@ class BusinessFlowAuditor:
             self._log(flow, "Unexpected field accepted", "Low", noisy, r)
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Audit OWASP API6 – Sensitive Business Flows")
-    parser.add_argument("--url", required=True, help="Base API URL (e.g. https://api.example.com)")
-    parser.add_argument("--swagger", help="URL or path to Swagger/OpenAPI JSON/YAML")
-    parser.add_argument("--flows", help="Path to custom flows (JSON/YAML)")
-    parser.add_argument("--concurrency", type=int, default=20, help="Number of concurrent requests")
-    parser.add_argument("--timeout", type=int, default=10, help="HTTP timeout in seconds")
-    parser.add_argument("--output", choices=["markdown", "json"], default="markdown")
-    args = parser.parse_args()
-
-    sess = requests.Session()
-    
-    # Load swagger spec first if provided
-    swagger_spec = None
-    if args.swagger:
-        try:
-            if args.swagger.startswith(('http://', 'https://')):
-                resp = sess.get(args.swagger, timeout=10)
-                resp.raise_for_status()
-                swagger_spec = resp.json()
-            else:
-                p = Path(args.swagger)
-                if p.suffix.lower() in {".yml", ".yaml"}:
-                    import yaml
-                    swagger_spec = yaml.safe_load(p.read_text(encoding="utf-8"))
-                else:
-                    swagger_spec = json.loads(p.read_text(encoding="utf-8"))
-        except Exception as e:
-            print(f"⚠️ Error loading Swagger: {e}")
-            swagger_spec = None
-
-    auditor = BusinessFlowAuditor(
-        args.url, 
-        session=sess, 
-        concurrency=args.concurrency, 
-        timeout=args.timeout,
-        swagger_spec=swagger_spec
-    )
-
-    flows: List[Flow] = []
-    if args.swagger:
-        flows = auditor.load_swagger(args.swagger)
-    if not flows and args.flows:
-        flows = auditor.load_flows_file(args.flows)
-    if not flows:
-        flows = auditor.discover_business_flows()
-
-    if not flows:
-        raise SystemExit("No testable business flows found!")
-
-    print(f"\n🔍 {len(flows)} flows loaded. Starting tests...")
-    auditor.test_business_flows(flows)
-    report = auditor.generate_report(args.output)
-
-    output_dir = Path(".")  # Output directly to current folder
-    output_dir.mkdir(exist_ok=True)
-    outfile = output_dir / "api_business_flows_report.txt"
-    outfile.write_text(report, encoding="utf-8")
-    print(f"\n📁 Report saved to: {outfile}")

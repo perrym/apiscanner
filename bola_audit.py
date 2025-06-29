@@ -1,8 +1,8 @@
-# 
-# Licensed under the MIT License. 
-# Copyright (c) 2025 Perry Mertens
-#
-# See the LICENSE file for full license text.
+##################################
+# APISCAN - API Security Scanner #
+# Licensed under the MIT License #
+# Author: Perry Mertens, 2025    #
+##################################
 import json
 import re
 import sys
@@ -16,22 +16,24 @@ import time
 from urllib.parse import urlparse
 from datetime import datetime
 from report_utils import ReportGenerator
+from requests import Request
 
-timestamp=datetime.now().isoformat()
+
 
 
 def classify_risk(status_code: int, response_body: str = "") -> str:
-    """Return risk classification based on status code and (optional) response body."""
     if status_code == 200:
-        return "High"  # Access to sensitive data
-    elif status_code == 500:
-        return "Critical"  # Server error, possible vulnerability
+        return "High"            # Ongeautoriseerde data-toegang
+    elif 500 <= status_code < 600:
+        return "Low"             # Server-error, minder urgent
     elif status_code == 403:
-        return "Medium"  # Access correctly denied
+        return "Medium"          # Correct geweigerd
     elif status_code == 400:
-        return "Low"  # Bad input or validation error
+        return "Low"
     elif status_code == 404:
-        return "Low"  # Nonexistent object, normal
+        return "Low"
+    elif status_code == 0:
+        return "Ignore" 
     else:
         return "Low"
 
@@ -54,10 +56,12 @@ class TestResult:
     headers: Optional[dict] = None
     error: Optional[str] = None
     timestamp: Optional[str] = None
+    response_headers: Optional[dict] = None  
 
-    def to_dict(self):  # Zorg dat dit binnen de class valt!
+    def to_dict(self):
         return {
-            "flow": f"{self.method} {self.url}",
+            "method": self.method,
+            "url": self.url,
             "endpoint": self.url,
             "status_code": self.status_code,
             "response_time": self.response_time,
@@ -65,7 +69,9 @@ class TestResult:
             "severity": classify_risk(self.status_code, self.response_sample),
             "timestamp": self.timestamp or datetime.now().isoformat(),
             "request_parameters": self.params or {},
-            "headers": self.headers or {},
+            "request_headers": self.headers or {},
+            "request_body": self.request_sample,
+            "response_headers": self.response_headers or {},
             "response_body": (str(self.response_sample) if self.response_sample else "")
         }
 
@@ -199,6 +205,7 @@ class BOLAAuditor:
         return cases
 
     def test_endpoint(self, base_url:str, endpoint:Dict)->List[TestResult]:
+        #Test a single endpoint with various test cases for BOLA vulnerabilities
         results=[]
         if not endpoint.get('parameters'): return results
         for name,vals in self._generate_test_values(endpoint['parameters']).items():
@@ -207,24 +214,102 @@ class BOLAAuditor:
             results.append(self._test_object_access(base_url,endpoint,name,vals))
         return results
 
-            
-    def _test_object_access(self, base_url, endpoint, name, vals)->TestResult:
+        from datetime import datetime
+    from requests import Request
+
+    def _test_object_access(self,base_url: str,endpoint: dict,name: str,vals: dict) -> TestResult:
+        """
+        Stuur één request naar het opgegeven endpoint en retourneer
+        een TestResult-object met alle relevante gegevens.
+
+        Parameters
+        ----------
+        base_url : root-URL van de API (b.v. https://api.example.com)
+        endpoint : dict met ten minste keys: path, method, parameters
+        name     : beschrijving van deze test-case (b.v. 'leeg_id')
+        vals     : mapping parameter-naam → test-waarde
+        """
+
+        # -------- 1. Request samenstellen --------
+        url = urljoin(base_url, endpoint["path"])
+
+        query_params: dict[str, str] = {}
+        json_body: dict[str, str] = {}
+        headers: dict[str, str] = {"User-Agent": "APISecurityScanner/1.0"}
+
+        for prm in endpoint.get("parameters", []):
+            pname   = prm["name"]
+            loc     = prm.get("in", "query")
+            value   = vals.get(pname, "1")
+
+            if loc == "path":
+                url = url.replace(f"{{{pname}}}", str(value))
+            elif loc == "query":
+                query_params[pname] = value
+            elif loc == "header":
+                headers[pname] = value
+            else:                       # body / cookie / form-data → treat as JSON body
+                json_body[pname] = value
+
+        req = Request(
+            method=endpoint["method"],
+            url=url,
+            headers=headers,
+            params=query_params,
+            json=json_body or None          # None voorkomt onnodige 'null' body
+        )
+        prepared = self.session.prepare_request(req)
+
+        # -------- 2. Verzenden & meten --------
+        start = time.time()
         try:
-            url = urljoin(base_url,endpoint['path'])
-            params,body,headers = {},{}, {'User-Agent':'APISecurityScanner/1.0'}
-            for p in endpoint['parameters']:
-                val=vals.get(p['name'],'1')
-                if p['in']=='path': url=url.replace(f"{{{p['name']}}}",str(val))
-                elif p['in']=='query': params[p['name']]=val
-                elif p['in']=='header': headers[p['name']]=val
-                else: body[p['name']]=val
-            start=time.time()
-            resp=self.session.request(endpoint['method'],url,params=params,headers=headers,json=body or None,timeout=10,allow_redirects=False)
-            rt=time.time()-start
-            vuln = (resp.status_code==200 and (any(re.search(pat,resp.text.lower()) for pat in self.sensitive_data_patterns) or len(resp.content)>10000))
-            return TestResult(name,endpoint['method'],url,resp.status_code,vuln,rt,params,headers,self._sanitize_response(resp.text),str(body))
-        except Exception as e:
-            return TestResult(name,endpoint['method'],base_url+endpoint['path'],error=str(e))
+            resp = self.session.send(
+                prepared,
+                timeout=10,
+                allow_redirects=False
+            )
+            resp_time = time.time() - start
+            error_msg = None
+        except Exception as exc:            # netwerk-timeout, DNS-fout, …
+            resp = None
+            resp_time = time.time() - start
+            error_msg = str(exc)
+
+        # -------- 3. Analyse --------
+        status_code = resp.status_code if resp else 0
+        body_text   = resp.text if resp else ""
+        sample      = self._sanitize_response(body_text)
+
+        contains_sensitive = any(
+            re.search(pat, body_text, re.I)
+            for pat in self.sensitive_data_patterns
+        )
+        large_body = len(body_text) > 10_000
+
+        is_vuln = status_code == 200 and (contains_sensitive or large_body)
+
+        # -------- 4. Resultaat teruggeven --------
+        return TestResult(
+            test_case=name,
+            method=prepared.method,
+            url=prepared.url,
+            status_code=status_code,
+            response_time=resp_time,
+            is_vulnerable=is_vuln,
+            response_sample=sample,
+            request_sample=(
+                prepared.body.decode()
+                if isinstance(prepared.body, (bytes, bytearray))
+                else (prepared.body or "")
+            ),
+            params=query_params,
+            headers=dict(prepared.headers),
+            response_headers=dict(resp.headers) if resp else {},
+            error=error_msg,
+            timestamp=datetime.now().isoformat()
+        )
+      
+    
 
     def _sanitize_response(self,text:str,max_length:int=200)->str:
         if not text: return ''
@@ -232,9 +317,10 @@ class BOLAAuditor:
         return (sanitized[:max_length]+'...') if len(sanitized)>max_length else sanitized
 
     def generate_report(self, fmt: str = "markdown") -> str:
-        return ReportGenerator(self.issues, scanner="Bola", base_url=self.base_url).generate_markdown()
-
-   
+        # Skip alle requests die nooit een HTTP-antwoord kregen
+        clean_issues = [i for i in self.issues if i.get("status_code") != 0]
+        return ReportGenerator(clean_issues, scanner="Bola", base_url=self.base_url).generate_html()
+        
     def _get_base_url(self, results):
         if not results:
             return "N/A"
@@ -242,31 +328,8 @@ class BOLAAuditor:
         return f"{parsed.scheme}://{parsed.netloc}"
             
     def save_report(self, path: str, fmt: str = "markdown"):
-        ReportGenerator(self.issues, scanner="Bola", base_url=self.base_url).save(path, fmt=fmt)
+        clean_issues = [i for i in self.issues if i.get("status_code") != 0]
+        ReportGenerator(clean_issues, scanner="Bola", base_url=self.base_url).save(path, fmt="html")
 
 
-if __name__=='__main__':
-    import argparse
-    parser = argparse.ArgumentParser(description="Run BOLA audit based on Swagger/OpenAPI spec")
-    parser.add_argument('--swagger','-s',required=True,help='Path to Swagger/OpenAPI JSON file')
-    parser.add_argument('--base-url','-b',required=True,help='Base URL of the API')
-    parser.add_argument('--output','-o',default='audit_report.md',help='Output file')
-    args = parser.parse_args()
-    session = requests.Session()
-    auditor = BOLAAuditor(session)
-    spec = auditor.load_swagger(args.swagger)
-    if spec is None:
-        import sys; sys.exit("Swagger cannot be loaded.")
-    endpoints = auditor.get_object_endpoints(spec)
-    if not endpoints:
-        logger.warning("No object endpoints found.")
-    results = []
-    for ep in endpoints:
-        results.extend(auditor.test_endpoint(args.base_url, ep))
-    
-    
-    auditor.issues = [r.to_dict() for r in results]  
-    report = auditor.generate_report()
-    print(report)
-    auditor.save_report(args.output)
-    print(f"\nReport saved: {args.output}")
+

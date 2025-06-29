@@ -1,418 +1,192 @@
-# Ultimate Swagger Generator
-# 
-# Licensed under the MIT License. 
-# Copyright (c) 2025 Perry Mertens
-#
-# See the LICENSE file for full license text.
-import requests
-import json
-from datetime import datetime
-from typing import List, Dict, Optional, Any
-import urllib3
-from urllib.parse import urlparse, urljoin
+# authorization_audit.py
+##################################
+# APISCAN - API Security Scanner #
+# Licensed under the MIT License #
+# Author: Perry Mertens, 2025    #
+##################################
+from __future__ import annotations
 import base64
+import json
 import re
-from typing import Tuple
-from collections import Counter
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+from urllib.parse import urljoin, urlparse
+import requests
+import urllib3
 from report_utils import ReportGenerator
 
-# Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-class AuthorizationAuditor:
-    """Enhanced Authorization Auditor that integrates with Swagger and fallback discovery"""
 
+class AuthorizationAuditor:
+    """OWASP API01 - Broken Authorization Auditor (clean logging)."""
     def __init__(
         self,
         base_url: str,
-        swagger_data: Optional[Dict] = None,
-        session: Optional[requests.Session] = None
-    ):
-        # Allow passing requests.Session as second positional argument
+        swagger_data: Optional[Dict[str, Any]] = None,
+        session: Optional[requests.Session] = None,
+    ) -> None:
         if isinstance(swagger_data, requests.Session):
-            session = swagger_data
-            swagger_data = None
+            session, swagger_data = swagger_data, None
 
-        self.base_url = self._normalize_url(base_url)
-        self.session = session or self._create_session()
-        self.authz_issues: List[Dict] = []
+        self.base_url = (
+            f"https://{base_url}".rstrip("/") + "/" if not urlparse(base_url).scheme else base_url.rstrip("/") + "/"
+        )
+        self.session = session or self._make_session()
         self.swagger_data = swagger_data
+        self.authz_issues: List[Dict[str, Any]] = []
 
-        # Parse swagger endpoints or fallback to discovery
-        if swagger_data:
-            self.discovered_endpoints = self._parse_swagger_data()
-        else:
-            self.discovered_endpoints = self._discover_endpoints()
+        self.discovered_endpoints = (
+            self._parse_swagger_data() if swagger_data else self._discover_endpoints()
+        )
 
-        # Define test roles
-        self.roles = {
-            "anonymous": {"token": None, "description": "No authentication"},
+        self.roles: Dict[str, Dict[str, Any]] = {
+            "anonymous": {"token": None},
             "user": {"username": "testuser", "password": "testpass", "token": None},
-            "editor": {"username": "editor", "password": "editorpass", "token": None},
             "admin": {"username": "admin", "password": "adminpass", "token": None},
         }
-
-        # Get tokens for all roles
         self._get_all_tokens()
 
-    def _normalize_url(self, url: str) -> str:
-        parsed = urlparse(url)
-        if not parsed.scheme:
-            url = f"https://{url}"
-        return url.rstrip('/') + '/'
+    # ─────────────────────────── helpers ─────────────────────────── #
 
-    def _create_session(self) -> requests.Session:
-        session = requests.Session()
-        session.headers.update({
-            "User-Agent": "APISecurityScanner/2.0",
-            "Accept": "application/json"
-        })
-        session.verify = False
-        return session
+    def _make_session(self) -> requests.Session:
+        s = requests.Session()
+        s.headers.update({"User-Agent": "APISecurityScanner/2.1", "Accept": "application/json"})
+        s.verify = False
+        return s
 
-    def _parse_swagger_data(self) -> List[Dict]:
-        endpoints: List[Dict] = []
-        paths = self.swagger_data.get("paths", {}) if isinstance(self.swagger_data, dict) else {}
-        for path, methods in paths.items():
-            for method, details in methods.items():
-                if method.upper() in ["GET", "POST", "PUT", "DELETE", "PATCH"]:
-                    endpoint = {
+    def _parse_swagger_data(self) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        if not isinstance(self.swagger_data, dict):
+            return out
+        for path, verbs in self.swagger_data.get("paths", {}).items():
+            for verb, meta in verbs.items():
+                if verb.upper() not in {"GET", "POST", "PUT", "DELETE", "PATCH"}:
+                    continue
+                out.append(
+                    {
                         "url": urljoin(self.base_url, path),
-                        "methods": [method.upper()],
-                        "security": details.get("security", []),
-                        "tags": details.get("tags", []),
-                        "operationId": details.get("operationId", ""),
-                        "sensitive": self._is_endpoint_sensitive(details)
+                        "methods": [verb.upper()],
+                        "sensitive": self._is_sensitive(meta),
+                        "security": meta.get("security", []),
                     }
-                    endpoints.append(endpoint)
-        return endpoints
+                )
+        return out
 
-    def _discover_endpoints(self) -> List[Dict]:
-        endpoints: List[Dict] = []
-        common_paths = [
-            "/api/users", "/api/products", "/api/orders", "/api/admin",
-            "/v1/users", "/v1/products", "/v1/config", "/v1/admin",
-            "/users", "/products", "/admin", "/config"
-        ]
-        for path in common_paths:
-            endpoints.append({
-                "url": urljoin(self.base_url, path),
-                "methods": ["GET", "POST", "PUT", "DELETE", "PATCH"],
-                "sensitive": 'admin' in path.lower()
-            })
-        return endpoints
+    def _discover_endpoints(self) -> List[Dict[str, Any]]:
+        paths = ["/api/admin", "/api/users", "/admin", "/users"]
+        return [{"url": urljoin(self.base_url, p), "methods": ["GET"], "sensitive": "admin" in p} for p in paths]
 
-    def _is_endpoint_sensitive(self, details: Dict) -> bool:
-        security = details.get("security", [])
-        tags = details.get("tags", [])
-        oper = details.get("operationId", "").lower()
-        for sec in security:
-            for req in sec.values():
-                if any(s in ["admin", "write", "delete"] for s in req):
-                    return True
-        indic = ["admin", "internal", "private", "write", "delete", "config"]
-        if any(tag.lower().find(i) >= 0 for tag in tags for i in indic):
-            return True
-        if any(i in oper for i in indic):
+    def _is_sensitive(self, meta: Dict[str, Any]) -> bool:
+        indic = ("admin", "delete", "write", "internal")
+        tags = " ".join(meta.get("tags", [])).lower()
+        if any(i in tags for i in indic):
             return True
         return False
 
-    def _get_all_tokens(self):
+    # ─────────────────────────── tokens ─────────────────────────── #
+
+    def _get_all_tokens(self) -> None:
         for role, cfg in self.roles.items():
             if role == "anonymous":
                 continue
-            token = self._get_token(cfg["username"], cfg["password"])
-            if token:
-                self.roles[role]["token"] = token
-            else:
-                fallback = self._try_cloud_specific_auth(role)
-                self.roles[role]["token"] = fallback
-                if not fallback:
-                    self._log_issue(
-                        url=self.base_url,
-                        description=f"No token obtained for role {role} verkregen",
-                        severity="Low",
-                        details={"role": role}
-                    )
+            cfg["token"] = "dummy-token"  # simplified (placeholder)
 
-    def _get_token(self, username: str, password: str) -> Optional[str]:
-        if not self.swagger_data:
-            return None
-        schemes = self.swagger_data.get("components", {}).get("securitySchemes", {})
-        for sch in schemes.values():
-            if sch.get("type") == "http" and sch.get("scheme") == "bearer":
-                for ep in ["/auth/login", "/oauth/token", "/api/login", "/identity/connect/token"]:
-                    try:
-                        r = self.session.post(
-                            urljoin(self.base_url, ep),
-                            json={"username": username, "password": password},
-                            headers={"Content-Type": "application/json"},
-                            timeout=5
-                        )
-                        if r.status_code == 200:
-                            return r.json().get("access_token")
-                    except Exception:
-                        pass
-        return None
+    # ─────────────────────────── main tests ─────────────────────────── #
 
-    def _try_cloud_specific_auth(self, role: str) -> Optional[str]:
-        # AWS metadata
-        try:
-            md = self.session.get(
-                "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
-                timeout=2
-            )
-            if md.status_code == 200:
-                return md.text.strip()
-        except Exception:
-            pass
-        # Azure MSI
-        try:
-            az = self.session.get(
-                "http://169.254.169.254/metadata/identity/oauth2/token"
-                "?api-version=2018-02-01&resource=https://management.azure.com/",
-                headers={"Metadata": "true"},
-                timeout=2
-            )
-            if az.status_code == 200:
-                return az.json().get("access_token")
-        except Exception:
-            pass
-        return None
-
-    def test_authorization(self) -> List[Dict]:
+    def test_authorization(self) -> List[Dict[str, Any]]:
         for ep in self.discovered_endpoints:
-            self._test_endpoint_authorization(ep)
-        self._test_missing_authorization_headers()
-        self._test_rate_limiting_bypass()
-        self._test_jwt_validation()
-        self._test_idor_vulnerabilities()
+            self._test_endpoint(ep)
         return self.authz_issues
 
-    def _test_endpoint_authorization(self, endpoint: Dict):
-        required = bool(endpoint.get("security")) or endpoint.get("sensitive", False)
-        for m in endpoint.get("methods", ["GET"]):
-            self._test_access(endpoint, m, "anonymous", should_access=not required)
-            if self.roles["user"]["token"]:
-                self._test_access(endpoint, m, "user", should_access=not endpoint.get("sensitive", False))
-            if self.roles["admin"]["token"]:
-                self._test_access(endpoint, m, "admin", should_access=True)
+    def _test_endpoint(self, ep: Dict[str, Any]) -> None:
+        for verb in ep.get("methods", ["GET"]):
+            self._do_request(ep, verb, role="anonymous", should_access=not ep.get("sensitive", False))
 
-    def _test_access(self, endpoint: Dict, method: str, role: str, should_access: bool):
+    def _do_request(self, ep: Dict[str, Any], verb: str, role: str, should_access: bool) -> None:
         headers = {}
         if role != "anonymous" and self.roles[role]["token"]:
             headers["Authorization"] = f"Bearer {self.roles[role]['token']}"
         try:
-            r = self.session.request(method, endpoint["url"], headers=headers, timeout=5, verify=False)
-            got = r.status_code in [200, 201, 204]
-            if got != should_access:
-                self._log_auth_issue(
-                    endpoint=endpoint,
-                    method=method,
-                    role=role,
-                    expected=should_access,
-                    actual=got,
-                    status_code=r.status_code,
-                    response=r.text[:200] if got else None,
-                    response_headers=dict(r.headers)
-                )
-        except Exception as e:
-            self._log_issue(
-                url=endpoint["url"],
-                description=f"Request failed - {method} as {role}",
-                severity="Medium",
-                details={"error": str(e)}
-            )
-
-    def _log_auth_issue(
-        self,
-        endpoint: Dict,
-        method: str,
-        role: str,
-        expected: bool,
-        actual: bool,
-        status_code: int,
-        response: Optional[str],
-        response_headers: Optional[Dict[str, Any]] = None
-    ):
-        """Log an authorization mismatch issue"""
-        if actual and not expected:
-            desc = f"Unauthorized access - {method} as {role}"
-            severity = "High"
-        elif expected and not actual:
-            desc = f"Excessive restriction - {method} as {role}"
-            severity = "Medium"
-        else:
-            return
-        details: Dict[str, Any] = {
-            "expected_access": "Allowed" if expected else "Denied",
-            "actual_access": "Allowed" if actual else "Denied",
-            "status_code": status_code,
-            "tags": endpoint.get("tags"),
-            "security": endpoint.get("security")
-        }
-        if response:
-            details["response_sample"] = response
-        if response_headers is not None:
-            details["response_headers"] = response_headers
-        self._log_issue(
-            url=endpoint["url"],
-            description=desc,
-            severity=severity,
-            details=details
-        )
-
-    def _test_missing_authorization_headers(self):
-        for ep in self.discovered_endpoints:
-            try:
-                r = self.session.get(ep["url"], timeout=5, verify=False)
-                if r.status_code in [200, 201, 204]:
-                    self._log_issue(
-                        url=ep["url"],
-                        description="Endpoint accepts requests without Authorization header",
-                        severity="Medium",
-                        details={"status": r.status_code}
-                    )
-            except Exception:
-                pass
-
-    def _test_rate_limiting_bypass(self):
-        for ep in self.discovered_endpoints:
-            success = 0
-            for _ in range(10):
-                try:
-                    r = self.session.get(ep["url"], timeout=5, verify=False)
-                    if r.status_code in [200, 201, 204]:
-                        success += 1
-                except Exception:
-                    pass
-            if success > 5:
+            r = self.session.request(verb, ep["url"], headers=headers, timeout=5, verify=False)
+            allowed = r.status_code in (200, 201, 204)
+            if allowed != should_access:
+                desc = "Unauthorized access" if allowed else "Access denied"
+                sev = "High" if allowed else "Medium"
                 self._log_issue(
                     url=ep["url"],
-                    description="Rate-limiting may be bypassed",
-                    severity="Medium",
-                    details={"successful_requests": success}
+                    description=f"{desc} - {verb} as {role}",
+                    severity=sev,
+                    details={"method": verb, "role": role},
+                    response_obj=r,
                 )
-
-    def _test_jwt_validation(self):
-        if not self.roles["user"]["token"]:
-            return
-        cases = [
-            ("none-alg", self._set_jwt_alg(self.roles["user"]["token"], "none")),
-            ("empty-sig", self._set_jwt_signature(self.roles["user"]["token"], "")),
-            ("modify-role", self._modify_jwt_claim(self.roles["user"]["token"], "role", "admin"))
-        ]
-        ep = next((e for e in self.discovered_endpoints if e.get("sensitive")), None)
-        if not ep:
-            return
-        for name, tok in cases:
-            try:
-                r = self.session.get(
-                    ep["url"],
-                    headers={"Authorization": f"Bearer {tok}"},
-                    timeout=5,
-                    verify=False
-                )
-                if r.status_code in [200, 201, 204]:
-                    self._log_issue(
-                        url=ep["url"],
-                        description=f"JWT validation failed - {name}",
-                        severity="High",
-                        details={"case": name, "response_headers": dict(r.headers)}
-                    )
-            except Exception:
-                pass
-
-    def _test_idor_vulnerabilities(self):
-        pattern = re.compile(r"/(\d+)|/[\w-]+(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})")
-        for ep in self.discovered_endpoints:
-            if pattern.search(ep["url"]) and "GET" in ep.get("methods", []):
-                self._test_idor_scenario(ep)
-
-    def _test_idor_scenario(self, endpoint: Dict):
-        try:
-            r1 = self.session.get(
-                endpoint["url"],
-                headers={"Authorization": f"Bearer {self.roles['user']['token']}"},
-                timeout=5,
-                verify=False
-            )
-            r2 = self.session.get(
-                endpoint["url"],
-                headers={"Authorization": f"Bearer {self.roles['editor']['token']}"},
-                timeout=5,
-                verify=False
-            )
-            if r1.status_code == 200 and r1.text == r2.text:
-                self._log_issue(
-                    url=endpoint["url"],
-                    description="IDOR vulnerability detected",
-                    severity="High",
-                    details={"scenario": "user vs editor", "response_headers": dict(r1.headers)}
-                )
-        except Exception as e:
+        except Exception as exc:
             self._log_issue(
-                url=endpoint["url"],
-                description="IDOR test failed",
-                severity="Medium",
-                details={"error": str(e)}
+                url=ep["url"],
+                description=f"Request error - {verb} as {role}: {exc}",
+                severity="Low",
             )
 
-    # JWT manipulation helpers
-    def _set_jwt_alg(self, token: str, alg: str) -> str:
-        try:
-            hdr = json.loads(base64.b64decode(token.split('.')[0] + '==='))
-            hdr['alg'] = alg
-            nh = base64.b64encode(json.dumps(hdr).encode()).decode().rstrip('=')
-            parts = token.split('.')
-            return f"{nh}.{parts[1]}.{parts[2]}"
-        except Exception:
-            return token
+    def _filtered_issues(self) -> List[Dict[str, Any]]:
+        uniq = {}
+        for it in self.authz_issues:
+            if not it.get("status_code"):
+                continue
+            k = (it["endpoint"], it["method"], it["description"], it["status_code"])
+            uniq.setdefault(k, it)          # eerste wint, latere duplicates skippen
+        return list(uniq.values())
 
-    def _set_jwt_signature(self, token: str, sig: str) -> str:
-        parts = token.split('.')
-        return f"{parts[0]}.{parts[1]}.{sig}" if len(parts) >= 2 else token
+    # ─────────────────────────── logging ─────────────────────────── #
 
-    def _modify_jwt_claim(self, token: str, claim: str, value: Any) -> str:
-        try:
-            parts = token.split('.')
-            payload = json.loads(base64.b64decode(parts[1] + '==='))
-            payload[claim] = value
-            np = base64.b64encode(json.dumps(payload).encode()).decode().rstrip('=')
-            return f"{parts[0]}.{np}.{parts[2]}"
-        except Exception:
-            return token
+    def _log_issue(
+        self,
+        url: str,
+        description: str,
+        severity: str,
+        details: Optional[Dict[str, Any]] = None,
+        response_obj: Optional[requests.Response] = None,
+    ) -> None:
+        details = details or {}
+        status_code = getattr(response_obj, "status_code", None)
+        if status_code in (None, 0):
+            return  # ignore - no HTTP response
 
-    def _log_issue(self, url: str, description: str, severity: str, details: Optional[Dict] = None):
-        """Log a security issue"""
-        self.authz_issues.append({
+        entry: Dict[str, Any] = {
             "url": url,
+            "endpoint": url,  
+            "method": response_obj.request.method if response_obj and response_obj.request else details.get("method", "GET"),
             "description": description,
             "severity": severity,
-            "details": details or {},
-            "timestamp": datetime.now().isoformat()
-        })
-        
-    def generate_report(self, output_format: str = "markdown"):
-        return ReportGenerator(
-            issues=self.authz_issues,
-            scanner="Authorization",
-            base_url=self.base_url
-        ).generate_markdown() if output_format == "markdown" else ReportGenerator(
-            issues=self.authz_issues,
-            scanner="Authorization",
-            base_url=self.base_url
-        ).generate_json()
-    
-    def save_report(self, path: str, fmt: str = "markdown"):
-        ReportGenerator(self.authz_issues, scanner="Authorization", base_url=self.base_url).save(path, fmt=fmt)
-   
-    def _detect_cloud_provider(self) -> Optional[str]:
-        """Detect if running on a cloud platform"""
-        if "amazonaws.com" in self.base_url:
-            return "AWS"
-        if "azure" in self.base_url:
-            return "Azure"
-        if "googleapis.com" in self.base_url:
-            return "GCP"
-        return None
+            "status_code": status_code,
+            "timestamp": datetime.now().isoformat(),
+            "request_headers": {},
+            "response_headers": {},
+            "request_body": None,
+            "response_body": None,
+        }
+
+        if response_obj is not None:
+            entry["response_headers"] = dict(response_obj.headers)
+            entry["response_body"] = response_obj.text[:2048]
+            if response_obj.request is not None:
+                entry["request_headers"] = dict(response_obj.request.headers)
+                entry["request_body"] = response_obj.request.body
+
+        # merge non-conflicting details
+        for k, v in details.items():
+            if k not in entry:
+                entry[k] = v
+
+        self.authz_issues.append(entry)
+
+    # ─────────────────────────── reporting ─────────────────────────── #
+
+    def _filtered_issues(self) -> List[Dict[str, Any]]:
+        return [i for i in self.authz_issues if i.get("status_code")]
+
+    def generate_report(self, fmt: str = "html") -> str:
+        gen = ReportGenerator(self._filtered_issues(), scanner="Authorization", base_url=self.base_url)
+        return gen.generate_html() if fmt == "html" else gen.generate_markdown()
+
+    def save_report(self, path: str, fmt: str = "html") -> None:
+        ReportGenerator(self._filtered_issues(), scanner="Authorization", base_url=self.base_url).save(path, fmt=fmt)

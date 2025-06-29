@@ -1,9 +1,8 @@
-# 
-# Licensed under the MIT License. 
-# Copyright (c) 2025 Perry Mertens
-#
-# See the LICENSE file for full license text.
-# broken_object_property_audit.py
+##################################
+# APISCAN - API Security Scanner #
+# Licensed under the MIT License #
+# Author: Perry Mertens, 2025    #
+##################################
 import logging
 import requests
 import json
@@ -11,9 +10,6 @@ from datetime import datetime
 from urllib.parse import urljoin
 from copy import deepcopy
 from report_utils import ReportGenerator
-
-# Configure debug logging
-logging.basicConfig(level=logging.DEBUG, format='[OPA DEBUG] %(message)s')
 
 class ObjectPropertyAuditor:
     """Test Broken Object Property Level Authorization (API3:2023)"""
@@ -46,7 +42,7 @@ class ObjectPropertyAuditor:
             if not norm_ep:
                 continue
                 
-            logging.debug(f"Testing endpoint: {norm_ep['method']} {norm_ep['url']}")
+            print(f"Testing endpoint: {norm_ep['method']} {norm_ep['url']}")
             
             # Run tests
             self._test_data_exposure(norm_ep)
@@ -117,7 +113,9 @@ class ObjectPropertyAuditor:
                         "Excessive Data Exposure",
                         f"Sensitive fields in response: {', '.join(sensitive)}",
                         "High",
-                        {"exposed_fields": sensitive, "response_sample": data}
+                        {"exposed_fields": sensitive, "response_sample": data},
+                        response=response,
+                        request_payload=None
                     )
         except Exception as e:
             logging.error(f"Data exposure test failed: {e}")
@@ -160,7 +158,9 @@ class ObjectPropertyAuditor:
                         "Mass Assignment",
                         f"Modified restricted fields: {', '.join(changed)}",
                         "Critical",
-                        {"sent": malicious_obj, "received": data}
+                        {"sent": malicious_obj, "received": data},
+                        response=response,
+                        request_payload=malicious_obj
                     )
         except Exception as e:
             logging.error(f"Mass assignment test failed: {e}")
@@ -220,7 +220,9 @@ class ObjectPropertyAuditor:
                             "original": legit_data,
                             "malicious": malicious_data,
                             "changed_fields": changed
-                        }
+                        },
+                        response=malicious_resp,
+                        request_payload=malicious_obj
                     )
         except Exception as e:
             logging.error(f"Property manipulation test failed: {e}")
@@ -273,18 +275,36 @@ class ObjectPropertyAuditor:
         _scan(data)
         return sensitive
 
-    def _log_issue(self, endpoint, issue_type, description, severity, data=None):
-        """Record found issue"""
-        self.issues.append({
+    def _log_issue(self, endpoint, issue_type, description, severity,
+                   data=None, response=None, request_payload=None):
+        """Record a finding and add request/response context to the report."""
+
+        entry = {}
+        if response is not None:
+            try:
+                entry = {
+                    'method': response.request.method if response.request else '',
+                    'url': response.url,
+                    'status_code': response.status_code,
+                    'request_headers': dict(response.request.headers) if response.request else {},
+                    'request_body': request_payload,
+                    'response_headers': dict(response.headers),
+                    'response_body': response.text[:2048]
+                }
+            except Exception as exc:
+                logging.error(f"Failed to capture HTTP context: {exc}")
+
+        issue_record = {
             'endpoint': endpoint,
             'type': issue_type,
             'description': description,
             'severity': severity,
             'timestamp': datetime.now().isoformat(),
-            'data': data
-        })
+            'data': data or {}
+        }
+        issue_record.update(entry)
+        self.issues.append(issue_record)
         logging.warning(f"Found issue: {issue_type} at {endpoint} ({severity})")
-
     def generate_report(self, fmt="markdown"):
         gen = ReportGenerator(
             issues=self.issues,
@@ -292,24 +312,8 @@ class ObjectPropertyAuditor:
             base_url=self.base_url
         )
         return gen.generate_markdown() if fmt == "markdown" else gen.generate_json()
-
-    def save_report(self, path: str, fmt: str = "markdown"):
+    
+    def save_report(self, path: str, fmt: str = "html"):
         ReportGenerator(self.issues, scanner="ObjectProperty (API03)", base_url=self.base_url).save(path, fmt=fmt)
 
 
-if __name__ == "__main__":
-    # Test with Swagger-style endpoint
-    test_auditor = ObjectPropertyAuditor("https://api.example.com")
-    
-    test_endpoint = {
-        "path": "/users/{userId}/profile",
-        "method": "get",
-        "parameters": [
-            {"name": "userId", "in": "path", "schema": {"type": "integer"}}
-        ]
-    }
-    
-    print("Running test scan...")
-    issues = test_auditor.test_object_properties([test_endpoint])
-    print("\nTest Results:")
-    print(test_auditor.generate_report())

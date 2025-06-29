@@ -1,27 +1,26 @@
-# APISCAN
-# 
-# Licensed under the MIT License. 
-# Copyright (c) 2025 Perry Mertens
-#
-# See the LICENSE file for full license text.
+##################################
+# APISCAN - API Security Scanner #
+# Licensed under the MIT License #
+# Author: Perry Mertens, 2025    #
+##################################
 from __future__ import annotations
-
+import builtins
+import logging
 import argparse
 import json
 import sys
-import logging
 import time
 from datetime import datetime
-from typing import Dict, List, Set, Any, Optional, Tuple
+from typing import Any
 from urllib.parse import urljoin
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
-from requests.adapters import HTTPAdapter
+
 import urllib3
 import requests
+from requests.adapters import HTTPAdapter
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-from doc_generator import create_audit_report
 from bola_audit import BOLAAuditor
 from broken_auth_audit import AuthAuditor
 from broken_object_property_audit import ObjectPropertyAuditor
@@ -34,76 +33,89 @@ from inventory_audit import InventoryAuditor
 from safe_consumption_audit import SafeConsumptionAuditor
 from version import __version__
 from auth_utils import configure_authentication
+from report_utils import ReportGenerator, HTMLReportGenerator, RISK_INFO
+from doc_generator import generate_combined_html
+from ai_client import analyze_endpoints_with_gpt, save_ai_summary 
+
+
+manual_file_map = {
+    'BOLA': 'bola',
+    'BrokenAuth': 'broken_auth',
+    'Property': 'property',
+    'Resource': 'resource',
+    'AdminAccess': 'admin_access',
+    'BusinessFlows': 'business_flows',
+    'SSRF': 'ssrf',
+    'Misconfig': 'misconfig',
+    'Inventory': 'inventory',
+    'UnsafeConsumption': 'unsafe_consumption'
+}
+
+def save_html_report(issues, risk_key, url, output_dir):
+    html_report = HTMLReportGenerator(
+        issues=issues,
+        scanner=RISK_INFO[risk_key]['title'],
+        base_url=url
+    )
+    filename = f"api_{manual_file_map[risk_key]}_report.html"
+    html_report.save(output_dir / filename)
+
+
+
 logger = logging.getLogger("apiscan")
 
-# Verbeterde console-outputfunctie
+MAX_THREADS = 20
+
 def styled_print(message: str, status: str = "info"):
     symbols = {
-        "info": "Info:",
-        "ok": "OK:",
-        "warn": "WARNING:",
-        "fail": "FAIL:",
-        "run": "->",
-        "done": "✓"
+        "info": "Info:", "ok": "OK:", "warn": "WARNING:", "fail": "FAIL:",
+        "run": "->", "done": "✓"
     }
     colors = {
-        "info": "\033[94m",    # blauw
-        "ok": "\033[92m",      # groen
-        "warn": "\033[93m",    # geel
-        "fail": "\033[91m",    # rood
-        "run": "\033[96m",     # cyaan
-        "done": "\033[92m"     # groen
+        "info": "\033[94m", "ok": "\033[92m", "warn": "\033[93m",
+        "fail": "\033[91m", "run": "\033[96m", "done": "\033[92m"
     }
     reset = "\033[0m"
-    symbol = symbols.get(status, "")
-    color = colors.get(status, "")
-    print(f"{color}{symbol} {message}{reset}")
+    print(f"{colors.get(status, '')}{symbols.get(status, '')} {message}{reset}")
 
-MAX_THREADS = 20 
+def normalize_url(url: str) -> str:
+    return url if url.startswith(("http://", "https://")) else "http://" + url
 
-def validate_swagger_path(path: str) -> Path:
-    p = Path(path).resolve()
-    if not p.exists():
-        raise ValueError("Swagger path does not exist")
-    return p
+def create_output_directory(base_url: str) -> Path:
+    clean = base_url.replace("https://", "").replace("http://", "").replace("/", "_").replace(":", "_")
+    timestamp = datetime.now().strftime("%d-%m-%Y_%H%M%S")
+    out_dir = Path(f"audit_{clean}_{timestamp}")
+    out_dir.mkdir(exist_ok=True)
+    return out_dir
 
-# Onderdruk logging van externe modules
 def check_api_reachable(url: str, session: requests.Session, retries: int = 3, delay: int = 3):
-     #  Controleert API-bereikbaarheid met retry-logica   Args: url: Te testen URL     session: Requests sessie     retries: Aantal herpogingen      delay: Wachttijd tussen pogingen (seconden)
     for attempt in range(1, retries + 1):
         try:
             print(f"Checking connection to {url} (attempt {attempt}/{retries})...")
             resp = session.get(url, timeout=5)
-
             print(f"Response status code: {resp.status_code}")
-            #print(f"Response headers:\n{json.dumps(dict(resp.headers), indent=2)}")
-            #print(f"Response content (truncated):\n{resp.text[:1000]}")
 
             if not resp.content:
                 print("Empty response body — possible backend crash or misconfigured handler.")
 
-            if resp.status_code == 200 and any(
-                hint in resp.text.lower() for hint in ["unauthorized", "access denied", "login", "authentication required"]
-            ):
-                print("Received 200 OK but response suggests access is denied. Check token or credentials.")
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(f"Response content: {resp.text[:500]}")
+            if resp.status_code == 200 and any(                word in resp.text.lower()
+                for word in ["unauthorized", "access denied", "login", "authentication required"]
+                ):
+                print("Received 200 OK but access denied content detected. Check credentials.")
+                logger.debug(resp.text[:500])
                 sys.exit(2)
 
             if resp.status_code in (401, 403):
-                print(f"Authentication failed with status {resp.status_code}. Check token or credentials.")
+                print(f"Authentication failed with status {resp.status_code}.")
                 sys.exit(2)
 
-            elif resp.status_code < 400:
+            if resp.status_code < 400:
                 print(f"Connection successful to {url} (status: {resp.status_code})")
                 return
             else:
-                print(f"Server responded with status {resp.status_code} at {url}")
+                print(f"Unexpected response from server: {resp.status_code}")
                 return
 
-        except requests.exceptions.ReadTimeout:
-            print(f"ReadTimeout: Server took too long to respond at {url} — possible crash or backend hang.")
-            sys.exit(1)
         except requests.exceptions.RequestException as e:
             logger.error(f"Attempt {attempt} failed: {e}")
             if attempt < retries:
@@ -114,21 +126,6 @@ def check_api_reachable(url: str, session: requests.Session, retries: int = 3, d
                 sys.exit(1)
 
 
-def normalize_url(url: str) -> str:
-    if not url.startswith(("http://", "https://")):
-        url = "http://" + url
-    return url
-
-def create_output_directory(base_url: str) -> Path:
-    clean = base_url.replace("https://", "").replace("http://", "").replace("/", "_").replace(":", "_")
-    date = datetime.now().strftime("%Y-%m-%d")
-    out_dir = Path(f"audit_{clean}_{date}")
-    out_dir.mkdir(exist_ok=True)
-    return out_dir
-
-
-# Tijdelijk base_url uit CLI halen voor logpad
-temp_url = sys.argv[sys.argv.index("--url") + 1] if "--url" in sys.argv else "unknown"
 def main() -> None:
     parser = argparse.ArgumentParser(description=f"APISCAN {__version__} API Security Scanner Perry Mertens 2025 (c)")
     parser.add_argument("--url", required=True, help="Base URL of the API")
@@ -150,6 +147,7 @@ def main() -> None:
     parser.add_argument("--threads", type=int, default=2)
     parser.add_argument("--cert-password", help="Wachtwoord voor client certificaat")
     parser.add_argument("--debug", action="store_true", help="Enable debug output")
+    parser.add_argument("--api11", action="store_true", help="Run AI-based OWASP Top 10 analysis using Ollama or other ")
     
     # Voeg API selectie argumenten toe
     for i in range(1, 11):
@@ -157,8 +155,20 @@ def main() -> None:
 
     args = parser.parse_args()
     
+    #enable debug mode logging
+    builtins.debug_mode = args.debug
+    if args.debug:
+        logging.basicConfig(level=logging.DEBUG, format='[DEBUG] %(message)s')
+    else:
+        logging.basicConfig(level=logging.INFO, format='[INFO] %(message)s')
+        
     # Controleer of er API's zijn geselecteerd, anders scan alle API's
-    selected_apis = [i for i in range(1, 11) if getattr(args, f"api{i}")] or list(range(1, 11))
+    if args.api11:
+        selected_apis = [11]
+    else:
+        selected_apis = [i for i in range(1, 11) if getattr(args, f"api{i}")] or list(range(1, 11))
+
+
     
     args.url = normalize_url(args.url)
     
@@ -181,7 +191,6 @@ def main() -> None:
     logger.propagate = False
 
     # Verwijder dubbele directory creatie
-    output_dir = create_output_directory(args.url)
     log_dir = output_dir / "log"
     log_dir.mkdir(exist_ok=True)
 
@@ -193,50 +202,72 @@ def main() -> None:
     check_api_reachable(args.url, sess)
 
     # Swagger verwerking
-    if not args.swagger and args.postman:
-        print(f"[+] Generating OpenAPI from Postman collection: {args.postman}")
-        builder = SwaggerBuilder(postman_path=args.postman)
-        args.swagger = builder.build_and_save("converted_from_postman.json")
-        
     if args.swagger:
         try:
             swagger_path = Path(args.swagger).resolve()
             if not swagger_path.exists():
-                raise FileNotFoundError(f"Swagger bestand niet gevonden: {swagger_path}")
+                raise FileNotFoundError(f"Swagger file not found: {swagger_path}")
             if not swagger_path.is_file():
-                raise ValueError(f"Pad is geen bestand: {swagger_path}")
+                raise ValueError(f"Path is not a file: {swagger_path}")
             if not swagger_path.stat().st_size > 0:
-                raise ValueError("Swagger bestand is leeg")
+                raise ValueError("Swagger file is empty")
 
             logger.info(f"Loading Swagger from: {swagger_path}")
             styled_print(f"Loading validated Swagger file: {swagger_path}", "info")
 
             bola = BOLAAuditor(sess)
             spec = bola.load_swagger(swagger_path)
-            
+
             if not spec:
-                raise ValueError("Swagger kon niet worden geparsed - ongeldig formaat")
-                
+                raise ValueError("Failed to parse Swagger - invalid format")
+
             endpoints = bola.get_object_endpoints(spec)
-            logger.debug(f"Swagger succesvol geladen - {len(endpoints)} endpoints gedetecteerd")
-            styled_print(f"Swagger geladen – {len(endpoints)} endpoints gevonden", "ok")
+            logger.debug(f"Swagger successfully loaded - {len(endpoints)} endpoints detected")
+            styled_print(f"Swagger loaded - {len(endpoints)} endpoints found", "ok")
+            if args.api11:
+                logger.info("Running AI-powered OWASP API Top 10 analysis via Ollama")
 
+                # Bouw AI-ready endpointlijst
+                ai_endpoints = [
+                    {"path": ep.get("path"), "method": ep.get("method")}
+                    for ep in endpoints if ep.get("path") and ep.get("method")
+                ]
+                styled_print("Sending endpoints to local AI engine via Ollama...", "info")
+
+                try:
+                    from ai_client import analyze_endpoints_with_gpt, save_ai_summary
+                    ai_results = analyze_endpoints_with_gpt(ai_endpoints, model="mistral", port=1234)
+                    save_ai_summary(ai_results, "ai_analysis_output.json")
+
+                    styled_print(f"API11 complete - {len(ai_results)} endpoints analyzed", "done")
+                except Exception as e:
+                    styled_print(f"FAIL: AI analysis failed: {e}", "fail")
+
+                # Sla alle andere API-checks over
+                sys.exit(0)
+                        
+        except (FileNotFoundError, ValueError) as e:
+            logger.error(f"Swagger processing failed: {e}")
+            styled_print(f"FAIL: {e}", "fail")
+            sys.exit(1)
         except Exception as e:
-            logger.critical(f"Swagger verwerking mislukt: {str(e)}", exc_info=True)
-            sys.exit(f"FATALE FOUT: {str(e)}")
+            logger.error(f"Unexpected error during Swagger parsing: {e}")
+            styled_print(f"FAIL: Unexpected error during Swagger parsing", "fail")
+            sys.exit(1)
     else:
-        logger.error("Geen Swagger bestand opgegeven")
-        sys.exit("Geen Swagger specificatie opgegeven - gebruik --swagger")
+        logger.error("No Swagger file provided")
+        styled_print("FAIL: No Swagger specification provided - use --swagger", "fail")
+        sys.exit(1)
 
-      
+    
     output_dir = create_output_directory(args.url)
     logger.info(f"Output directory: {output_dir}")
     print(f"[+] Results saved to: {output_dir}")
 
     # Full scanning logic per API
     if 1 in selected_apis:
-        print(f" API1 – BOLA tests ({args.threads} threads)")
-        logger.info("Running API1 – BOLA")
+        print(f" API1 - BOLA tests ({args.threads} threads)")
+        logger.info("Running API1 - BOLA")
         bola_results = []
 
         bola = BOLAAuditor(sess)
@@ -255,124 +286,155 @@ def main() -> None:
                     logger.error(f"BOLA test error: {e}")
 
         bola.issues = [r.to_dict() for r in bola_results]
-        bola.base_url = args.url  # ✅ Fix hier
+        bola.base_url = args.url  
         report = bola.generate_report()
-        (output_dir / "api_bola_report.txt").write_text(report, "utf-8")
-
+       
         found = sum(1 for r in bola_results if getattr(r, 'is_vulnerable', False))
-        styled_print(f"API1 complete – {found} vulnerabilities found", "done")
+        save_html_report(bola.issues, 'BOLA', args.url, output_dir)
+        styled_print(f"API1 complete - {found} vulnerabilities found", "done")
 
 
-    if 2 in  selected_apis:
-        print(" API2 – Broken Authentication")
-        logger.info("Running API2 – Broken Authentication")
+    if 2 in selected_apis:
+        print(" API2 - Broken Authentication")
+        logger.info("Running API2 - Broken Authentication")
+        # Start de authenticatie-auditor
         aa = AuthAuditor(args.url, sess)
         auth_issues = aa.test_authentication_mechanisms([])
         for issue in auth_issues:
-            print(f"->Auth issue found: {issue.get('description', 'Unknown')} at {issue.get('endpoint', '')}")
-            #print(f"-> Authentication issue found: {issue.get('description', 'Unknown problem')}")
-            logger.info(f"Auth issue found: {issue.get('description', 'Unknown')} at {issue.get('endpoint', '')}")
+            description = issue.get('description', 'Unknown')
+            endpoint = issue.get('endpoint', '')
+            print(f"-> Auth issue found: {description} at {endpoint}")
+            logger.info(f"Auth issue found: {description} at {endpoint}")
         report = aa.generate_report()
-        (output_dir / "api_broken_auth_report.txt").write_text(report, encoding="utf-8")
-        styled_print(f"API2 complete – {len(auth_issues)} issues", "done")
+        html_report = HTMLReportGenerator(
+            issues=auth_issues,
+            scanner="API2:2023 - Broken Authentication",
+            base_url=args.url
+        )
+        save_html_report(auth_issues, 'BrokenAuth', args.url, output_dir)
+        styled_print(f"API2 complete - {len(auth_issues)} issues", "done")
 
     if 3 in  selected_apis:
-        print(" API3 – Property-level Authorization")
-        logger.info("Running API3 – Property-level Authorization")
+        print(" API3 - Property-level Authorization")
+        logger.info("Running API3 - Property-level Authorization")
         prop_eps = [{"url": ep["path"], "method": ep["method"], "test_object": {p["name"]: 1 for p in ep.get("parameters", []) if p["in"] == "path"}} for ep in endpoints]
         pa = ObjectPropertyAuditor(args.url, sess)
         prop_issues = pa.test_object_properties(prop_eps)
         for issue in prop_issues:
             print(f"-> Property issue found: {issue.get('description', 'Unknown')} @ {issue.get('endpoint', 'Unknown')}")
         report = pa.generate_report()
-        (output_dir / "api_property_report.txt").write_text(report, "utf-8")
-        styled_print(f"API3 complete – {len(prop_issues)} issues", "done")
+        html_report = HTMLReportGenerator(
+            issues=prop_issues,
+            scanner="API3:2023 - Broken Object Property Level Authorization",
+            base_url=args.url
+        )
+        save_html_report(prop_issues, 'Property', args.url, output_dir)
+        styled_print(f"API3 complete - {len(prop_issues)} issues", "done")
 
     if 4 in  selected_apis:
-        print(" API4 – Resource Consumption")
-        logger.info("Running API4 – Resource Consumption")
+        print(" API4 - Resource Consumption")
+        logger.info("Running API4 - Resource Consumption")
         rc = ResourceAuditor(args.url, sess)
         resource_eps = [{"url": ep["path"], "method": ep["method"]} for ep in endpoints]
         for ep in resource_eps:
             print(f"-> Testing {ep['method']} {ep['url']}")
         res_issues = rc.test_resource_consumption(resource_eps)
-        (output_dir / "api_resource_report.txt").write_text(rc.generate_report(res_issues), "utf-8")
-        styled_print(f"API4 complete – {len(res_issues)} issues", "done")
+        save_html_report(res_issues, 'Resource', args.url, output_dir)
+        styled_print(f"API4 complete - {len(res_issues)} issues", "done")
 
     if 5 in  selected_apis:
-        print(" API5 – Function-level Authorization")
-        logger.info("Running API5 – Function-level Authorization")
+        print(" API5 - Function-level Authorization")
+        logger.info("Running API5 - Function-level Authorization")
         za = AuthorizationAuditor(args.url, sess)
         authz_issues = za.test_authorization()
         for issue in authz_issues:
             print(f"-> Authorization issue: {issue.get('description', 'Unknown')}")
-        (output_dir / "api_admin_access_report.txt").write_text(za.generate_report(), "utf-8")
-        styled_print(f"API5 complete – {len(authz_issues)} issues", "done")
+        save_html_report( authz_issues, 'AdminAccess', args.url, output_dir)
+        styled_print(f"API5 complete - {len(authz_issues)} issues", "done")
 
     if 6 in  selected_apis:
-        print(" API6 – Sensitive Business Flows")
-        logger.info("Running API6 – Sensitive Business Flows")
+        print(" API6 - Sensitive Business Flows")
+        logger.info("Running API6 - Sensitive Business Flows")
         bf = BusinessFlowAuditor(args.url, sess)
         business_eps = [{"name": ep.get("operation_id", f"{ep['method']} {ep['path']}").replace(" ", "_"), "url": ep["path"], "method": ep["method"], "body": {}} for ep in endpoints if ep["method"] in {"POST", "PUT", "PATCH"}]
         for ep in business_eps:
             print(f"-> Testing business flow {ep['method']} {ep['url']}")
         biz_issues = bf.test_business_flows(business_eps)
-        (output_dir / "api_business_flows_report.txt").write_text(bf.generate_report(), "utf-8")
-        styled_print(f"API6 complete – {len(biz_issues)} issues", "done")
+        save_html_report(biz_issues, 'BusinessFlows', args.url, output_dir)
+        styled_print(f"API6 complete - {len(biz_issues)} issues", "done")
 
-    if 7 in  selected_apis:
-        print(" API7 – SSRF")
-        logger.info("Running API7 – SSRF")
+   
+    if 7 in selected_apis:
+        print(" API7 - SSRF")
+        logger.info("Running API7 - SSRF")
         ss_eps = SSRFAuditor.endpoints_from_swagger(args.swagger)
         if ss_eps:
             for ep in ss_eps:
                 print(f"-> Testing SSRF {ep['method']} {ep['url']}")
             ss = SSRFAuditor(args.url, sess)
-            ssrf_issues = ss.test_endpoints(ss_eps)
-            (output_dir / "api_ssrf_report.txt").write_text(ss.generate_report(), "utf-8")
-            styled_print(f"API7 complete – {len(ssrf_issues)} issues", "done")
+            ss.test_endpoints(ss_eps)  
+            styled_print(f"API7 complete - {len(ss._issues)} issues", "done")
+            save_html_report(ss._issues, 'SSRF', args.url, output_dir)      
         else:
             styled_print("No SSRF endpoints found", "warn")
 
     if 8 in  selected_apis:
-        print(" API8 – Security Misconfiguration")
-        logger.info("Running API8 – Security Misconfiguration")
+        print(" API8 - Security Misconfiguration")
+        logger.info("Running API8 - Security Misconfiguration")
         misconf_eps = MisconfigurationAuditor.endpoints_from_swagger(args.swagger)
         if misconf_eps:
             for ep in misconf_eps:
                 print(f"-> Testing misconfiguration {ep['method']} {ep['path']}")
             mc = MisconfigurationAuditor(args.url, sess)
             misconf_issues = mc.test_endpoints(misconf_eps)
-            (output_dir / "api_misconfig_report.txt").write_text(mc.generate_report(), "utf-8")
-            styled_print(f"API8 complete – {len(misconf_issues)} issues", "done")
+            styled_print(f"API8 complete - {len(misconf_issues)} issues", "done")
+            save_html_report( misconf_issues, 'Misconfig', args.url, output_dir)
         else:
             styled_print("No misconfiguration endpoints found", "warn")
 
     if 9 in  selected_apis:
-        print(" API9 – Improper Inventory Management")
-        logger.info("Running API9 – Improper Inventory Management")
+        print(" API9 - Improper Inventory Management")
+        logger.info("Running API9 - Improper Inventory Management")
         inv_eps = InventoryAuditor.endpoints_from_swagger(args.swagger)
         if inv_eps:
             for ep in inv_eps:
                 print(f"-> Inventory check {ep}")
             inv = InventoryAuditor(args.url, sess)
             inv_issues = inv.test_inventory(inv_eps)
-            (output_dir / "api_inventory_report.txt").write_text(inv.generate_report(), "utf-8")
-            styled_print(f"API9 complete – {len(inv_issues)} issues", "done")
+            save_html_report(inv_issues, 'Inventory', args.url, output_dir)
+            styled_print(f"API9 complete - {len(inv_issues)} issues", "done")
         else:
             styled_print("No inventory endpoints found", "warn")
 
     if 10 in  selected_apis:
-        print(" API10 – Safe Consumption of 3rd-Party APIs")
-        logger.info("Running API10 – Safe Consumption")
+        print(" API10 - Safe Consumption of 3rd-Party APIs")
+        logger.info("Running API10 - Safe Consumption")
         safe_eps = SafeConsumptionAuditor.endpoints_from_swagger(args.swagger)
         for ep in safe_eps:
             print(f"-> Safe API consumption check {ep}")
         sc = SafeConsumptionAuditor(base_url=args.url, session=sess)
         safe_issues = sc.test_endpoints(safe_eps)
-        (output_dir / "api_safe_consumption_report.txt").write_text(sc.generate_report(), "utf-8")
-        styled_print(f"API10 complete – {len(safe_issues)} issues", "done")
+        sc._dump_raw_issues(log_dir)    
+        sc._filter_issues() 
+        sc._dedupe_issues()  
+        save_html_report(safe_issues, 'UnsafeConsumption', args.url, output_dir)
+        styled_print(f"API10 complete - {len(safe_issues)} issues", "done")
 
+
+    if 11 in selected_apis:
+        print(" API11 - AI-assisted OWASP analysis")
+        logger.info("Running API11 - AI LLM audit")
+        try:
+            styled_print("Sending endpoints to local AI engine via Ollama...", "info")
+            ai_results = analyze_endpoints_with_gpt(ai_endpoints)
+            save_ai_summary(ai_results, output_dir)
+            styled_print(f"API11 complete - {len(ai_results)} endpoints analyzed", "done")
+        except Exception as e:
+            styled_print(f"AI analysis failed: {e}", "fail")
+            logger.error(f"AI analysis exception: {e}")
+
+    
+    
     summary = {
         "BOLA": sum(1 for x in bola_results if getattr(x, "is_vulnerable", False)) if 'bola_results' in locals() else 0,
         "Auth": len(auth_issues) if 'auth_issues' in locals() else 0,
@@ -380,13 +442,12 @@ def main() -> None:
         "Resource": len(res_issues) if 'res_issues' in locals() else 0,
         "AdminAccess": len(authz_issues) if 'authz_issues' in locals() else 0,
         "BusinessFlows": len(biz_issues) if 'biz_issues' in locals() else 0,
-        "SSRF": len(ssrf_issues) if 'ssrf_issues' in locals() else 0,
+        "SSRF": len(ss._issues) if 'ssrf_issues' in locals() else 0,
         "Misconfiguration": len(misconf_issues) if 'misconf_issues' in locals() else 0,
         "Inventory": len(inv_issues) if 'inv_issues' in locals() else 0,
         "UnsafeConsumption": len(safe_issues) if 'safe_issues' in locals() else 0
     }
-    (output_dir / "api_summary_report.txt").write_text(json.dumps(summary, indent=2), "utf-8")
-
+    
     total_vulns = sum(summary.values())
     print("Summary of vulnerabilities found")
     print("---------------------------------------")
@@ -395,16 +456,16 @@ def main() -> None:
     print("---------------------------------------")
     print(f"  Total found       : {total_vulns}")
     styled_print("Scan complete. All results and logs saved.", "ok")
-
-    
-    styled_print("Building DOCX Report …", "info")
+        
+    styled_print("Combining HTML reports …", "info")
     try:
-        create_audit_report(output_dir)
+        html_files = sorted(str(f) for f in output_dir.glob("api_*_report.html"))
+        generate_combined_html(output=str(output_dir / "combined_report.html"), files=html_files)
     except Exception as exc:
-        styled_print(f"DOCX report failed: {exc}", "fail")
+        styled_print(f"Combined HTML report failed: {exc}", "fail")
 
-    styled_print(f"All reports saved in : {output_dir}", "ok")
-    
+
+       
     
 if __name__ == "__main__":
     main()

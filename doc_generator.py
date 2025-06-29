@@ -1,24 +1,24 @@
-#
-# Licensed under the MIT License. 
-# Copyright (c) 2025 Perry Mertens
-#
-# See the LICENSE file for full license text.
-from docx import Document
-from docx.shared import Pt, Inches
-from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
-import json
+##################################
+# APISCAN - API Security Scanner #
+# Licensed under the MIT License #
+# Author: Perry Mertens, 2025    #
+##################################
+import argparse
+import glob
 import re
 from pathlib import Path
-from datetime import datetime
+from typing import List, Tuple
+from bs4 import BeautifulSoup, Tag
 
-
-# Risk descriptions and recommendations (OWASP API Top 10 2023)
+# ---------------------- RISK INFO DEFINITIONS ----------------------
 RISK_INFO = {
     "BOLA": {
-        "title": "API1:2023 – Broken Object Level Authorization",
+        "title": "API1:2023 - Broken Object Level Authorization",
         "description": (
-            "APIs expose object IDs in their endpoints. Attackers can manipulate IDs to "
-            "retrieve or modify unauthorized data."
+            "APIs often expose object identifiers such as user IDs or document IDs within request paths or parameters. "
+            "If proper authorization checks are not implemented, attackers can modify these identifiers to access data "
+            "that does not belong to them. This leads to unauthorized access or data leakage. The risk is especially high "
+            "in RESTful APIs where object references are part of the URL structure."
         ),
         "recommendation": """- Implement object-level authorization checks on every request
 - Use unpredictable IDs (UUID) instead of sequential integers
@@ -27,10 +27,11 @@ RISK_INFO = {
 - Log and alert on failed authorization attempts"""
     },
     "BrokenAuth": {
-        "title": "API2:2023 – Broken Authentication",
+        "title": "API2:2023 - Broken Authentication",
         "description": (
-            "Incorrect authentication implementations make it possible to steal tokens "
-            "or hijack sessions."
+            "Authentication mechanisms that are poorly designed or misconfigured allow attackers to compromise tokens, "
+            "bypass login flows, or hijack user sessions. This includes flaws in token generation, session expiration, "
+            "credential storage, or password reset logic. The impact can range from unauthorized access to full account takeover."
         ),
         "recommendation": """- Use MFA for sensitive actions
 - Work with short-lived, cryptographically signed tokens
@@ -39,10 +40,11 @@ RISK_INFO = {
 - Never expose credentials in URLs or error messages"""
     },
     "Property": {
-        "title": "API3:2023 – Broken Object Property Level Authorization",
+        "title": "API3:2023 - Broken Object Property Level Authorization",
         "description": (
-            "Mass assignment and over-exposure: clients can see or modify fields that "
-            "should remain hidden."
+            "APIs that expose internal object properties without proper access control allow clients to view or manipulate data "
+            "they shouldn't have access to. This includes over-sharing in API responses and accepting unexpected or sensitive fields "
+            "in client submissions, known as mass assignment vulnerabilities. Attackers can exploit this to alter read-only or admin-level fields."
         ),
         "recommendation": """- Explicitly define which fields are visible/editable per role
 - Validate request and response payloads with schemas
@@ -51,10 +53,11 @@ RISK_INFO = {
 - Strictly separate public and private properties"""
     },
     "Resource": {
-        "title": "API4:2023 – Unrestricted Resource Consumption",
+        "title": "API4:2023 - Unrestricted Resource Consumption",
         "description": (
-            "No limits on payload size, pagination or requests can lead to DoS or "
-            "higher costs due to resource exhaustion."
+            "Lack of proper resource management allows attackers to overload the system with excessive requests, large payloads, "
+            "or expensive operations. This can lead to denial of service (DoS), service degradation, or increased operational costs. "
+            "APIs that allow unlimited requests, nested queries, or unbounded filters are particularly vulnerable."
         ),
         "recommendation": """- Implement rate limiting and quotas
 - Set maximum payload sizes
@@ -63,10 +66,11 @@ RISK_INFO = {
 - Cache expensive operations where possible"""
     },
     "AdminAccess": {
-        "title": "API5:2023 – Broken Function Level Authorization",
+        "title": "API5:2023 - Broken Function Level Authorization",
         "description": (
-            "Complex role/function matrices often lead to endpoints being accessible to regular users "
-            "when they're only meant for admins."
+            "APIs may expose administrative or privileged operations without enforcing strict access control. "
+            "Attackers can escalate privileges by calling hidden or undocumented functions. These issues often stem from "
+            "complex role hierarchies, inconsistent policy enforcement, or a lack of centralized authorization checks."
         ),
         "recommendation": """- Use RBAC or ABAC with deny-by-default
 - Centralize authorization logic
@@ -75,10 +79,11 @@ RISK_INFO = {
 - Document and encrypt sensitive admin flows"""
     },
     "BusinessFlows": {
-        "title": "API6:2023 – Unrestricted Access to Sensitive Business Flows",
+        "title": "API6:2023 - Unrestricted Access to Sensitive Business Flows",
         "description": (
-            "Attackers can automate or abuse sensitive business processes (e.g. checkout, booking) "
-            "when there are no anti-fraud measures."
+            "APIs that expose key business processes such as financial transactions, bookings, or account changes are attractive targets "
+            "for abuse. If such flows lack business logic validation or abuse protection (e.g. rate limiting, anomaly detection), "
+            "they may be exploited through automation, leading to financial loss or fraud."
         ),
         "recommendation": """- Add business context validations (e.g. balance, limits)
 - Use CAPTCHA/rate limiting against bots
@@ -87,10 +92,11 @@ RISK_INFO = {
 - Monitor critical flows in real-time"""
     },
     "SSRF": {
-        "title": "API7:2023 – Server Side Request Forgery",
+        "title": "API7:2023 - Server Side Request Forgery",
         "description": (
-            "APIs that fetch external URLs can be abused to access internal services or "
-            "leak metadata."
+            "If an API accepts URLs or user-defined targets and then performs server-side requests, attackers may exploit this "
+            "functionality to access internal services, scan the network, or retrieve sensitive metadata. SSRF can also be used as "
+            "a pivot point in multi-stage attacks against internal infrastructure or cloud metadata endpoints."
         ),
         "recommendation": """- Validate & sanitize all provided URLs
 - Use an allow-list of permitted domains
@@ -99,10 +105,11 @@ RISK_INFO = {
 - Apply egress firewall rules"""
     },
     "Misconfig": {
-        "title": "API8:2023 – Security Misconfiguration",
+        "title": "API8:2023 - Security Misconfiguration",
         "description": (
-            "Default or incorrect configurations (CORS, headers, debug modes) can leak sensitive "
-            "information or facilitate attacks."
+            "Misconfigured HTTP headers, CORS policies, verbose error messages, and leftover debug endpoints are common in APIs "
+            "and can be exploited to gain insight into backend systems or bypass protections. Misconfigurations may also lead to "
+            "data exposure, unauthorized access, or weakened transport security."
         ),
         "recommendation": """- Harden systems according to security baselines
 - Disable unnecessary HTTP methods
@@ -111,10 +118,11 @@ RISK_INFO = {
 - Regularly review & patch configurations"""
     },
     "Inventory": {
-        "title": "API9:2023 – Improper Inventory Management",
+        "title": "API9:2023 - Improper Inventory Management",
         "description": (
-            "Incomplete overview of endpoints/versions leads to shadow APIs and old, "
-            "unpatched versions remaining online."
+            "Organizations often lose track of API versions, staging/test environments, and undocumented endpoints. "
+            "These shadow or zombie APIs may be exposed to the internet and remain unprotected. Without proper inventory, "
+            "you can't assess security posture, enforce updates, or manage deprecations effectively."
         ),
         "recommendation": """- Maintain an up-to-date inventory of all endpoints
 - Carefully deprecate & remove old versions
@@ -123,93 +131,310 @@ RISK_INFO = {
 - Proactively scan for undocumented APIs"""
     },
     "UnsafeConsumption": {
-        "title": "API10:2023 – Unsafe Consumption of APIs",
+        "title": "API10:2023 - Unsafe Consumption of APIs",
         "description": (
-            "Over-reliance on third-party data can lead to injections or unexpected behavior "
-            "when the external API behaves unexpectedly."
+            "Trusting third-party or upstream APIs without proper validation introduces significant risks. These include injection attacks, "
+            "unexpected responses, and business logic flaws. If these dependencies are not handled defensively, they can cause "
+            "data corruption, denial of service, or unauthorized access to internal systems."
         ),
         "recommendation": """- Validate & sanitize all data from third-party APIs
 - Set time limits & retries
 - Fail safely: handle external errors gracefully
 - Keep third-party credentials secret & rotate regularly
 - Continuously monitor external service behavior"""
-    }
+    },
 }
 
+# ------------------------------------------------------------------
+INTRO_HTML = """
+<div class="intro">
+<p>Hello there, API scanner!</p>
+<p>You are looking at the front door to my trusty sidekick, <strong>APIScan</strong>. Think of it as a polite but relentless bouncer for your endpoints: it checks every route on the guest list, asks awkward questions, and refuses entry to anything shady.</p>
 
-def create_audit_report(output_dir: Path):
-    #Create comprehensive DOCX report from all scan results
-    doc = Document()
-    
-    # Add title page
-    doc.add_heading('API Security Scanner. This program is created by Perry Mertens April 2025 (c)', 0)
-    doc.add_paragraph('Generated on: ' + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    doc.add_page_break()
-    
-    # Table of Contents
-    doc.add_heading('Table of Contents', 1)
-    paragraphs = []
-    for risk in RISK_INFO.values():
-        paragraphs.append(risk["title"])
-    doc.add_paragraph('\n'.join(paragraphs))
-    doc.add_page_break()
+<h2>What it does</h2>
+<ol>
+  <li>Fires a barrage of requests at your API and notes every weird response.</li>
+  <li>Maps those quirks onto the OWASP API Top Ten, so you instantly spot classics like Broken Object Level Authorization or sneaky Server-Side Request Forgery.</li>
+  <li>Packs the evidence into clear, human-readable reports with risk levels, timestamps, and ready-made advice.</li>
+</ol>
 
-    # Special mapping for shorter filenames
-    manual_file_map = {
-        'BOLA': 'bola',
-        'BrokenAuth': 'broken_auth',
-        'UnsafeConsumption': 'safe_consumption', 
-        # Add new mappings here if you scan for new risks
-    }
+<h2>Why you will love it</h2>
+<ul>
+  <li>Saves you the thrill of manual testing at three in the morning.</li>
+  <li>Fits nicely into CI or a quick weekend audit with equal charm.</li>
+  <li>Gives developers concrete steps instead of vague hand-waving.</li>
+  <li>Lets auditors (hi, that is me) sign off with confidence and maybe even a grin.</li>
+</ul>
 
-    # Add content for each risk
-    for risk_name, info in RISK_INFO.items():
-        doc.add_heading(info["title"], level=1)
+<h2>How to use it</h2>
+<p>Point it at a base URL, grab a coffee, and watch the findings roll in. High risks rise to the top, harmless noise slips to the bottom. Copy the tips, fix the code, rerun, repeat until your logs are greener than a fresh avocado.</p>
 
-        doc.add_heading('Description', level=2)
-        doc.add_paragraph(info["description"])
+<p>Sure, security is serious business, but a little humor keeps the bits flowing. So enjoy the scan, patch those holes, and sleep better knowing your API is wearing a proper suit of armor. No capes required.</p>
 
-        doc.add_heading('Findings', level=2)
-        snake = manual_file_map.get(risk_name, re.sub(r'(?<!^)(?=[A-Z])', '_', risk_name).lower())
-        report_file = output_dir / f"api_{snake}_report.txt"
-        if report_file.exists():
-            findings = report_file.read_text(encoding='utf-8')
-            clean_findings = ''.join(c for c in findings if c.isprintable() or c in '\n\r\t')
-            doc.add_paragraph(clean_findings)
-        else:
-            doc.add_paragraph("No findings reported for this risk")
+<h2>Greetings Perry Mertens 2025 (c) pamsniffer@gmail.com</h2>
+</div>
+""".strip()
 
-        doc.add_heading('Recommendations', level=2)
-        doc.add_paragraph(info["recommendation"])
+ALIASES = {
+    # Numeric patterns
+    r"api1": "BOLA",
+    r"api2": "BrokenAuth",
+    r"api3": "Property",
+    r"api4": "Resource",
+    r"api5": "AdminAccess",
+    r"api6": "BusinessFlows",
+    r"api7": "SSRF",
+    r"api8": "Misconfig",
+    r"api9": "Inventory",
+    r"api10": "UnsafeConsumption",
 
-        doc.add_page_break()
+    # Textual patterns
+    r"bola": "BOLA",
+    r"broken[_-]?auth": "BrokenAuth",
+    r"property": "Property",
+    r"resource": "Resource",
+    r"admin[_-]?access": "AdminAccess",
+    r"business[_-]?flows?": "BusinessFlows",
+    r"ssrf": "SSRF",
+    r"misconfig": "Misconfig",
+    r"inventory": "Inventory",
+    r"unsafe[_-]?consumption": "UnsafeConsumption",
+}
 
-    # Add summary
-    doc.add_heading('Executive Summary', level=1)
-    summary_file = output_dir / "api_summary_report.txt"
-    if summary_file.exists():
-        summary = json.loads(summary_file.read_text(encoding='utf-8'))
-        table = doc.add_table(rows=1, cols=3)
-        table.style = 'Light Shading Accent 1' 
-        
-        hdr_cells = table.rows[0].cells
-        hdr_cells[0].text = 'Risk'
-        hdr_cells[1].text = 'OWASP Category'
-        hdr_cells[2].text = 'Vulnerabilities Found'
+# ---------------------- UTILITIES ---------------------------------
 
-        for risk, count in summary.items():
-            row_cells = table.add_row().cells
-            row_cells[0].text = risk
-            row_cells[1].text = RISK_INFO.get(risk, {}).get("title", "N/A")
-            row_cells[2].text = str(count)
+def discover_files(pattern: str) -> List[str]:
+    paths = glob.glob(pattern)
+    paths.sort()
+    return paths
 
-    report_path = output_dir / "API_Security_Audit_Report.docx"
-    doc.save(str(report_path))
-    print(f"📄 Comprehensive report saved to: {report_path}")
+def insert_intro(html_text: str) -> str:
+    """Inject INTRO_HTML right after the first <h1> tag in the document."""
+    soup: BeautifulSoup = BeautifulSoup(html_text, "html.parser")
+    header: Tag | None = soup.body.find("h1") if soup.body else None
+
+    if header is None:
+        raise ValueError("No <h1> header found in the provided HTML document.")
+
+    header.insert_after(BeautifulSoup(INTRO_HTML, "html.parser"))
+    return str(soup)
+
+
+def infer_risk_key(filename: str) -> str:
+    """Infer risk key from filename via numeric ID or regex aliases."""
+    lower = filename.lower()
+
+    # Numeric 'apiX' detection
+    num_match = re.search(r"api(\d+)", lower)
+    if num_match:
+        num_map = {
+            "1": "BOLA",
+            "2": "BrokenAuth",
+            "3": "Property",
+            "4": "Resource",
+            "5": "AdminAccess",
+            "6": "BusinessFlows",
+            "7": "SSRF",
+            "8": "Misconfig",
+            "9": "Inventory",
+            "10": "UnsafeConsumption",
+        }
+        n = num_match.group(1).lstrip("0")
+        if n in num_map:
+            return num_map[n]
+
+    # Regex aliases
+    for regex, key in ALIASES.items():
+        if re.search(regex, lower):
+            return key
+
+    raise ValueError(f"Cannot determine risk key for '{filename}'. Update ALIASES or rename file.")
+
+
+def extract_styles(soup: BeautifulSoup) -> Tuple[List[Tag], List[Tag]]:
+    style_tags = soup.find_all("style")
+    link_tags = soup.find_all("link", rel=lambda x: x and "stylesheet" in x.lower())
+    for tag in style_tags + link_tags:
+        tag.extract()
+    return style_tags, link_tags
+
+
+def add_back_links(section: Tag):
+    """Place ↩ links after headings that start with 'Finding'.
+
+    BeautifulSoup <Tag> does not always have the method `new_tag` in older bs4 versions. Therefore, we use a separate soup-factory to create the new <a> tags - works in all bs4 versions.
+    """
+    factory = BeautifulSoup("", "html.parser")
+    for hdr in section.find_all(["h2", "h3", "h4", "h5", "h6"]):
+        if hdr.get_text(strip=True).lower().startswith("finding"):
+            link = factory.new_tag("a", href="#top", **{"class": "back-to-index"})
+            link.string = "↩ Back to index"
+            hdr.insert_after(link)
+
+# ---------------------- HTML HELPERS -------------------------------
+
+def build_index(keys: List[str]) -> str:
+    """Clickable table of contents - full OWASP titles, no numbering."""
+    soup = BeautifulSoup(features="html.parser")
+    ul = soup.new_tag("ul")
+
+    for idx, key in enumerate(keys, start=1):
+        li = soup.new_tag("li")
+        a = soup.new_tag("a", href=f"#rapport{idx}")
+        a.string = RISK_INFO[key]["title"]          # ← e.g.  API1:2023 - Broken Object Level Authorization
+        li.append(a)
+        ul.append(li)
+
+    return str(ul)
+
+
+
+def build_header(idx: int, risk_key: str) -> Tag:
+    """Header with full OWASP title and ↩ back-to-index link."""
+    info = RISK_INFO[risk_key]
+    soup = BeautifulSoup(features="html.parser")
+
+    header_div = soup.new_tag(
+        "div", **{"class": "rapport-header", "id": f"rapport{idx}"}
+    )
+
+    # ► Title
+    h1 = soup.new_tag("h1")
+    h1.string = info["title"]             
+    header_div.append(h1)
+
+    # ► ↩ Back to index
+    link_top = soup.new_tag("a", href="#top", **{"class": "back-to-index"})
+    link_top.string = "↩ Back to index"
+    header_div.append(link_top)
+
+    # ► Description
+    p_desc = soup.new_tag("p")
+    p_desc.string = info["description"]
+    header_div.append(p_desc)
+
+    # ► Recommendations
+    details = soup.new_tag("details")
+    summary = soup.new_tag("summary")
+    summary.string = "Recommendations"
+    details.append(summary)
+    for line in info["recommendation"].splitlines():
+        if line.strip().startswith("-"):
+            li = soup.new_tag("li")
+            li.string = line.lstrip("-").strip()
+            details.append(li)
+    header_div.append(details)
+
+    return header_div
+
+
+def build_headerold(idx: int, risk_key: str) -> Tag:
+    info = RISK_INFO[risk_key]
+    soup = BeautifulSoup(features="html.parser")
+    header_div = soup.new_tag(
+        "div", **{"class": "rapport-header", "id": f"rapport{idx}"}
+    )
+
+    h1 = soup.new_tag("h1")
+    h1.string = info["title"]  
+    header_div.append(h1)
+
+    p_desc = soup.new_tag("p")
+    p_desc.string = info["description"]
+    header_div.append(p_desc)
+
+    details = soup.new_tag("details")
+    summary = soup.new_tag("summary")
+    summary.string = "Recommendations"
+    details.append(summary)
+    for line in info["recommendation"].splitlines():
+        if line.strip().startswith("-"):
+            li = soup.new_tag("li")
+            li.string = line.lstrip("-").strip()
+            details.append(li)
+    header_div.append(details)
+
+    return header_div
+
+# ---------------------- MERGE LOGIC --------------------------------
+
+
+def generate_combined_html(output: str, files: List[str]):
+    """Merge and sort reports by API number, and build index/sections with full titles."""
+    if not files:
+        raise ValueError("No files found matching the pattern.")
+
+    # Sort files based on API number extracted from title
+    files_sorted = sorted(
+        files,
+        key=lambda fp: int(re.search(r"API(\d+)", RISK_INFO[infer_risk_key(Path(fp).name)]["title"]).group(1)),
+    )
+
+    risk_keys: List[str] = []
+    sections_html: List[str] = []
+    collected_styles: List[str] = []
+
+    for idx, filepath in enumerate(files_sorted, start=1):
+        risk_key = infer_risk_key(Path(filepath).name)
+        risk_keys.append(risk_key)
+
+        soup = BeautifulSoup(Path(filepath).read_text(encoding="utf-8"), "html.parser")
+
+        style_tags, link_tags = extract_styles(soup)
+        collected_styles.extend([str(t) for t in style_tags + link_tags])
+
+        wrapper = soup.new_tag("section", **{"class": "rapport"})
+        wrapper.append(build_header(idx, risk_key))
+
+        body_src = soup.body if soup.body else soup
+        for child in list(body_src.children):
+            wrapper.append(child)
+
+        add_back_links(wrapper)
+        sections_html.append(str(wrapper))
+
+    nav_html = build_index(risk_keys)
+
+    final_html = f"""<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8'>
+<title>Combined API Reports by Perry Mertens (c) pamsniffer@gmail.com</title>
+<style>
+body {{ font-family: Arial, sans-serif; margin: 40px; }}
+nav ul {{ list-style: none; padding: 0; }}
+nav li {{ margin-bottom: 0.4em; }}
+.rapport {{ margin-top: 3em; border-top: 1px solid #ccc; padding-top: 2em; }}
+.rapport-header details {{ margin-top: 1em; }}
+.back-to-index {{ display: inline-block; margin: 0.5em 0; font-size: 0.9em; }}
+</style>
+{''.join(collected_styles)}
+</head>
+<body>
+<a id='top'></a>
+<h1 style="font-size: 28px;">API Report Overview - Apiscan by Perry Mertens (c) pamsniffer@gmail.com</h1>
+<nav>
+{nav_html}
+</nav>
+{''.join(sections_html)}
+</body>
+</html>"""
+    final_html = insert_intro(final_html)
+    Path(output).write_text(final_html, encoding="utf-8")
+    print(f"Merged into {output} — processed {len(files)} reports.")
+
+
+# ---------------------- CLI ---------------------------------------
 
 def main():
-    output_dir = Path(".")  
-    create_audit_report(output_dir)
+    parser = argparse.ArgumentParser(
+        description="Combine API HTML reports into one file with index, OWASP headers, and back link."
+    )
+    parser.add_argument("-o", "--output", default="combined.html", help="Output file")
+    parser.add_argument("-p", "--pattern", default="api_*.html", help="Glob pattern for report files")
+    args = parser.parse_args()
 
-if __name__ == "__main__":
-    main()
+    files = discover_files(args.pattern)
+    merge(args.output, files)
+
+

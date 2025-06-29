@@ -1,3 +1,8 @@
+##################################
+# APISCAN - API Security Scanner #
+# Licensed under the MIT License #
+# Author: Perry Mertens, 2025    #
+##################################
 import time
 import sys
 import requests

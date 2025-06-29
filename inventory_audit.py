@@ -1,23 +1,8 @@
-#
-# Licensed under the MIT License. 
-# Copyright (c) 2025 Perry Mertens
-#
-# See the LICENSE file for full license text.
-"""inventory_audit.py – OWASP API9:2023 (Improper Inventory Management)
-=====================================================================
-Detects outdated, undocumented or debug-like endpoints and hosts.
-Combines Swagger inventory, heuristic endpoint lists and (optional)
-live scanning via HTTP OPTIONS to find discrepancies.
-
-Features
---------
-* **Undocumented paths**      – endpoint not found in Swagger.
-* **Deprecated API versions** – version number in path < latest known version.
-* **Exposed debug endpoints** – `/actuator`, `/swagger`, `/h2-console`, …
-* **Multiple hosts**          – responses reference other sub-domains.
-* **Markdown / JSON report**  – groups findings by category.
-"""
-
+##################################
+# APISCAN - API Security Scanner #
+# Licensed under the MIT License #
+# Author: Perry Mertens, 2025    #
+##################################
 from __future__ import annotations
 
 import json
@@ -36,7 +21,7 @@ Endpoint = Dict[str, str]
 
 
 class InventoryAuditor:
-    """Audit Improper Inventory Management – OWASP API9:2023."""
+    """Audit Improper Inventory Management - OWASP API9:2023."""
 
     _DEBUG_PATHS = [
         "/swagger", "/swagger-ui", "/swagger.json", "/openapi", "/openapi.json",
@@ -116,19 +101,11 @@ class InventoryAuditor:
                 "timestamp": datetime.now().isoformat(),
             })
 
-    def generate_report(self, fmt: str = "markdown") -> str:
-        return ReportGenerator(
-            issues=self._issues,
-            scanner="Inventory (API09)",
-            base_url=self.base_url
-        ).generate_markdown() if fmt == "markdown" else ReportGenerator(
-            issues=self._issues,
-            scanner="Inventory (API09)",
-            base_url=self.base_url
-        ).generate_json()
+    def generate_report(self, fmt: str = "html") -> str:
+        return ReportGenerator(self._issues, scanner="Inventory (API09)", base_url=self.base_url).generate_html() if fmt == "html" else ReportGenerator(self._issues, scanner="Inventory (API09)", base_url=self.base_url).generate_markdown()
         
         
-    def save_report(self, path: str, fmt: str = "markdown"):
+    def save_report(self, path: str, fmt: str = "html"):
         ReportGenerator(self._issues, scanner="Inventory (API09)", base_url=self.base_url).save(path, fmt=fmt)
 
 
@@ -152,7 +129,7 @@ if not hasattr(InventoryAuditor, "test_endpoints"):
 
 # CLI (stand-alone)
 if __name__ == "__main__":
-    p = _arg.ArgumentParser(description="Audit OWASP API9 – Inventory Management")
+    p = _arg.ArgumentParser(description="Audit OWASP API9 - Inventory Management")
     p.add_argument("--url", required=True)
     p.add_argument("--swagger", required=True)
     args = p.parse_args()

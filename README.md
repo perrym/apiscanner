@@ -1,7 +1,7 @@
 # APISCAN - OWASP API Security Scanner
 
-**Version:** 0.8.9-alpha  
-**Author:** Perry Mertens  
+**Version:** 0.9.0-beta  
+**Author:** Perry Mertens email:pamsniffer@gmail.com
 **License:** MIT
 
 ## Overview
@@ -30,6 +30,7 @@
 | API8             | Security Misconfiguration | `misconfiguration_audit.py` |
 | API9             | Improper Inventory Management | `inventory_audit.py` |
 | API10            | Unsafe Consumption of 3rd-Party APIs | `safe_consumption_audit.py` |
+| API11            | AI-assisted Security Analysis         | `ai_client.py`              |
 
 ## Example Usage
 
@@ -37,7 +38,7 @@
 python apiscan.py --url https://api.example.com \
   --swagger openapi.json \
   --token eyJhbGciOi... \
-  --threads 4
+  --flow token 
 ```
 
 ### Authentication Options
@@ -103,3 +104,41 @@ This tool is intended for educational and authorized security testing only. Unau
 - `--cert-password`: Wachtwoord voor client certificaat
 - `--debug`: Enable debug output
 - `f"--api{i}`, `help=f"Voer alleen API{i}-audit uit`:
+
+
+## 🧠 API11 – AI-assisted Security Review
+
+**Module:** `ai_client.py`  
+**Nieuw:** Ondersteuning voor *zowel lokale Ollama* als *OpenAI API (GPT-4o)*
+
+Deze optionele module voert AI-gedreven endpoint-analyse uit op basis van de OWASP API Top 10. Het ondersteunt nu twee modi:
+
+### 1. OpenAI GPT-4o (cloud)
+
+Gebruik deze modus wanneer je een echte API key hebt van OpenAI:
+
+```bash
+export OPENAI_API_KEY=sk-...
+python apiscan.py --url https://api.example.com --swagger openapi.json --api11
+```
+
+De module gebruikt `https://api.openai.com/v1/chat/completions` en het `gpt-4o` model standaard, maar je kunt dit aanpassen via de argumenten in `analyze_endpoints_with_gpt()`.
+
+### 2. Lokale LLM via Ollama (optioneel)
+
+Als je een lokale LLM hebt draaien (zoals `mistral`, `deepseek`, etc. via Ollama), kun je deze blijven gebruiken:
+
+```bash
+python apiscan.py --url https://api.example.com --swagger openapi.json --api11
+```
+
+Gebruik de `--port` parameter om over te schakelen van 11434 (Ollama) naar een andere lokale service. Deze modus vereist geen internetverbinding of OpenAI key.
+
+### Output
+
+- `ai_analysis_output.json`: JSON-bestand met samenvattingen per endpoint
+- Bevat voor elk endpoint:
+  - OWASP-risico’s
+  - Abuse scenario's
+  - Teststrategieën
+  - Risicobeoordeling

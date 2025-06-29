@@ -289,7 +289,7 @@ class UltimateSwaggerGenerator:
                             self._find_websockets(script_response.text, script_url)
                             self._find_graphql(script_response.text, script_url)
                     except Exception as e:
-                        print(f"[!] Fout bij ophalen extern JS: {script_url} – {str(e)}")
+                        print(f"[!] Fout bij ophalen extern JS: {script_url} - {str(e)}")
 
                 # Meta en data-attributen
                 for meta in soup.find_all("meta"):

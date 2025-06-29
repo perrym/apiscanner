@@ -1,19 +1,9 @@
-#
-# Licensed under the MIT License. 
-# Copyright (c) 2025 Perry Mertens
-#
-# See the LICENSE file for full license text.
-"""
-Enhanced Misconfiguration Auditor - PRO version
-Features:
-- Comprehensive security header checks
-- Advanced SSRF detection (reflected and blind)
-- CORS misconfiguration detection
-- Verbose error message detection
-- Rate limiting and performance controls
-- Detailed debug logging
-- Enhanced reporting
-"""
+##################################
+# APISCAN - API Security Scanner #
+# Licensed under the MIT License #
+# Author: Perry Mertens, 2025    #
+##################################
+
 
 from __future__ import annotations
 import argparse
@@ -148,7 +138,9 @@ class MisconfigurationAuditorPro:
             "severity": severity,
             "response_headers": dict(response.headers),
             "response_body_sample": response.text[:500] if response.text else None,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
+        "request_headers": dict(response.request.headers) if response.request else None,
+        "request_body": getattr(response.request, "body", None) if response.request else None
         }
 
     def _enforce_rate_limit(self):
@@ -470,7 +462,7 @@ class MisconfigurationAuditorPro:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Enhanced OWASP API8 Auditor – Misconfigurations & SSRF")
+    parser = argparse.ArgumentParser(description="Enhanced OWASP API8 Auditor - Misconfigurations & SSRF")
     parser.add_argument("--url", required=True, help="Base API URL")
     parser.add_argument("--swagger", required=True, help="Path to Swagger/OpenAPI-JSON")
     parser.add_argument("--output", choices=["markdown", "json"], default="markdown")
@@ -493,3 +485,14 @@ if __name__ == "__main__":
     aud.test_endpoints(eps)
 
     print(aud.generate_report(args.output))
+
+
+if __name__ == "__main__":
+    from report_utils import ReportGenerator
+    findings = run_misconfig_audit()  # Zorg dat deze functie bestaat
+    if findings:
+        rg = ReportGenerator(findings, scanner="Misconfiguration Audit", base_url="http://localhost")
+        Path("misconfig_report.html").write_text(rg.generate_html(), encoding="utf-8")
+        print("[+] HTML rapport opgeslagen als misconfig_report.html")
+    else:
+        print("[!] Geen bevindingen gevonden.")

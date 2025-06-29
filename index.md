@@ -1,5 +1,5 @@
 ---
-title: APISCAN - Apiscanner OWASP API Security Scanner
+title: APIScan (AI-Aware) OWASP APIScanner by Perry Mertens
 description: Free and open-source API security scanner built in Python...
 <meta content="VvYq2k5BFp5dpIL6JpQhoe90sWEXZTEBbaynlEKCWRE" name="google-site-verification">
 ---
@@ -8,7 +8,7 @@ description: Free and open-source API security scanner built in Python...
 
 ---
 
-# APISCAN apiscanner 0.8.9-alpha - is a free and extensible API security auditing framework, built in Python, that targets the **OWASP API Security Top 10**.  
+# APISCAN apiscanner 0.9.0-beta - is a free and extensible API security auditing framework, built in Python, that targets the **OWASP API Security Top 10**.  
 # It supports **OpenAPI/Swagger specs**, performs **active scans** on endpoints, and produces nice reports.
 ## OWASP based (REST) API Security Assessment Tool (by Perry Mertens April 2025)
 
@@ -34,7 +34,7 @@ OWASP API Risk	APISCAN.PY Coverage	Module
 | API8: Injection | Partially tested via authentication and external API tests | `broken_auth_audit.py`, `safe_consumption_audit.py` |
 | API9: Improper Inventory Management | Exposed API documentation and debug endpoints | `inventory_audit.py` |
 | API10: Unsafe Consumption of 3rd-Party APIs | Injection and SSRF risks through external APIs | `safe_consumption_audit.py` |
-
+| API11: AI-assisted Security Analysis  | `ai_client.py`  |
 
 3. Module Descriptions
 Each APISCAN module targets specific OWASP API risks with realistic attack simulations. The tests include fuzzing, timing analysis, authorization bypass attempts, response reflection analysis, security header evaluation, and concurrency stress tests.

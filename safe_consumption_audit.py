@@ -687,7 +687,7 @@ class SafeConsumptionAuditor:
                 "e11000 duplicate key error",
                 "mongo: no documents in result",
                 "unrecognized pipeline stage",
-                "cannot apply \$inc to a value of non-numeric type",
+                "cannot apply inc to a value of non-numeric type",
                 "fieldpath field names may not contain",
                 "unexpected token",
                 "mongo: no documents in result"

@@ -147,7 +147,7 @@ def main() -> None:
     parser.add_argument("--threads", type=int, default=2)
     parser.add_argument("--cert-password", help="Wachtwoord voor client certificaat")
     parser.add_argument("--debug", action="store_true", help="Enable debug output")
-    parser.add_argument("--api11", action="store_true", help="Run AI-based OWASP Top 10 analysis using Ollama or other ")
+    parser.add_argument("--api11", action="store_true", help="Run AI-based OWASP Top 10 analysis using AI or other ")
     
     # Voeg API selectie argumenten toe
     for i in range(1, 11):
@@ -222,29 +222,13 @@ def main() -> None:
                 raise ValueError("Failed to parse Swagger - invalid format")
 
             endpoints = bola.get_object_endpoints(spec)
+            ai_endpoints = [
+                {"path": ep["path"], "method": ep["method"]}
+                for ep in endpoints if ep.get("path") and ep.get("method")
+            ]
             logger.debug(f"Swagger successfully loaded - {len(endpoints)} endpoints detected")
             styled_print(f"Swagger loaded - {len(endpoints)} endpoints found", "ok")
-            if args.api11:
-                logger.info("Running AI-powered OWASP API Top 10 analysis via Ollama")
-
-                # Bouw AI-ready endpointlijst
-                ai_endpoints = [
-                    {"path": ep.get("path"), "method": ep.get("method")}
-                    for ep in endpoints if ep.get("path") and ep.get("method")
-                ]
-                styled_print("Sending endpoints to local AI engine via Ollama...", "info")
-
-                try:
-                    from ai_client import analyze_endpoints_with_gpt, save_ai_summary
-                    ai_results = analyze_endpoints_with_gpt(ai_endpoints, model="mistral", port=1234)
-                    save_ai_summary(ai_results, "ai_analysis_output.json")
-
-                    styled_print(f"API11 complete - {len(ai_results)} endpoints analyzed", "done")
-                except Exception as e:
-                    styled_print(f"FAIL: AI analysis failed: {e}", "fail")
-
-                # Sla alle andere API-checks over
-                sys.exit(0)
+           
                         
         except (FileNotFoundError, ValueError) as e:
             logger.error(f"Swagger processing failed: {e}")
@@ -421,17 +405,25 @@ def main() -> None:
         styled_print(f"API10 complete - {len(safe_issues)} issues", "done")
 
 
+
     if 11 in selected_apis:
-        print(" API11 - AI-assisted OWASP analysis")
-        logger.info("Running API11 - AI LLM audit")
+        styled_print("API11 – AI-assisted OWASP analysis (Azure GPT-4o)", "info")
+        logger.info("Running API11 – GPT-4o audit")
+
         try:
-            styled_print("Sending endpoints to local AI engine via Ollama...", "info")
-            ai_results = analyze_endpoints_with_gpt(ai_endpoints)
-            save_ai_summary(ai_results, output_dir)
-            styled_print(f"API11 complete - {len(ai_results)} endpoints analyzed", "done")
+            # GPT-4o-run met live probe
+            ai_results = analyze_endpoints_with_gpt(
+                ai_endpoints,
+                live_base_url=args.url,         # base-URL voor live probes
+                print_results=True
+            )
+            save_ai_summary(ai_results, output_dir / "AI-api11_scanresults.json")
+            styled_print(f"API11 complete – {len(ai_results)} endpoints analyzed", "done")
+
         except Exception as e:
             styled_print(f"AI analysis failed: {e}", "fail")
-            logger.error(f"AI analysis exception: {e}")
+            logger.exception("AI analysis exception")
+
 
     
     
@@ -457,12 +449,20 @@ def main() -> None:
     print(f"  Total found       : {total_vulns}")
     styled_print("Scan complete. All results and logs saved.", "ok")
         
-    styled_print("Combining HTML reports …", "info")
-    try:
-        html_files = sorted(str(f) for f in output_dir.glob("api_*_report.html"))
-        generate_combined_html(output=str(output_dir / "combined_report.html"), files=html_files)
-    except Exception as exc:
-        styled_print(f"Combined HTML report failed: {exc}", "fail")
+    html_files = sorted(str(f) for f in output_dir.glob("api_*_report.html"))
+ 
+    if not html_files:
+        styled_print("Geen HTML-rapporten om te combineren – stap over.", "info")
+    else:
+        styled_print("Combining HTML reports …", "info")
+        try:
+            generate_combined_html(
+                output=str(output_dir / "combined_report.html"),
+                files=html_files
+            )
+            styled_print("Combined HTML report saved.", "ok")
+        except Exception as exc:
+            styled_print(f"Combined HTML report failed: {exc}", "fail")
 
 
        

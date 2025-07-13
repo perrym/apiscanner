@@ -58,10 +58,7 @@ python swaggergenerator.py --url https://api.example.com --output openapi.json -
 
 ## Output
 
-- Individual text files per OWASP test
-- Summary: `api_summary_report.txt`
-- Professional DOCX report
-- Logs in the `log/` directory
+combined_report.html
 
 ## Requirements
 

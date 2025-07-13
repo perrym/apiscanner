@@ -1,33 +1,44 @@
-##################################
-# APISCAN - API Security Scanner #
-# Licensed under the MIT License #
-# Author: Perry Mertens, 2025    #
-##################################
 """
-AI-powered API security scanner focused on OWASP API Top 10 vulnerabilities
+AI OWASP Scanner Client using OpenAI ChatCompletion with API key authentication only.
 
-Main features:
-- Uses GPT-4o as default model with OWASP-focused prompts
-- Comprehensive error handling with exponential backoff
-- Threaded parallel processing
-- Detailed vulnerability mapping
+Environment variables expected:
+  OPENAI_API_KEY   – your OpenAI secret key (required)
+  OPENAI_MODEL     – model name, defaults to "gpt-4o"
+  OPENAI_API_BASE  – custom base URL (optional, default https://api.openai.com/v1)
+
+The script analyses a list of REST endpoints against the OWASP API Security Top 10.
+It outputs structured JSON assessments per endpoint.
 """
+from __future__ import annotations
 
-import os
 import json
-import time
 import logging
+import os
+import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Sequence
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, List, Optional, Union
+
+import openai
 import requests
 
-# Configure logging
-logger = logging.getLogger("apiscan_ai")
-logger.setLevel(logging.INFO)
+# ---------------------------------------------------------------------------
+# OpenAI configuration – API‑key only
+# ---------------------------------------------------------------------------
+openai.api_key = os.getenv("OPENAI_API_KEY")
+if not openai.api_key:
+    raise RuntimeError("Environment variable OPENAI_API_KEY is not set.")
 
-# Enhanced OWASP-focused prompt
+openai.api_base = os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
+# api_type defaults to "openai" for the normal endpoint; explicit for clarity
+openai.api_type = "openai"
+# model can be overridden via env; default to GPT‑4o
+MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o")
+
+# ---------------------------------------------------------------------------
+# Scanner settings
+# ---------------------------------------------------------------------------
 OWASP_TOP_10 = [
     "API1: Broken Object Level Authorization",
     "API2: Broken Authentication",
@@ -38,175 +49,288 @@ OWASP_TOP_10 = [
     "API7: Server Side Request Forgery",
     "API8: Security Misconfiguration",
     "API9: Improper Inventory Management",
-    "API10: Unsafe Consumption of APIs"
+    "API10: Unsafe Consumption of APIs",
 ]
-# Enhanced OWASP-focused prompt with reasoning guidance
-SYSTEM_PROMPT = f"""You are an API security expert specialized in OWASP API Security Top 10. 
-Evaluate this REST endpoint for vulnerabilities and assign ONE risk label:
 
-**Risk levels:**
-• Informal - No security implications
-• Low      - Minor vulnerability with limited impact
-• Medium   - Significant vulnerability requiring attention
-• High     - Critical vulnerability needing immediate remediation
+SYSTEM_PROMPT = f"""You are an API security expert specialised in the OWASP API Security Top 10.
+Evaluate the following REST endpoint for vulnerabilities and assign **ONE** risk label.
 
-**OWASP API Top 10 categories to consider:**
+**Risk levels**
+Informal - No security implications
+Low      - Minor vulnerability with limited impact
+Medium   - Significant vulnerability requiring attention
+High     - Critical vulnerability needing immediate remediation
+
+**OWASP categories to consider**
 {chr(10).join(OWASP_TOP_10)}
 
-**Required analysis components:**
+**Required analysis components**
 1. Risk assessment
 2. Brief explanation (max 3 sentences)
-3. Relevant OWASP category (specify exact category name)
+3. Relevant OWASP category (exact name)
 4. Secure coding recommendation
-5. Concise reasoning steps (explain your thought process)
+5. Concise reasoning steps (your thought process)
 
-**Reasoning approach:**
-a) Identify endpoint characteristics
-b) Map to OWASP categories
-c) Consider exploit potential
-d) Evaluate impact severity
-e) Determine risk level
-
-Answer **ONLY** in valid JSON format:
+Answer **ONLY** in **valid JSON**:
 {{
   "risk": "<Informal|Low|Medium|High>",
-  "explanation": "...",
-  "owasp_category": "<Exact OWASP category name>",
-  "recommendation": "...",
-  "reasoning": "Step-by-step analysis..."
+  "explanation": "…",
+  "owasp_category": "…",
+  "recommendation": "…",
+  "reasoning": "…"
 }}
-"""
+""".strip()
 
+LIVE_BASE_URL: Optional[str] = None  # Injected by caller if live probing is desired
+LIVE_TIMEOUT = 4
+MAX_WORKERS = 5
+
+# ---------------------------------------------------------------------------
+# Logging setup
+# ---------------------------------------------------------------------------
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Utility regex helpers
+# ---------------------------------------------------------------------------
+_JSON_RE = re.compile(r"""```json\s*({[\s\S]*?})\s*```""", re.IGNORECASE)
+
+def extract_json_block(text: str) -> str:
+    """Return the JSON block from an LLM response or the raw text when parsing fails."""
+    m = _JSON_RE.search(text)
+    return m.group(1).strip() if m else text.strip()
+
+# ---------------------------------------------------------------------------
+# Live probe helper (optional)
+# ---------------------------------------------------------------------------
+
+def _live_probe(ep: Dict[str, str]) -> Dict[str, object]:
+    if LIVE_BASE_URL is None:
+        return {"text": "no live probe"}
+
+    method = ep.get("method", "GET").upper()
+    path = re.sub(r"\{[^/]+\}", "1", ep.get("path", "/"))
+    url = LIVE_BASE_URL.rstrip("/") + path
+
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "apiscan-client",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        resp = requests.request(method, url, timeout=LIVE_TIMEOUT, headers=headers, verify=False)
+        status = resp.status_code
+        size = len(resp.content)
+
+        try:
+            body_text = resp.text
+            body_snippet = body_text[:200].replace("\n", " ").replace("\r", "")
+        except Exception:
+            body_text = "[[BINARY OR NON-UTF8 RESPONSE]]"
+            body_snippet = body_text
+
+        text_summary = (
+            f"{method} {status} ({size} B)\n"
+            f"Request headers: {'; '.join(f'{k}: {v}' for k, v in headers.items())}\n"
+            f"Response headers: {'; '.join(f'{k}: {v}' for k, v in resp.headers.items())}\n"
+            f"Response body (truncated): {body_snippet}"
+        )
+
+        return {
+            "text": text_summary,
+            "request_headers": headers,
+            "response_headers": dict(resp.headers),
+            "response_body_snippet": body_snippet,
+            "response_body_full": body_text,
+        }
+
+    except requests.RequestException as exc:
+        return {
+            "text": f"{method} ERROR ({exc.__class__.__name__})",
+            "request_headers": headers,
+            "response_headers": {},
+            "response_body_snippet": "",
+            "response_body_full": "",
+        }
+
+# ---------------------------------------------------------------------------
+# Prompt builder
+# ---------------------------------------------------------------------------
+
+def _build_prompt(ep: Dict[str, str], live: str) -> str:
+    return (
+        SYSTEM_PROMPT
+        + f"\n\n### Endpoint\nMethod: {ep['method']}\nPath: {ep['path']}\nLive probe: {live}"
+    )
+
+# ---------------------------------------------------------------------------
+# Data model
+# ---------------------------------------------------------------------------
 
 @dataclass
 class EndpointAnalysis:
     path: str
     method: str
-    prompt: str
-    response: str
     risk: str
+    explanation: str
     owasp_category: str
     recommendation: str
-    reasoning: str  # Add this new field
+    reasoning: str
+    request_headers: Optional[Dict[str, str]] = None
+    response_headers: Optional[Dict[str, str]] = None
+    response_body_snippet: Optional[str] = None
+    response_body_full: Optional[str] = None
+    false_positive_likelihood: Optional[str] = None
 
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+    @classmethod
+    def from_gpt(cls, ep: Dict[str, str], obj: Dict[str, Union[str, dict, list]]) -> "EndpointAnalysis":
+        def _to_str(v):
+            if isinstance(v, dict):
+                return v.get("level") or v.get("value") or json.dumps(v)
+            if isinstance(v, (list, tuple)):
+                return ", ".join(map(str, v))
+            return str(v) if v is not None else "Unknown"
 
-def _call_openai(
-    endpoint: Dict[str, Any],
-    model: str,
-    api_key: str,
-    timeout: int = 30,
-    max_retries: int = 5
-) -> EndpointAnalysis:
-    """Perform OpenAI API call with OWASP-focused analysis"""
-    user_prompt = f"Analyze endpoint: {endpoint.get('method')} {endpoint.get('path')}"
-    
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt}
+        fp_likelihood = obj.get("false_positive_likelihood")
+
+        return cls(
+            path=ep["path"],
+            method=ep["method"],
+            risk=_to_str(obj.get("risk")),
+            explanation=_to_str(obj.get("explanation")),
+            owasp_category=_to_str(obj.get("owasp_category")),
+            recommendation=_to_str(obj.get("recommendation")),
+            reasoning=_to_str(obj.get("reasoning")),
+            request_headers=obj.get("request_headers"),
+            response_headers=obj.get("response_headers"),
+            response_body_snippet=obj.get("response_body_snippet"),
+            response_body_full=obj.get("response_body_full"),
+            false_positive_likelihood=fp_likelihood,
+        )
+
+# ---------------------------------------------------------------------------
+# Main scanning logic
+# ---------------------------------------------------------------------------
+
+def _analyse_one(ep: Dict[str, str]) -> EndpointAnalysis:
+    print(f"\U0001F50E Scanning: {ep['method']} {ep['path']}")
+
+    live_info = _live_probe(ep)
+    prompt = _build_prompt(ep, live_info["text"])
+
+    resp = openai.ChatCompletion.create(
+        model=MODEL_NAME,
+        messages=[
+            {"role": "system", "content": "You are ChatGPT."},
+            {"role": "user", "content": prompt},
         ],
-        "temperature": 0.2,  # Lower for more deterministic security analysis
-        "response_format": {"type": "json_object"}
-    }
-    
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-    
-    for attempt in range(max_retries):
-        try:
-            response = requests.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=timeout
-            )
-            response.raise_for_status()
-            
-            # Process response
-            data = response.json()
-            content = data["choices"][0]["message"]["content"]
-            answer = json.loads(content)
-            
-            return EndpointAnalysis(
-                path=endpoint.get("path", ""),
-                method=endpoint.get("method", ""),
-                prompt=user_prompt,
-                response=content,
-                risk=answer.get("risk", "Unknown"),
-                owasp_category=answer.get("owasp_category", "Not identified"),
-                recommendation=answer.get("recommendation", "")
-                reasoning=answer.get("reasoning", "")  
-            )
-            
-        except (requests.exceptions.RequestException, json.JSONDecodeError, KeyError) as e:
-            wait_time = 2 ** attempt
-            if attempt < max_retries - 1:
-                logger.warning(f"Retry {attempt+1}/{max_retries} in {wait_time}s: {str(e)}")
-                time.sleep(wait_time)
-            else:
-                logger.error(f"API call failed after {max_retries} attempts: {str(e)}")
-                return EndpointAnalysis(
-                    path=endpoint.get("path", ""),
-                    method=endpoint.get("method", ""),
-                    prompt=user_prompt,
-                    response="",
-                    risk="Error",
-                    owasp_category="",
-                    recommendation=""
-                )
+        temperature=0.2,
+        max_tokens=512,
+        request_timeout=60,
+    )
+
+    content = resp["choices"][0]["message"]["content"]
+
+    try:
+        data = json.loads(extract_json_block(content))
+    except json.JSONDecodeError:
+        logger.warning("GPT returned non‑JSON for %s %s", ep["method"], ep["path"])
+        data = {}
+
+    data.update({
+        "request_headers": live_info.get("request_headers"),
+        "response_headers": live_info.get("response_headers"),
+        "response_body_snippet": live_info.get("response_body_snippet"),
+        "response_body_full": live_info.get("response_body_full"),
+    })
+
+    explanation_text = data.get("explanation", "").lower()
+    fp_keywords = ["appears to", "may", "possibly", "could", "unclear", "not confirmed"]
+
+    if any(k in explanation_text for k in fp_keywords) and data.get("risk", "").lower() in ["medium", "low"]:
+        data["false_positive_likelihood"] = "possible"
+
+    return EndpointAnalysis.from_gpt(ep, data)
+
+# ---------------------------------------------------------------------------
+# Helper functions for multi‑endpoint scans
+# ---------------------------------------------------------------------------
+
+def _lvl(val):
+    return str(val).lower()
+
+def _print_progress(r: EndpointAnalysis):
+    logger.info("[%-4s] %-55s => %-8s | %s", r.method, r.path, r.risk, r.owasp_category)
+
+def _print_final(res: List[EndpointAnalysis]):
+    hi = sum(1 for r in res if _lvl(r.risk).startswith("high"))
+    med = sum(1 for r in res if _lvl(r.risk).startswith("medium"))
+    lo = len(res) - hi - med
+    logger.info("Finished – High: %d  Medium: %d  Low: %d", hi, med, lo)
 
 def analyze_endpoints_with_gpt(
-    endpoints: List[Dict[str, Any]],
+    endpoints: List[Dict[str, str]],
     *,
-    model: str = "gpt-4o",
-    api_key: Optional[str] = None,
-    max_workers: int = 5,
-    timeout: int = 45
+    live_base_url: Optional[str] = None,
+    print_results: bool = True,
 ) -> List[EndpointAnalysis]:
-    """Analyze endpoints using OWASP-focused GPT model"""
-    if not api_key:
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise ValueError("OpenAI API key is required")
-    
-    logger.info(f"Starting OWASP analysis of {len(endpoints)} endpoints with {model}")
-    
-    results = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(
-            _call_openai,
-            endpoint=ep,
-            model=model,
-            api_key=api_key,
-            timeout=timeout
-        ): ep for ep in endpoints}
-        
-        for future in as_completed(futures):
-            ep = futures[future]
-            try:
-                result = future.result()
-                results.append(result)
-                logger.info(f"Completed: {result.method} {result.path} => {result.risk}")
-            except Exception as e:
-                logger.error(f"Analysis failed for {ep.get('method')} {ep.get('path')}: {str(e)}")
-    
-    logger.info(f"Completed AI analysis of {len(results)} endpoints")
+    """Scan endpoints concurrently and return EndpointAnalysis objects."""
+    global LIVE_BASE_URL
+    if live_base_url:
+        LIVE_BASE_URL = live_base_url.rstrip("/")
+
+    results: List[EndpointAnalysis] = []
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        futs = {pool.submit(_analyse_one, ep): ep for ep in endpoints}
+        for fut in as_completed(futs):
+            results.append(fut.result())
+            if print_results:
+                _print_progress(results[-1])
+
+    if print_results:
+        _print_final(results)
     return results
 
-def save_ai_summary(
-    analyses: Sequence[EndpointAnalysis],
-    output_dir: Path,
-    filename: str = "ai_analysis_report.json"
-) -> Path:
-    """Save OWASP-focused analysis results"""
-    output_path = output_dir / filename
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump([a.to_dict() for a in analyses], f, indent=2, ensure_ascii=False)
-    
-    logger.info(f"Saved OWASP analysis report to {output_path}")
-    return output_path
+def save_ai_summary(results: List[EndpointAnalysis], file_path: str | Path):
+    """Save the analysis list as pretty‑printed JSON."""
+    with open(file_path, "w", encoding="utf-8") as fp:
+        json.dump([asdict(r) for r in results], fp, indent=2)
+    logger.info("Saved AI summary → %s", file_path)
+
+# ---------------------------------------------------------------------------
+# __main__ helper – simple CLI example
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import argparse, sys, textwrap
+
+    parser = argparse.ArgumentParser(
+        description="Scan REST endpoints for OWASP API Top 10 risks using OpenAI GPT‑4o.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent(
+            """
+            Example usage:
+              export OPENAI_API_KEY=sk‑…
+              python ai_client_api_key.py \
+                 --endpoints '{"method": "GET", "path": "/users/{id}"}' \
+                 --live-base-url https://api.example.com
+            """,
+        ),
+    )
+    parser.add_argument("--endpoints", required=True, help="JSON list or file with endpoint dicts")
+    parser.add_argument("--live-base-url", help="Base URL for live probing")
+    parser.add_argument("--out", default="ai_summary.json", help="Output JSON file path")
+    args = parser.parse_args()
+
+    # Load endpoints from JSON string or file path
+    if os.path.isfile(args.endpoints):
+        with open(args.endpoints, "r", encoding="utf-8") as fh:
+            endpoints = json.load(fh)
+    else:
+        endpoints = json.loads(args.endpoints)
+
+    results = analyze_endpoints_with_gpt(endpoints, live_base_url=args.live_base_url)
+    save_ai_summary(results, args.out)
+    sys.exit(0)

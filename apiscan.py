@@ -96,7 +96,7 @@ def check_api_reachable(url: str, session: requests.Session, retries: int = 3, d
             print(f"Response status code: {resp.status_code}")
 
             if not resp.content:
-                print("Empty response body — possible backend crash or misconfigured handler.")
+                print("Empty response body  possible backend crash or misconfigured handler.")
 
             if resp.status_code == 200 and any(                word in resp.text.lower()
                 for word in ["unauthorized", "access denied", "login", "authentication required"]
@@ -407,8 +407,8 @@ def main() -> None:
 
 
     if 11 in selected_apis:
-        styled_print("API11 – AI-assisted OWASP analysis (Azure GPT-4o)", "info")
-        logger.info("Running API11 – GPT-4o audit")
+        styled_print("API11  AI-assisted OWASP analysis (Azure GPT-4o)", "info")
+        logger.info("Running API11  GPT-4o audit")
 
         try:
             # GPT-4o-run met live probe
@@ -418,7 +418,7 @@ def main() -> None:
                 print_results=True
             )
             save_ai_summary(ai_results, output_dir / "AI-api11_scanresults.json")
-            styled_print(f"API11 complete – {len(ai_results)} endpoints analyzed", "done")
+            styled_print(f"API11 complete  {len(ai_results)} endpoints analyzed", "done")
 
         except Exception as e:
             styled_print(f"AI analysis failed: {e}", "fail")
@@ -444,7 +444,7 @@ def main() -> None:
     print("Summary of vulnerabilities found")
     print("---------------------------------------")
     for k, v in summary.items():
-        print(f"• {k:18}: {v}")
+        print(f" {k:18}: {v}")
     print("---------------------------------------")
     print(f"  Total found       : {total_vulns}")
     styled_print("Scan complete. All results and logs saved.", "ok")
@@ -452,9 +452,9 @@ def main() -> None:
     html_files = sorted(str(f) for f in output_dir.glob("api_*_report.html"))
  
     if not html_files:
-        styled_print("Geen HTML-rapporten om te combineren – stap over.", "info")
+        styled_print("Geen HTML-rapporten om te combineren  stap over.", "info")
     else:
-        styled_print("Combining HTML reports …", "info")
+        styled_print("Combining HTML reports ", "info")
         try:
             generate_combined_html(
                 output=str(output_dir / "combined_report.html"),

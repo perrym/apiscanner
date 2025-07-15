@@ -2,11 +2,11 @@
 AI OWASP Scanner Client using OpenAI ChatCompletion with API key authentication only.
 
 Environment variables expected:
-  OPENAI_API_KEY   – your OpenAI secret key (required)
-  OPENAI_MODEL     – model name, defaults to "gpt-4o"
-  OPENAI_API_BASE  – custom base URL (optional, default https://api.openai.com/v1)
+  OPENAI_API_KEY  - your OpenAI secret key (required)
+  OPENAI_MODEL    - model name, defaults to "gpt-4o"
+  OPENAI_API_BASE - custom base URL (optional, default https://api.openai.com/v1)
 
-The script analyses a list of REST endpoints against the OWASP API Security Top 10.
+The script analyses a list of REST endpoints against the OWASP API Security Top 10.
 It outputs structured JSON assessments per endpoint.
 """
 from __future__ import annotations
@@ -24,7 +24,7 @@ import openai
 import requests
 
 # ---------------------------------------------------------------------------
-# OpenAI configuration – API‑key only
+# OpenAI configuration- API-key only
 # ---------------------------------------------------------------------------
 openai.api_key = os.getenv("OPENAI_API_KEY")
 if not openai.api_key:
@@ -33,7 +33,7 @@ if not openai.api_key:
 openai.api_base = os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
 # api_type defaults to "openai" for the normal endpoint; explicit for clarity
 openai.api_type = "openai"
-# model can be overridden via env; default to GPT‑4o
+# model can be overridden via env; default to GPT-4o
 MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o")
 
 # ---------------------------------------------------------------------------
@@ -74,10 +74,10 @@ High     - Critical vulnerability needing immediate remediation
 Answer **ONLY** in **valid JSON**:
 {{
   "risk": "<Informal|Low|Medium|High>",
-  "explanation": "…",
-  "owasp_category": "…",
-  "recommendation": "…",
-  "reasoning": "…"
+  "explanation": "",
+  "owasp_category": "",
+  "recommendation": "",
+  "reasoning": ""
 }}
 """.strip()
 
@@ -236,7 +236,7 @@ def _analyse_one(ep: Dict[str, str]) -> EndpointAnalysis:
     try:
         data = json.loads(extract_json_block(content))
     except json.JSONDecodeError:
-        logger.warning("GPT returned non‑JSON for %s %s", ep["method"], ep["path"])
+        logger.warning("GPT returned non-JSON for %s %s", ep["method"], ep["path"])
         data = {}
 
     data.update({
@@ -255,7 +255,7 @@ def _analyse_one(ep: Dict[str, str]) -> EndpointAnalysis:
     return EndpointAnalysis.from_gpt(ep, data)
 
 # ---------------------------------------------------------------------------
-# Helper functions for multi‑endpoint scans
+# Helper functions for multi-endpoint scans
 # ---------------------------------------------------------------------------
 
 def _lvl(val):
@@ -268,7 +268,7 @@ def _print_final(res: List[EndpointAnalysis]):
     hi = sum(1 for r in res if _lvl(r.risk).startswith("high"))
     med = sum(1 for r in res if _lvl(r.risk).startswith("medium"))
     lo = len(res) - hi - med
-    logger.info("Finished – High: %d  Medium: %d  Low: %d", hi, med, lo)
+    logger.info("Finished- High: %d  Medium: %d  Low: %d", hi, med, lo)
 
 def analyze_endpoints_with_gpt(
     endpoints: List[Dict[str, str]],
@@ -294,25 +294,25 @@ def analyze_endpoints_with_gpt(
     return results
 
 def save_ai_summary(results: List[EndpointAnalysis], file_path: str | Path):
-    """Save the analysis list as pretty‑printed JSON."""
+    """Save the analysis list as pretty-printed JSON."""
     with open(file_path, "w", encoding="utf-8") as fp:
         json.dump([asdict(r) for r in results], fp, indent=2)
-    logger.info("Saved AI summary → %s", file_path)
+    logger.info("Saved AI summary  %s", file_path)
 
 # ---------------------------------------------------------------------------
-# __main__ helper – simple CLI example
+# __main__ helper- simple CLI example
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     import argparse, sys, textwrap
 
     parser = argparse.ArgumentParser(
-        description="Scan REST endpoints for OWASP API Top 10 risks using OpenAI GPT‑4o.",
+        description="Scan REST endpoints for OWASP API Top 10 risks using OpenAI GPT-4o.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent(
             """
             Example usage:
-              export OPENAI_API_KEY=sk‑…
+              export OPENAI_API_KEY=sk-
               python ai_client_api_key.py \
                  --endpoints '{"method": "GET", "path": "/users/{id}"}' \
                  --live-base-url https://api.example.com

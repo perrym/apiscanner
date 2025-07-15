@@ -26,16 +26,10 @@ import requests
 # ---------------------------------------------------------------------------
 # OpenAI configuration- API-key only
 # ---------------------------------------------------------------------------
-openai.api_key = os.getenv("OPENAI_API_KEY")
-if not openai.api_key:
-    raise RuntimeError("Environment variable OPENAI_API_KEY is not set.")
-
-openai.api_base = os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
-# api_type defaults to "openai" for the normal endpoint; explicit for clarity
-openai.api_type = "openai"
-# model can be overridden via env; default to GPT-4o
-MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o")
-
+API_KEY = "sk-..."  
+MODEL_NAME = "gpt-4o"
+API_BASE = "https://api.openai.com/v1"
+openai.api_key = API_KEY
 # ---------------------------------------------------------------------------
 # Scanner settings
 # ---------------------------------------------------------------------------

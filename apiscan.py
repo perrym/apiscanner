@@ -1,8 +1,14 @@
-##################################
-# APISCAN - API Security Scanner #
-# Licensed under the MIT License #
-# Author: Perry Mertens, 2025    #
-##################################
+##############################################
+# APISCAN - API Security Scanner             #
+# Licensed under the MIT License             #
+# Author: Perry Mertens pamsniffer@gmail.com #
+##############################################
+""""
+APISCAN is a private and proprietary API security tool,
+developed independently for internal use and research purposes. 
+It supports OWASP API Security Top 10 (2023) testing, OpenAPI-based analysis, active scanning, and multi-format reporting.
+Redistribution is not permitted without explicit permission.
+"""
 from __future__ import annotations
 import builtins
 import logging

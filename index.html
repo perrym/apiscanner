@@ -30,7 +30,7 @@
 <strong>Author:</strong> Perry Mertens<br/>
 <strong>License:</strong> MIT</p>
 <h2>Overview</h2>
-<p><strong>APISCAN</strong> is a free, extensible API security auditing tool built in Python that targets the 
+<p><strong>APISCAN</strong> is a free, extensible API security scanning tool built in Python that targets the 
     <a href="https://owasp.org/www-project-api-security/">OWASP API Security Top 10 (2023)</a>. It supports Swagger/OpenAPI specifications, performs active vulnerability scans, and generates clear reports in multiple formats.</p>
 <h2>Features</h2>
 <ul>
@@ -66,7 +66,7 @@
 <pre><code>export OPENAI_API_KEY=sk-...
 python apiscan.py --url https://api.example.com --swagger openapi.json --api11</code></pre>
 <p>De module gebruikt het <code>gpt-4o</code> model via <code>https://api.openai.com/v1/chat/completions</code>.</p>
-<h3>2. Lokale LLM via Ollama (optioneel)</h3>
+<h3>2. Scan using CHATGPT (optioneel)</h3>
 <p>Als je een lokale LLM draait (zoals <code>mistral</code>, <code>deepseek</code>), kun je dit blijven gebruiken:</p>
 <pre><code>python apiscan.py --url https://api.example.com --swagger openapi.json --api11</code></pre>
 <p>Gebruik de <code>--port</code> parameter om een alternatieve poort te gebruiken. Geen API key vereist.</p>
@@ -80,6 +80,7 @@ python apiscan.py --url https://api.example.com --swagger openapi.json --api11</
 <pre><code>python apiscan.py --url https://api.example.com \
   --swagger openapi.json \
   --token eyJhbGciOi... \
+  -- flow token
   --threads 4</code></pre>
 <h3>Authentication Options</h3>
 <ul>

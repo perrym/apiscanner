@@ -201,6 +201,10 @@ class EnhancedReportGenerator:
                     {self._format_request_html(issue)}
                     {self._format_response_html(issue)}
                 </div>
+                <!-- NEW: back-to-index link -->
+                <div style="text-align: right; margin-top: 10px;">
+                    <a href="#report-nav" style="color:#555;text-decoration:none;">↑ Back to index</a>
+                </div>
             </div>
             """)
 
@@ -390,6 +394,7 @@ class EnhancedReportGenerator:
         <html>
         {self._generate_html_head()}
         <body>
+            <a id="report-nav"></a>   <!-- ← BACK-TO-TOP ANKER -->
             {self._generate_header()}
             {summary}
             <div class="findings">

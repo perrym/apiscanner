@@ -71,8 +71,7 @@ APISCAN ondersteunt verschillende authenticatievormen via CLI-argumenten:
 **Documentatieformaten**
 - Markdown
 - JSON
-- DOCX
-- TXT logs
+- HTML
 
 ---
 
@@ -105,7 +104,7 @@ APISCAN supports OpenAPI/Swagger specification parsing, advanced payload generat
 pip install -r requirements.txt
 
 ## Start scanner without or with token 
-python apiscan.py --url http://sample.com --token eyJhbGciOiJSUzI1NiJ9JvbGUiOiJ1c2VyIn0XzR-FysKYIa-iV4lxAffjlAitMKyxVqRfVAf2aCXMJLspQxSXMPlAgYoVI9OiRIV_ptJphS7IsQyNwgOCPQHIFhR_mCog4BVax3ZEHk1WM_dp4p4sfQ9DqfXCwyVUZ3t8z-WkxNxYbFpj4rPtEp18T0zWdlnZS3nBp31K9y4qidJog89JqxNRVTlFugX0ySdUSlafwLoiSUeUqwOKkC8qIGTfc4uCvFAHF32pXPc1LzWJnMC_2ZtK5yMYlmWAHBjcCQ6HQTKeW7mPFibYVq4lMT2jjiBTLBg_xUdEnN8fFLy_NH0HogFZZX5c6Dph67s80bqHIoewMXETrTS1c1-mQ --swagger openapi-spec.json --flow token
+python apiscan.py --url http://sample.com --token eyJhbGciOiJSUzI1NiJ9JvbGUiOiJ1c2VyIn0XzR --swagger openapi-spec.json --flow token
 
 APISCAN 0.2.0-alpha API Security Scanner Perry Mertens 2025
 

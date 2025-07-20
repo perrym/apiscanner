@@ -357,48 +357,69 @@ def build_headerold(idx: int, risk_key: str) -> Tag:
     return header_div
 
 # ---------------------- MERGE LOGIC --------------------------------
-
+from pathlib import Path
+from typing import List
+import re
+from bs4 import BeautifulSoup
 
 def generate_combined_html(output: str, files: List[str]):
-    """Merge and sort reports by API number, and build index/sections with full titles."""
+    """
+    Combineert meerdere API HTML‑rapporten tot één overzicht
+    met index, OWASP‑koppen, ↩︎‑links én gededupliceerde CSS.
+    """
     if not files:
         raise ValueError("No files found matching the pattern.")
 
-    # Sort files based on API number extracted from title
+    # ── Sorteren op API‑nummer ────────────────────────────────────────────────
     files_sorted = sorted(
         files,
-        key=lambda fp: int(re.search(r"API(\d+)", RISK_INFO[infer_risk_key(Path(fp).name)]["title"]).group(1)),
+        key=lambda fp: int(
+            re.search(
+                r"API(\d+)", RISK_INFO[infer_risk_key(Path(fp).name)]["title"]
+            ).group(1)
+        ),
     )
 
-    risk_keys: List[str] = []
-    sections_html: List[str] = []
-    collected_styles: List[str] = []
+    risk_keys: list[str] = []
+    sections_html: list[str] = []
+    collected_styles: list[str] = []
 
-    for idx, filepath in enumerate(files_sorted, start=1):
-        risk_key = infer_risk_key(Path(filepath).name)
+    # ── Inhoud en styles verzamelen ──────────────────────────────────────────
+    for idx, path in enumerate(files_sorted, start=1):
+        risk_key = infer_risk_key(Path(path).name)
         risk_keys.append(risk_key)
 
-        soup = BeautifulSoup(Path(filepath).read_text(encoding="utf-8"), "html.parser")
+        soup = BeautifulSoup(Path(path).read_text(encoding="utf-8"), "html.parser")
 
         style_tags, link_tags = extract_styles(soup)
-        collected_styles.extend([str(t) for t in style_tags + link_tags])
+        collected_styles.extend(map(str, style_tags + link_tags))
 
         wrapper = soup.new_tag("section", **{"class": "rapport"})
         wrapper.append(build_header(idx, risk_key))
 
-        body_src = soup.body if soup.body else soup
+        body_src = soup.body or soup
         for child in list(body_src.children):
             wrapper.append(child)
 
         add_back_links(wrapper)
         sections_html.append(str(wrapper))
 
+    # ── CSS dedupliceren ─────────────────────────────────────────────────────
+    unique_styles: list[str] = []
+    seen: set[str] = set()
+    for raw in collected_styles:
+        css = raw.strip()
+        if css not in seen:
+            seen.add(css)
+            unique_styles.append(css)
+
+    # ── Eind‑HTML samenstellen ───────────────────────────────────────────────
     nav_html = build_index(risk_keys)
 
     final_html = f"""<!DOCTYPE html>
-<html lang='en'>
+<html lang="en">
 <head>
-<meta charset='utf-8'>
+<meta charset="utf-8">
 <title>Combined API Reports by Perry Mertens (c) pamsniffer@gmail.com</title>
 <style>
 body {{ font-family: Arial, sans-serif; margin: 40px; }}
@@ -408,20 +429,22 @@ nav li {{ margin-bottom: 0.4em; }}
 .rapport-header details {{ margin-top: 1em; }}
 .back-to-index {{ display: inline-block; margin: 0.5em 0; font-size: 0.9em; }}
 </style>
-{''.join(collected_styles)}
+{''.join(unique_styles)}
 </head>
 <body>
-<a id='top'></a>
-<h1 style="font-size: 28px;">API Report Overview - Apiscan by Perry Mertens (c) pamsniffer@gmail.com</h1>
+<a id="top"></a>
+<h1 style="font-size: 28px;">API Report Overview – APIScan by Perry Mertens (c) pamsniffer@gmail.com</h1>
 <nav>
 {nav_html}
 </nav>
 {''.join(sections_html)}
 </body>
 </html>"""
+
     final_html = insert_intro(final_html)
     Path(output).write_text(final_html, encoding="utf-8")
     print(f"Merged into {output} — processed {len(files)} reports.")
+
 
 
 # ---------------------- CLI ---------------------------------------

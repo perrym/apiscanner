@@ -1,10 +1,11 @@
 # APISCAN - CHANGELOG
-Version:1.0-beta 20 July 2025
+Version:1.0-beta 23 July 2025
 Author: Perry Mertens
 
-20-7-2025
+23-7-2025
 Because I’m home recovering, I finally have the time and focus to dive into my project!
 ## Added Features:
+  - Beter control of false Positive (need still some work)
   - Beter testing for API
   - New report tool in html 
   - Added support for multiple authentication mechanisms:

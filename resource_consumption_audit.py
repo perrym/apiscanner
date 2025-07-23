@@ -17,7 +17,7 @@ from urllib3.util.retry import Retry
 
 from report_utils import ReportGenerator
 logger = logging.getLogger(__name__)
-# --------------------------- Logging setup --------------------------- #
+# --------------------------- Logging setup -------------------------- #
 
 logging.basicConfig(level=logging.DEBUG, format='[RC DEBUG] %(message)s')
 
@@ -29,7 +29,20 @@ retries = Retry(
 )
 
 
-# --------------------------- Auditor class --------------------------- #
+def _headers_to_list(headerobj):
+    """
+    use Cookie and more headers rules
+    """
+    if hasattr(headerobj, "getlist"):           # urllib3.HTTPHeaderDict
+        out = []
+        for k in headerobj:
+            for v in headerobj.getlist(k):
+                out.append((k, v))
+        return out
+    return list(headerobj.items())
+
+
+# --------------------------- Auditor class -------------------------- #
 
 class ResourceConsumptionAuditor:
     """OWASP API4 - Unrestricted Resource Consumption auditor."""
@@ -115,11 +128,12 @@ class ResourceConsumptionAuditor:
                     "response_time": elapsed,
                     "response_size": resp_size,
                     "description": f"{severity} - Resource Consumption at {url}",
-                    "request_headers": dict(resp.request.headers),
                     "request_body": json.dumps(request_payload),
-                    "response_headers": dict(resp.headers),
                     "response_body": resp.text[:2000],
                     "timestamp": str(datetime.utcnow()),
+                    "request_headers": _headers_to_list(resp.request.headers),
+                    "response_headers": _headers_to_list(resp.raw.headers),
+
                 }
 
                 issues.append(issue)
@@ -198,10 +212,14 @@ class ResourceConsumptionAuditor:
             'severity': severity,
             'status_code': status_code,
             'timestamp': datetime.now().isoformat(),
-            'response_headers': data.get('headers') if data else None,
+            'request_headers': _headers_to_list(self.session.headers),
+            #'response_headers': data.get('headers') if data else None,
+            'response_headers': _headers_to_list(data.get('headers') or {}),
             'response_body': data.get('body') if data else None,
-            'request_headers': dict(self.session.headers),
+            #'request_headers': dict(self.session.headers),
             'request_body': data.get('request_body'),
+            'request_cookies': self.session.cookies.get_dict(),
+            'response_cookies': resp.cookies.get_dict() if 'resp' in locals() else {},
             'data': data,
             'metrics': {
                 'response_size': data.get('size'),

@@ -1,13 +1,14 @@
-# APISCAN - API Security Scanner
-# Licensed under the MIT License
-# Author: Perry Mertens, 2025
-
+###################################
+# APISCAN - API Security Scanner  #
+# Licensed under the MIT License  #
+# Author: Perry Mertens, 2025     #
+###################################
 from __future__ import annotations
 from datetime import datetime
 import html
 from pathlib import Path
 from collections import Counter
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional, Union, Iterable
 import json, html, re
 from bs4 import BeautifulSoup
 
@@ -40,6 +41,19 @@ manual_file_map = {
 
 SEVERITY_ORDER = ["Critical", "High", "Medium", "Low", "Info"]
 
+# report_utils.py  (boven in het bestand, na de imports)
+def _iter_headers(hdrs):
+    """
+    Genereer (key, value) paren uit zowel dicts als list‑of‑tuples.
+    """
+    if not hdrs:                       # None of leeg → niets yielden
+        return
+    if isinstance(hdrs, dict):
+        yield from hdrs.items()
+    else:                              # aannemen: Iterable[Tuple[str, str]]
+        yield from hdrs
+
+
 class EnhancedReportGenerator:
     def __init__(self, issues, scanner: str, base_url: str = "", **kwargs) -> None:
         self.issues = issues
@@ -50,8 +64,13 @@ class EnhancedReportGenerator:
     def _format_request_html(self, issue: Dict[str, Any]) -> str:
         method = issue.get("method", "GET").upper()
         url = issue.get("endpoint", "-")
-        headers = "\n".join(f"{k}: {v}" for k, v in (issue.get("request_headers") or {}).items())
+        #headers = "\n".join(f"{k}: {v}" for k, v in (issue.get("request_headers") or {}).items())
+        req_hdrs = issue.get("request_headers")
+        headers = "\n".join(f"{k}: {v}" for k, v in _iter_headers(req_hdrs))
         body = issue.get("payload") or issue.get("request") or issue.get("request_body") or ""
+        if isinstance(body, (bytes, bytearray)):
+            body = body.decode("utf-8", errors="replace")
+        
         if isinstance(body, (dict, list)):
             body = json.dumps(body, indent=2)
         elif isinstance(body, bytes):
@@ -70,15 +89,22 @@ class EnhancedReportGenerator:
 
             
         return f"""
-        <div class="request">
-            <h4>{html.escape(method)} {html.escape(url)}</h4>
-            <div class="headers">
-                <h5>Headers</h5>
-                <pre>{html.escape(headers) if headers else html.escape("No headers")}</pre>
+            <div class="request">
+                <h4>{html.escape(method)} {html.escape(url)}</h4>
+                <div class="headers">
+                    <h5>Headers</h5>
+                    <pre>{html.escape(headers) if headers else html.escape("No headers")}</pre>
+                </div>
+                <div class="body">
+                    <h5>Body</h5>
+                    <pre>{html.escape(
+                        body.decode("utf-8", errors="replace") if isinstance(body, bytes)
+                        else (str(body) if str(body).strip() else "[empty]")
+                    )}</pre>
+                </div>
             </div>
-            {f'<div class="body"><h5>Body</h5><pre>{html.escape(body.decode("utf-8", errors="replace") if isinstance(body, bytes) else str(body))}</pre></div>' if body else ''}
-        </div>
-        """
+            """
+
 
     def generate_markdown(self) -> str:
         if not self.issues:
@@ -100,35 +126,56 @@ class EnhancedReportGenerator:
        
     # Vervang de _format_response_html functie door deze versie
     def _format_response_html(self, issue: Dict[str, Any]) -> str:
-        # Gebruik directe status_code uit issue
-        status = issue.get("status_code", "-")
-        if status is None:
-            status = "-"
-        
-        headers = "\n".join(f"{k}: {v}" for k, v in (issue.get("response_headers") or {}).items())
-        error = issue.get("error") or ""
-        error_html = f"<p><strong>Error:</strong> {html.escape(error)}</p>" if error else ""
+        status = issue.get("status_code", "‑")
+        # -- headers -------------------------------------------------------
+        hdr_pairs = _iter_headers(issue.get("response_headers"))
+        headers = "\n".join(f"{k}: {v}" for k, v in hdr_pairs)
+        # -- cookies -------------------------------------------------------
+        resp_cookies = issue.get("response_cookies") or {}
+        cookies_html = ""
+        if resp_cookies:
+            cookie_lines = "; ".join(f"{k}={v}" for k, v in resp_cookies.items())
+            cookies_html = (
+                '<div class="cookies">'
+                '<h5>Cookies</h5>'
+                f"<pre>{html.escape(cookie_lines)}</pre>"
+                "</div>"
+            )
+        # -- body / error --------------------------------------------------
+        body = issue.get("response_body")
+        error = issue.get("error")
+        error_html = (
+            f'<div class="error"><h5>Error</h5><pre>{html.escape(str(error))}</pre></div>'
+            if error
+            else ""
+        )
+        body_html = ""
+        if body:
+            body_str = (
+                body.decode("utf-8", errors="replace")
+                if isinstance(body, (bytes, bytearray))
+                else str(body)
+            )
+            body_html = (
+                '<div class="body">'
+                "<h5>Body</h5>"
+                f"<pre>{html.escape(body_str)}</pre>"
+                "</div>"
+            )
 
-        body = issue.get("response_body") or ""
-        if isinstance(body, (dict, list)):
-            body = json.dumps(body, indent=2)
-        elif isinstance(body, str):
-            try:
-                body = json.dumps(json.loads(body), indent=2)
-            except Exception:
-                pass
-
-        return f"""
-        <div class="response">
-            <h4>HTTP {status}</h4>
-            <div class="headers">
-                <h5>Headers</h5>
-                <pre>{html.escape(headers) if headers else html.escape("No headers")}</pre>
-            </div>
-            {error_html}
-            {f'<div class="body"><h5>Body</h5><pre>{html.escape(body.decode("utf-8", errors="replace") if isinstance(body, bytes) else str(body))}</pre></div>' if body else ''}
-        </div>
-        """
+        # -- eind‑HTML -----------------------------------------------------
+        return (
+            '<div class="response">'
+            f"<h4>HTTP {status}</h4>"
+            '<div class="headers">'
+            "<h5>Headers</h5>"
+            f"<pre>{html.escape(headers) if headers else 'No headers'}</pre>"
+            "</div>"
+            f"{cookies_html}"
+            f"{error_html}"
+            f"{body_html}"
+            "</div>"
+        )
 
     def generate_html(self) -> str:
         if not self.issues:

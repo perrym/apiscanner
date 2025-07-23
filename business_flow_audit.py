@@ -32,7 +32,7 @@ class BusinessFlowAuditor:
     SENSITIVE_PARAMS = {"password", "secret", "token", "creditcard", "cvv"}
 
     def __init__(self, base_url: str, session: Optional[requests.Session] = None, *, 
-                 concurrency: int = 20, timeout: int = 10, 
+                 concurrency: int = 3, timeout: int = 6, 
                  swagger_spec: Optional[dict] = None) -> None:
         self.base_url = base_url.rstrip("/")
         self.session = session or requests.Session()
@@ -44,9 +44,19 @@ class BusinessFlowAuditor:
         self._tested_coupons: Set[str] = set()
         self.swagger_spec = swagger_spec
         self._endpoint_cache: Dict[Tuple[str, str], dict] = {}
+        self.db_errors_detected = False
 
     def _abs_url(self, path: str) -> str:
         return path if path.startswith("http") else f"{self.base_url}{path}"
+
+    def check_db_health(self):
+        try:
+            # Eenvoudige database health check
+            r = self.session.get(f"{self.base_url}/health/db", timeout=2)
+            if r.status_code != 200:
+                self.db_errors_detected = True
+        except Exception:
+            self.db_errors_detected = True
 
     def _nonce(self) -> str:
         return "".join(random.choices(string.ascii_letters + string.digits, k=8))
@@ -178,13 +188,28 @@ class BusinessFlowAuditor:
     def test_business_flows(self, flows: List[Flow]) -> List[Issue]:
         """Main entry point for testing business flows. Compatible with apiscan.py"""
         self._issues.clear()  # Reset issues for each test run
+
+        # Skip-login/auth related endpoints
+        SKIP_KEYWORDS = [
+            "/login", "/signup", "/sign-in", "/sign_in", "/signin",
+            "/auth", "/oauth", "/token", "/check-otp", "/verify", "/session",
+            "/forget-password", "/forgot-password", "/reset-password",
+            "/microsoft", "/azure", "/aws", "/cognito", "/okta", "/sso", "/idp",
+            "/google", "/apple", "/login.microsoftonline.com", "/accounts.google.com"
+        ]
         
         for flow in flows:
             try:
+                # Skip flow if URL contains auth/cloud keywords
+                url = flow.get("url", "").lower()
+                if any(keyword in url for keyword in SKIP_KEYWORDS):
+                    print(f"[SKIPPED] Skipping auth/cloud-related endpoint: {url}")
+                    continue
+
                 # Ensure flow has minimum required fields
                 if not all(k in flow for k in ['url', 'method']):
                     continue
-                    
+
                 self._run_tests_for_flow({
                     'name': flow.get('name', f"{flow['method']}_{flow['url']}"),
                     'url': flow['url'],
@@ -195,7 +220,7 @@ class BusinessFlowAuditor:
                 })
             except Exception as e:
                 print(f"Error testing flow {flow.get('name')}: {e}")
-        
+
         return self._issues
 
 
@@ -210,22 +235,7 @@ class BusinessFlowAuditor:
             uniq.setdefault(key, it)
         return list(uniq.values())
 
-    def generate_report(self, fmt: str = "html") -> str:
-        gen = ReportGenerator(
-            self._filtered_issues(),
-            scanner="API6:2023 - Sensitive Business Flows",   # titel in header
-            base_url=self.base_url,
-        )
-        return gen.generate_html() if fmt == "html" else gen.generate_markdown()
-    
-    
-    def save_report(self, path: str, fmt: str = "html") -> None:
-        ReportGenerator(
-            self._filtered_issues(),
-            scanner="API6:2023 - Sensitive Business Flows",
-            base_url=self.base_url,
-        ).save(path, fmt=fmt)
-    
+        
     def _log(self,flow: Flow,desc: str,sev: str,req: Optional[dict] = None,resp: Optional[requests.Response] = None,) -> None:
         """Voeg één bevinding toe; sla over bij ontbrekend HTTP-antwoord."""
         # Skip wanneer er geen of een “0”-response is
@@ -236,7 +246,7 @@ class BusinessFlowAuditor:
 
         entry: Issue = {
             "url": url,
-            "endpoint": url,                             # gebruikt door HTML-rapport
+            "endpoint": url,
             "method": flow.get("method", "POST"),
             "description": desc,
             "severity": sev,
@@ -246,24 +256,31 @@ class BusinessFlowAuditor:
             "request_body": None,
             "response_headers": {},
             "response_body": "",
+            "request_cookies": {},
+            "response_cookies": {},
         }
 
         # Vul request/response-velden als die aanwezig zijn
         if resp is not None:
             entry["response_headers"] = dict(resp.headers)
             entry["response_body"] = resp.text[:2048]
+            entry["response_cookies"] = resp.cookies.get_dict()
             if resp.request is not None:
                 entry["request_headers"] = dict(resp.request.headers)
                 entry["request_body"] = resp.request.body
-
+                entry["request_cookies"] = self.session.cookies.get_dict()
+                
         if req:
             entry["request"] = req
 
         # Thread-safe toevoegen
         with self._lock:
             self._issues.append(entry)
+            print(f"[ISSUE] {entry['method']} {entry['url']} - {entry['description']} (Severity: {entry['severity']})")
+
 
     def _run_tests_for_flow(self, flow: Flow):
+        print(f"[FLOW] Executing tests for: {flow['method']} {flow['url']}")
         for test in (
             self._test_auth_bypass,
             self._test_replay_attack,
@@ -308,20 +325,52 @@ class BusinessFlowAuditor:
         # Merge generated body with test body
         final_body = {**self._get_smart_body(flow.get("body", {})), **(body or {})}
 
+        # Define sensitive endpoints that need special handling
+        sensitive_keywords = {"signup", "register", "payment", "transfer", "buy", "checkout", "subscribe"}
+        
+        # Adjust timeout and concurrency for sensitive endpoints
+        current_timeout = self.timeout
+        if self.db_errors_detected:
+            print(f"[SKIPPED] {url} -  database issues")
+            return None
+            
+        
+        if any(kw in url.lower() for kw in sensitive_keywords):
+            current_timeout = 10  # Longer timeout for sensitive endpoints
+
         try:
+            # Add small jitter to prevent synchronized bursts
+            time.sleep(random.uniform(0.01, 0.1))
+
             if method == "GET":
-                return self.session.get(url, headers=headers, params=params, timeout=self.timeout)
+                return self.session.get(
+                    url,
+                    headers=headers,
+                    params=params,
+                    timeout=current_timeout
+                )
+
             return self.session.request(
-                method,
-                url,
+                method=method,
+                url=url,
                 headers=headers,
                 params=params,
                 json=final_body,
-                timeout=self.timeout,
+                timeout=current_timeout,
             )
-        except requests.RequestException as e:
-            print(f"Request failed for {url}: {e}")
+
+        except requests.exceptions.ReadTimeout:
+            print(f"[TIMEOUT] No response from {url} after {current_timeout} seconds.")
             return None
+
+        except requests.exceptions.ConnectionError:
+            print(f"[CONNECTION ERROR] Failed to connect to {url}")
+            return None
+
+        except requests.exceptions.RequestException as e:
+            print(f"[ERROR] Request failed for {url}: {e}")
+            return None
+
 
     def _extract_id(self, resp: Optional[requests.Response]) -> Optional[str]:
         if not resp:
@@ -476,3 +525,19 @@ class BusinessFlowAuditor:
             self._log(flow, "Unexpected field accepted", "Low", noisy, r)
 
 
+    def generate_report(self, fmt: str = "html") -> str:
+            gen = ReportGenerator(
+                self._filtered_issues(),
+                scanner="API6:2023 - Sensitive Business Flows",   # titel in header
+                base_url=self.base_url,
+            )
+            return gen.generate_html() if fmt == "html" else gen.generate_markdown()
+        
+    
+    
+    def save_report(self, path: str, fmt: str = "html") -> None:
+        ReportGenerator(
+            self._filtered_issues(),
+            scanner="API6:2023 - Sensitive Business Flows",
+            base_url=self.base_url,
+        ).save(path, fmt=fmt)

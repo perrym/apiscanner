@@ -16,7 +16,13 @@ import urllib3
 from report_utils import ReportGenerator
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
+def _headers_to_list(hdrs):
+    """
+    urllib3.HTTPHeaderDict -> Set-Cookie 
+    """
+    if hasattr(hdrs, "getlist"):        # urllib3.HTTPHeaderDict
+        return [(k, v) for k in hdrs for v in hdrs.getlist(k)]
+    return list(hdrs.items())
 
 class AuthorizationAuditor:
     """OWASP API01 - Broken Authorization Auditor (clean logging)."""
@@ -61,7 +67,7 @@ class AuthorizationAuditor:
             return out
         for path, verbs in self.swagger_data.get("paths", {}).items():
             for verb, meta in verbs.items():
-                if verb.upper() not in {"GET", "POST", "PUT", "DELETE", "PATCH"}:
+                if verb.upper() not in {"GET", "POST", "PUT", "PATCH"}:
                     continue
                 out.append(
                     {
@@ -104,12 +110,36 @@ class AuthorizationAuditor:
             self._do_request(ep, verb, role="anonymous", should_access=not ep.get("sensitive", False))
 
     def _do_request(self, ep: Dict[str, Any], verb: str, role: str, should_access: bool) -> None:
-        headers = {}
+        headers = {
+            "User-Agent": "APISecurityScanner/2.1",
+            "Accept": "application/json"
+        }
+
         if role != "anonymous" and self.roles[role]["token"]:
             headers["Authorization"] = f"Bearer {self.roles[role]['token']}"
+
         try:
-            r = self.session.request(verb, ep["url"], headers=headers, timeout=5, verify=False)
+            if role == "anonymous":
+                # Gebruik expliciete, schone request zonder session (om lekken te voorkomen)
+                r = requests.request(
+                    method=verb,
+                    url=ep["url"],
+                    headers=headers,
+                    timeout=5,
+                    verify=False,
+                )
+            else:
+                # Normale sessie met mogelijk cookies of headers
+                r = self.session.request(
+                    method=verb,
+                    url=ep["url"],
+                    headers=headers,
+                    timeout=5,
+                    verify=False,
+                )
+
             allowed = r.status_code in (200, 201, 204)
+
             if allowed != should_access:
                 desc = "Unauthorized access" if allowed else "Access denied"
                 sev = "High" if allowed else "Medium"
@@ -120,12 +150,15 @@ class AuthorizationAuditor:
                     details={"method": verb, "role": role},
                     response_obj=r,
                 )
+
         except Exception as exc:
             self._log_issue(
                 url=ep["url"],
                 description=f"Request error - {verb} as {role}: {exc}",
                 severity="Low",
+                details={"method": verb, "role": role},
             )
+
 
     def _filtered_issues(self) -> List[Dict[str, Any]]:
         uniq = {}
@@ -161,6 +194,8 @@ class AuthorizationAuditor:
             "timestamp": datetime.now().isoformat(),
             "request_headers": {},
             "response_headers": {},
+            "request_cookies": {},
+            "response_cookies": {},
             "request_body": None,
             "response_body": None,
         }
@@ -168,9 +203,12 @@ class AuthorizationAuditor:
         if response_obj is not None:
             entry["response_headers"] = dict(response_obj.headers)
             entry["response_body"] = response_obj.text[:2048]
+            entry["response_cookies"] = response_obj.cookies.get_dict()
+            
             if response_obj.request is not None:
                 entry["request_headers"] = dict(response_obj.request.headers)
                 entry["request_body"] = response_obj.request.body
+                entry["request_cookies"] = self.session.cookies.get_dict()
 
         # merge non-conflicting details
         for k, v in details.items():

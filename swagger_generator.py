@@ -31,11 +31,12 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 class UltimateSwaggerGenerator:
-    def __init__(self, base_url: str):
+    def __init__(self, base_url: str, delay: float = 0.0):
         self.base_url = base_url.rstrip('/')
         self.session = requests.Session()
+        self.delay = delay
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) UltimateSwaggerGenerator/3.0',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/140.0',
             'Accept': 'application/json, text/html, application/xml',
             'Accept-Encoding': 'gzip, deflate'
         })
@@ -98,6 +99,52 @@ class UltimateSwaggerGenerator:
         self.login_data = None
         self.custom_headers = {}
 
+    
+    # ------------------------------------------------------------------
+    # Helper: normalise a URL so it becomes a valid OpenAPI path
+    # ------------------------------------------------------------------
+    def _is_api_response(self, response):
+        content_type = response.headers.get("Content-Type", "").lower()
+        valid_types = [
+            "application/json",
+            "application/xml",
+            "text/xml",
+            "application/x-ndjson",
+            "application/vnd.api+json",
+        ]
+        return any(vt in content_type for vt in valid_types)
+
+    
+    def _normalise_path(self, url):
+        parsed = urlparse(url)
+        path = parsed.path or "/"
+
+        # verwijder fragment
+        if "#" in path:
+            path = path.split("#", 1)[0]
+
+        # numerieke id’s /123  -> /{id}
+        path = re.sub(r"/\d+", "/{id}", path)
+
+        # Mongo‑achtige 24‑hex ids -> /{objectId}
+        path = re.sub(r"/[a-f0-9]{24}", "/{objectId}", path, flags=re.I)
+
+        # alles wat eindigt op XxxId of _id  -> placeholder
+        path = re.sub(r"/([^/]*_?[iI][dD])", r"/{\1}", path)
+
+        return path
+    
+    def _make_request(self, method, url, **kwargs):
+        while True:
+            if self.delay:
+                time.sleep(self.delay)
+            response = self.session.request(method, url, **kwargs)
+            
+            if not self._handle_rate_limiting(response):  # Retourneert False als niet geretryd hoeft
+                return response
+        
+ 
+    
     def _update_swagger_security_schemes(self):
         """Update Swagger security schemes based on active authentication"""
         if isinstance(self.session.auth, HTTPBasicAuth):
@@ -151,7 +198,8 @@ class UltimateSwaggerGenerator:
         """Perform authentication if configured"""
         if self.login_url and self.login_data:
             try:
-                response = self.session.post(
+                response = self._make_request(
+                   'POST',
                     self.login_url,
                     data=self.login_data,
                     timeout=10
@@ -203,10 +251,8 @@ class UltimateSwaggerGenerator:
             for header, value in headers_to_check:
                 try:
                     headers = {header: value}
-                    response = self.session.get(url, headers=headers, timeout=5)
-                    if self._handle_rate_limiting(response):
-                        response = self.session.get(url, headers=headers, timeout=5)
-                    
+                    response = self._make_request('GET', url, headers=headers, timeout=5 )
+                                       
                     if response.status_code == 200 and self._looks_like_api(response):
                         print(f"[+] API found with header {header}: {value} - {url}")
                         self._process_api_response(url, response)
@@ -222,7 +268,10 @@ class UltimateSwaggerGenerator:
             '/graphql', '/graphql/v1', '/api/graphql', '/api/v1/graphql',
             '/rest', '/rest/v1', '/api/rest', '/api/v1/rest',
             '/rpc', '/jsonrpc', '/api/soap', '/api/v1/soap',
-            '/ws'
+            '/ws', '/health', '/status', '/metrics', 
+            '/v1', '/v2', '/v3',
+            '/oauth2/token', '/.well-known/openid-configuration',
+            '/swagger-ui', '/openapi.json', '/api-docs',
         ]
 
         print("[*] Aggressive scan: checking common endpoints...")
@@ -244,10 +293,8 @@ class UltimateSwaggerGenerator:
         try:
             print(f"[*] Crawling ({depth}): {url}")
             self.visited.add(url)
-            response = self.session.get(url, timeout=10)
-            if self._handle_rate_limiting(response):
-                response = self.session.get(url, timeout=10)
-
+            response = self._make_request('GET', url, timeout=10)
+            
             content_type = response.headers.get('Content-Type', '')
 
             if 'text/html' in content_type:
@@ -283,7 +330,7 @@ class UltimateSwaggerGenerator:
                     if urlparse(script_url).netloc != urlparse(self.base_url).netloc:
                         continue  # skip externe domeinen
                     try:
-                        script_response = self.session.get(script_url, timeout=5)
+                        script_response = self._make_request('GET', script_url, timeout=5)
                         if script_response.status_code == 200:
                             self._find_js_apis(script_response.text, script_url)
                             self._find_websockets(script_response.text, script_url)
@@ -331,7 +378,9 @@ class UltimateSwaggerGenerator:
             # Swagger autodetectie
             if url.endswith(".json") or url.endswith(".yaml"):
                 try:
-                    resp = self.session.get(url, timeout=5)
+                    resp = self._make_request('GET', url, timeout=5)
+                    if self.delay:
+                        time.sleep(self.delay)
                     if resp.status_code == 200 and ("swagger" in resp.text or "openapi" in resp.text):
                         print(f"[+] Swagger of OpenAPI bestand gevonden: {url}")
                         self.swagger['externalDocs'] = {"url": url, "description": "External Swagger/OpenAPI spec"}
@@ -345,25 +394,7 @@ class UltimateSwaggerGenerator:
             print(f"[!] Error at {url}: {str(e)}")
                 
                                
-    def _process_possible_api(self, url: str):
-        if not url or url in self.swagger['paths']:
-            return
-
-        # Nieuw: domeincheck
-        if urlparse(url).netloc != urlparse(self.base_url).netloc:
-            return
-
-        try:
-            resp = self.session.get(url, timeout=5)
-            if resp.status_code in [200, 401, 403, 405]:
-                classification = self._classify_endpoint(url)
-                self.swagger['paths'][url] = {"x-classification": classification}
-                print(f"[+] API endpoint ({classification}): {url}")
-                with open("scan_log.txt", "a", encoding="utf-8") as log:
-                    log.write(f"[{classification}] {url}\n")
-        except Exception as e:
-            print(f"[!] Fout bij verwerken API {url}: {str(e)}")
-
+ 
 
     def _classify_endpoint(self, url: str) -> str:
         lower = url.lower()
@@ -373,34 +404,71 @@ class UltimateSwaggerGenerator:
             return "public"
         else:
             return "data"
-  
     
-    
+        
+    def _process_possible_api(self, url):
+        """
+        Probe a candidate URL, decide whether it is an API endpoint,
+        and record the result in the Swagger model.
+        """
+        if not url:
+            return
 
-    def _looks_like_api(self, response) -> bool:
-        """Determine whether a response resembles an API"""
-        content_type = response.headers.get('Content-Type', '').lower()
+        # Deduplicate across threads
+        if url in self.visited:
+            return
+        self.visited.add(url)
+
+        # Same host only
+        if urlparse(url).netloc != urlparse(self.base_url).netloc:
+            return
+
+        # Skip static Swagger/OpenAPI files early
+        if url.lower().endswith(
+            ("swagger", "swagger.json", "swagger.yaml",
+             "openapi", "openapi.json", "openapi.yaml")
+        ):
+            # Treat as external documentation
+            self.swagger.setdefault("externalDocs", {})["url"] = url
+            self.swagger["externalDocs"]["description"] = "External Swagger/OpenAPI file"
+            print(f"[~] Skipped static Swagger file: {url}")
+            return
+
+        try:
+            resp = self._make_request("GET", url, timeout=5)
+
+            if not self._is_api_response(resp):
+                print(f"[~] Ignored (non‑API format): {url}")
+                return
+
+            clean_path = self._normalise_path(url)
+
+            if resp.status_code in {200, 204, 401, 403, 405} \
+               and self._looks_like_api(resp):
+
+                classification = self._classify_endpoint(url)
+                self.swagger["paths"].setdefault(
+                    clean_path, {})["x-classification"] = classification
+                print(f"[+] API endpoint ({classification}): {clean_path}")
+
+                with open("scan_log.txt", "a", encoding="utf-8") as log:
+                    log.write(f"[{classification}] {clean_path}\n")
+
+            else:
+                print(f"[~] Not a valid API (status={resp.status_code}): {clean_path}")
+
+        except Exception as e:
+            print(f"[!] Error processing API {url}: {str(e)}")
+
+
+    def _looks_like_api(self, response):
+        if self._is_api_response(response):
+            return True
+
         headers = {k.lower(): v for k, v in response.headers.items()}
-        
-        # Check for common API headers
-        api_headers = [
-            'x-api-version',
-            'x-ratelimit-limit',
-            'x-request-id',
-            'x-powered-by-api',
-            'x-total-count',
-            'etag',
-            'last-modified'
-        ]
-        
-        return (
-            'application/json' in content_type or
-            'application/xml' in content_type or
-            ('{' in response.text and '}' in response.text and '"' in response.text) or
-            any(header in headers for header in api_headers) or
-            'api' in headers.get('server', '').lower() or
-            'api' in headers.get('via', '').lower()
-        )
+        signal_headers = ["x-api-version", "x-request-id", "x-total-count"]
+
+        return any(h in headers for h in signal_headers)
 
     def _find_hidden_apis(self, text: str, base_url: str):
         """Search for API endpoints in comments and metadata"""
@@ -420,45 +488,70 @@ class UltimateSwaggerGenerator:
                     print(f"[+] Hidden API found: {api_url}")
                     self._process_possible_api(api_url)
 
-    def _process_form(self, base_url: str, form):
-        """Improved form analysis"""
-        action = form.get('action', '')
-        method = form.get('method', 'get').lower()
+    def _process_form(self, base_url, form):
+        """
+        Inspect an HTML <form>.  If the target URL looks like an API that
+        returns JSON, describe it as an operation in the Swagger model.
+        """
+
+        # 1. Resolve the form action to an absolute URL
+        action = form.get("action", "")
+        method = form.get("method", "get").lower()
         url = urljoin(base_url, action)
-        
-        if not self._is_api_endpoint(url) and not any(x in url for x in ['login', 'auth']):
+
+        # 2. Skip if the URL is clearly not an API and not auth related
+        if not self._is_api_endpoint(url) and not any(
+            x in url.lower() for x in ("login", "auth")
+        ):
             return
-            
+
+        # 3. Quick HEAD request to verify the endpoint returns JSON
+        try:
+            head_resp = self._make_request("HEAD", url, timeout=5)
+        except Exception:
+            # Some servers forbid HEAD; fall back to a small GET
+            head_resp = self._make_request("GET", url, timeout=5)
+
+        if not self._is_api_response(head_resp):
+            return  # ignore forms whose action is not JSON
+
+        # 4. Normalise the path so it is a valid OpenAPI key
+        clean_path = self._normalise_path(url)
+
+        # 5. Collect form parameters
         parameters = []
-        for inp in form.find_all(['input', 'textarea', 'select']):
-            if inp.get('name'):
-                param = {
-                    'name': inp.get('name'),
-                    'in': 'formData',
-                    'required': inp.get('required') is not None,
-                    'schema': {
-                        'type': inp.get('type', 'text'),
-                        'example': inp.get('value', '')
-                    }
-                }
-                parameters.append(param)
-        
-        if url not in self.swagger['paths']:
-            self.swagger['paths'][url] = {}
-            
-        operation = {
-            'summary': f'Auto-discovered {method.upper()} endpoint',
-            'responses': {
-                '200': {
-                    'description': 'Successful form submission'
-                }
+        for inp in form.find_all(["input", "textarea", "select"]):
+            name = inp.get("name")
+            if not name:
+                continue
+            param = {
+                "name": name,
+                "in": "formData",
+                "required": inp.get("required") is not None,
+                "schema": {
+                    "type": inp.get("type", "string"),
+                },
             }
+            if inp.get("value"):
+                param["schema"]["example"] = inp.get("value")
+            parameters.append(param)
+
+        # 6. Build the operation object
+        operation = {
+            "summary": f"Auto‑discovered {method.upper()} form endpoint",
+            "responses": {
+                "200": {"description": "Successful form submission"}
+            },
         }
-        
         if parameters:
-            operation['parameters'] = parameters
-        
-        self.swagger['paths'][url][method] = operation
+            operation["parameters"] = parameters
+
+        # 7. Insert into the Swagger model
+        if clean_path not in self.swagger["paths"]:
+            self.swagger["paths"][clean_path] = {}
+
+        self.swagger["paths"][clean_path][method] = operation
+
 
     def _find_js_apis(self, js_code: str, base_url: str):
         """Extended JavaScript API detection"""
@@ -476,7 +569,12 @@ class UltimateSwaggerGenerator:
         for pattern in patterns:
             for match in re.finditer(pattern, js_code, re.DOTALL):
                 if 'fetch' in pattern or 'XMLHttpRequest' in pattern:
-                    api_url = urljoin(base_url, match.group(2))
+                    path = match.group(2).strip()
+                    if not path or '%s' in path or 'concat' in path or '{' in path or '}' in path:
+                        continue
+                    api_url = urljoin(base_url, path)
+                    #if not re.match(r'^/[\w\-/]+$', path):
+                    #    continue
                 else:
                     api_url = urljoin(base_url, match.group(1))
                 
@@ -520,8 +618,39 @@ class UltimateSwaggerGenerator:
                     print(f"[+] GraphQL endpoint found: {gql_url}")
                     self._process_possible_api(gql_url)
 
+
+    def _prune_non_json_paths(self):
+        bad_paths = []
+        for path, ops in self.swagger["paths"].items():
+            first_op = next(iter(ops.values()), {})
+            first_resp_code = next(iter(first_op.get("responses", {})), None)
+            if not first_resp_code:
+                bad_paths.append(path)
+                continue
+
+            first_resp = first_op["responses"][first_resp_code]
+            ctypes = first_resp.get("content", {}).keys()
+
+            if not any(
+                ct.startswith("application/json") or ct in (
+                    "application/xml",
+                    "text/xml",
+                    "application/x-ndjson",
+                    "application/vnd.api+json",
+                )
+                for ct in ctypes
+            ):
+                bad_paths.append(path)
+
+        for p in bad_paths:
+            del self.swagger["paths"][p]
+
+
+
     def _process_api_response(self, url: str, response):
         """Improved API response handling"""
+        if not self._is_api_response(response):
+            return
         parsed = urlparse(url)
         path = parsed.path
         method = 'get'
@@ -537,8 +666,12 @@ class UltimateSwaggerGenerator:
             })
         
         # Path parameters
-        path_params = re.findall(r'/(\d+|[a-f0-9]{24}|[^/]+Id)/', path)
-        swagger_path = path
+        path_params = re.findall(
+            r"/(\d+|[a-f0-9]{24}|[^/]+_[iI][dD]|[^/]+[iI]d)/",
+            path,
+            re.IGNORECASE,
+        )
+        swagger_path = self._normalise_path(url)
         for param in path_params:
             swagger_path = swagger_path.replace(param, f'{{{param}}}')
         
@@ -747,7 +880,7 @@ if __name__ == "__main__":
     parser.add_argument("--output", default="swagger.json", help="Output file path")
     parser.add_argument("--depth", type=int, default=3, help="Crawl depth")
     parser.add_argument("--aggressive", action='store_true', help="Enable aggressive scanning")
-    
+    parser.add_argument("--delay", type=float, default=0.0, help="Delay (in seconds) between requests")
     # Authentication options
     auth = parser.add_argument_group('Authentication')
     auth.add_argument("--header", action='append', 
@@ -767,6 +900,7 @@ if __name__ == "__main__":
     auth.add_argument("--client-id", help="OAuth2 client ID")
     auth.add_argument("--client-secret", help="OAuth2 client secret")
     auth.add_argument("--token-url", help="OAuth2 token URL")
+    
     # SSL options
     parser.add_argument("--insecure", action="store_true", 
                        help="Disable SSL certificate verification")
@@ -774,7 +908,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     try:
-        generator = UltimateSwaggerGenerator(args.url)
+        generator = UltimateSwaggerGenerator(args.url, delay=args.delay)
         
         # Configure authentication
         generator.session = configure_authentication(args)
@@ -794,7 +928,7 @@ if __name__ == "__main__":
         
         # Run crawler
         generator.crawl(args.depth, args.aggressive)
-        
+        generator._prune_non_json_paths()
         # Save session if requested
         if args.save_session:
             generator.save_session(args.save_session)

@@ -1,7 +1,7 @@
 
 # APISCAN - OWASP API Security Scanner
 
-**Version:** 0.9.0-beta  
+**Version:** 1.0-beta  
 **Author:** Perry Mertens email:pamsniffer@gmail.com  
 **License:** MIT
 

@@ -1,3 +1,8 @@
+##################################
+# APISCAN - API Security Scanner #
+# Licensed under the MIT License #
+# Author: Perry Mertens, 2025    #
+##################################
 """
 AI OWASP Scanner Client using OpenAI ChatCompletion with API key authentication only.
 

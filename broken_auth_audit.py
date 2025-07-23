@@ -1,21 +1,33 @@
-# broken_auth_audit.py
-#
-# Licensed under the MIT License.
-# Copyright (c) 2025 Perry Mertens
-#
+##################################
+# APISCAN - API Security Scanner #
+# Licensed under the MIT License #
+# Author: Perry Mertens, 2025    #
+##################################
+"""
 # Broken Authentication Auditor (OWASP API2)
 # This version aligns its logging & reporting with broken_object_property_audit.py:
 #   * Skip issues where no HTTP response was received (status_code == 0)
 #   * Capture full HTTP context (request/response headers & body)
 #   * generate_report/save_report automatically filter such skipped issues
 #   * Fixes wrong argument name "response" in _test_weak_credentials
-#
+"""
 from __future__ import annotations
 import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 import requests
 from report_utils import ReportGenerator
+
+# --- nieuw -----------------------------------------------------------
+def _headers_to_list(hdrs):
+    if hasattr(hdrs, "getlist"):           # urllib3.HTTPHeaderDict
+        out = []
+        for k in hdrs:
+            for v in hdrs.getlist(k):
+                out.append((k, v))
+        return out
+    return list(hdrs.items())
+# ---------------------------------------------------------------------
 
 
 class AuthAuditor:
@@ -71,12 +83,18 @@ class AuthAuditor:
 
         # Vul contextvelden zodra ze er zijn
         if response_obj is not None:
-            entry["response_headers"] = dict(response_obj.headers)
+            entry["response_headers"] = _headers_to_list(response_obj.raw.headers)
             entry["response_body"] = response_obj.text[:2048]
+
+            # Losse cookies uit respons
+            entry["response_cookies"] = response_obj.cookies.get_dict()
+
             if response_obj.request is not None:
-                entry["request_headers"] = dict(response_obj.request.headers)
+                entry["request_headers"] = _headers_to_list(response_obj.request.headers)
                 entry["request_body"] = getattr(response_obj.request, "body", None)
 
+        # Cookies
+        entry["request_cookies"] = self.session.cookies.get_dict()
         self.auth_issues.append(entry)
 
     

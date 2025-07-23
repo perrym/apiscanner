@@ -26,6 +26,27 @@ requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)  # t
 Endpoint = Dict[str, Any]
 Issue = Dict[str, Any]
 
+def _headers_to_list(hdrs):
+    """
+    urllib3.HTTPHeaderDict -> alle Set-Cookie los
+    """
+    if hasattr(hdrs, "getlist"):
+        return [(k, v) for k in hdrs for v in hdrs.getlist(k)]
+    return list(hdrs.items())
+
+
+def _safe_body(resp: requests.Response, limit: int = 2048) -> str:
+    """Return a text safe slice of the response body (bytes → utf-8)."""
+    if not resp:
+        return ""
+    if resp.text:                        
+        return resp.text[:limit]
+    try:                                   
+        return resp.content[:limit].decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
 
 class SSRFAuditor:
     """Voert uitsluitend **API-8 - Server-Side Request Forgery** detectie uit."""
@@ -66,7 +87,7 @@ class SSRFAuditor:
     ]
 
     MAX_CONCURRENCY = 10
-    DEFAULT_TIMEOUT = 8
+    DEFAULT_TIMEOUT = 4
     DEFAULT_RPS = 8
     BLIND_THRESHOLD = 4  # seconden
 
@@ -91,6 +112,7 @@ class SSRFAuditor:
         self._last_ts = 0.0
         self._lock = threading.Lock()
         self._issues: List[Issue] = []
+        self._tested_payloads: set[tuple[str, str]] = set()
 
     # ------------------------------------------------------------------
     @staticmethod
@@ -129,11 +151,18 @@ class SSRFAuditor:
     # ------------------------------------------------------------------
     # interne helpers
     def _scan_endpoint(self, ep: Endpoint) -> None:
+        
         print(f"[*] SSRF scan: {ep['method']} {ep['path']}") 
         base = ep.get("base") or self.base_url
         url_base = urljoin(base, ep["path"].lstrip("/"))
-        method = ep["method"]
+        # check on localhost
+        host = urlparse(url_base).hostname
+        if host in {"127.0.0.1", "localhost", "::1"}:
+            print(f"[ABORT] Scanning localhost target ({host}). Stopping all scanning.")
+            sys.exit(1)
         
+        print(f"[*] SSRF scan: {ep['method']} {ep['path']}")
+        method = ep["method"]
         # Parameter detectie optimalisatie
         parameters = ep.get("parameters", [])
         param_names = {p["name"] for p in parameters if p["in"] in ["query", "header", "path"]}
@@ -162,108 +191,87 @@ class SSRFAuditor:
             if param in {"lang", "language", "locale", "v", "version"}:
                 for payload in LANG_PAYLOADS:
                     self._probe_params(ep, url_base, method, param, payload)
-   
-    def _probe(
+    
+# --------------- PROBE ---------------------------------------
+    def _probe_params(
         self,
         ep: Endpoint,
-        url: str,
+        base_url: str,
         method: str,
-        *,
+        param: str,
         payload: str,
-        param: str = None,
-        json_body: Optional[dict] = None,
-        data: Optional[dict] = None,
-        headers: Optional[dict] = None,
     ) -> None:
         """
-        Voert een SSRF test uit en detecteert reflecties en blinde SSRF vulnerabilities.
-        
-        Args:
-            ep: Endpoint informatie
-            url: Target URL
-            method: HTTP methode
-            payload: SSRF payload die geïnjecteerd wordt
-            param: Parameter naam waarin geïnjecteerd wordt
-            json_body: Optionele JSON body
-            data: Optionele form data
-            headers: Optionele headers
+        Injects an SSRF payload into a parameter using multiple injection vectors.
+        - Aborts the scan if the target host is localhost
+        - Warns when a payload targets localhost
+        - Skips payloads that are not in the allowed target list
+        - Avoids duplicate tests per (param, payload) pair
         """
-        # Rate limiting
-        with self._lock:
-            gap = 1 / self.rps
-            delta = time.time() - self._last_ts
-            if delta < gap:
-                time.sleep(gap - delta)
-            self._last_ts = time.time()
 
-        try:
-            # Prepare request
-            req_headers = headers or {}
-            if not req_headers.get('User-Agent'):
-                req_headers['User-Agent'] = 'SSRF-Auditor/1.0'
-                
-            start = time.time()
-            resp = self.sess.request(
-                method,
-                url,
-                json=json_body,
-                data=data,
-                headers=req_headers,
-                timeout=self.timeout,
-                allow_redirects=False,  # Redirects kunnen SSRF maskeren
-                verify=False  # Voor testdoeleinden
-            )
-            latency = time.time() - start
+        # Extract hostname from the target URL
+        target_host = urlparse(base_url).hostname or ""
 
-            # Analyze response
-            body = resp.text.lower()
-            host = urlparse(payload).netloc.split(':')[0].lower()
-            
-            # Verbeterde reflectie detectie
-            reflected = self._detect_reflection(body, payload, param, host)
-            
-            # Verbeterde blind SSRF detectie
-            blind = (
-                resp.status_code in {400, 502, 503, 504, 522, 524} or  # Uitgebreide error codes
-                latency > self.BLIND_THRESHOLD or
-                any(keyword in body for keyword in [
-                    "error", 
-                    "timeout", 
-                    "refused",
-                    "internal server error",
-                    "bad gateway"
-                ])
+        # Abort the scan immediately if the target is localhost
+        if target_host in {"127.0.0.1", "localhost", "::1"}:
+            print(f"[ABORT] Target host is localhost ({target_host}). SSRF scan stopped.")
+            os._exit(1)
+
+        # Define allowed SSRF destinations
+        valid_targets = {"example.com", "burpcollaborator.net", "attacker.site"}
+        loopback_hosts = {"localhost", "127.0.0.1", "::1"}
+
+        # Warn if the payload points to localhost
+        if any(lp in payload for lp in loopback_hosts):
+            print(f"[WARNING] Payload targets localhost: {payload}")
+
+        # Skip payloads that do not target a valid destination
+        if not any(target in payload for target in valid_targets.union(loopback_hosts)):
+            return
+
+        # Deduplicate per (param, payload)
+        key = (param, payload)
+        if key in self._tested_payloads:
+            return
+        self._tested_payloads.add(key)
+
+        # Injection vector 1: Query string
+        qs_url = f"{base_url}?{param}={quote_plus(payload)}"
+        self._probe(ep, qs_url, method, payload=payload, param=param)
+
+        # Injection vector 2: JSON body
+        if method.upper() in {"POST", "PUT", "PATCH"}:
+            self._probe(
+                ep, base_url, method,
+                json_body={param: payload},
+                payload=payload,
+                param=param,
             )
 
-            if reflected or blind:
-                note = (
-                    f"Reflected SSRF via parameter '{param}'" 
-                    if param and reflected 
-                    else "Reflected SSRF" if reflected 
-                    else "Possible blind SSRF"
-                )
-                self._record_issue(
-                    ep=ep,
-                    payload=payload,
-                    status=resp.status_code,
-                    latency=latency,
-                    note=note,
-                    param=param,
-                    request_headers=req_headers,
-                    response_headers=dict(resp.headers),
-                    response_body=resp.text[:1000]  # Bewaar eerste 1000 chars
-                )
+        # Injection vector 3: Form body
+        if method.upper() in {"POST", "PUT", "PATCH"}:
+            self._probe(
+                ep, base_url, method,
+                data={param: payload},
+                payload=payload,
+                param=param,
+            )
 
-        except requests.RequestException as e:
-            if any(err in str(e).lower() for err in ["refused", "timeout", "reset", "connection"]):
-                self._record_issue(
-                    ep=ep,
-                    payload=payload,
-                    status=0,
-                    latency=0,
-                    note=f"Possible blind SSRF (error: {str(e)[:100]})",
-                    param=param
-                )
+        # Injection vector 4: Header
+        self._probe(
+            ep, base_url, method,
+            headers={param: payload},
+            payload=payload,
+            param=param,
+        )
+
+        # Injection vector 5: Path parameter
+        if f"{{{param}}}" in base_url:
+            path_url = base_url.replace(f"{{{param}}}", quote_plus(payload))
+            self._probe(ep, path_url, method, payload=payload, param=param)
+
+            
+# --------------- REFECTION ----------------------------------
 
     def _detect_reflection(self, body: str, payload: str, param: str = None, host: str = None) -> bool:
         """
@@ -318,75 +326,48 @@ class SSRFAuditor:
         return any(indicator in body for indicator in ssrf_indicators)
 
 
-    def _probe_params(self, ep: Endpoint, base_url: str, method: str, param: str, payload: str):
-        """Test SSRF in verschillende parameter contexten"""
-        
-        # 1. Query parameters (/?param=payload)
-        qs = f"{base_url}?{param}={quote_plus(payload)}"
-        self._probe(ep, qs, method, payload=payload, param=param)
-        
-        # 2. JSON body (POST/PUT/PATCH)
-        if method in {"POST", "PUT", "PATCH"}:
-            self._probe(ep, base_url, method, 
-                    json_body={param: payload},
-                    payload=payload,
-                    param=param)
-        
-        # 3. Form data
-        if method in {"POST", "PUT", "PATCH"}:
-            self._probe(ep, base_url, method,
-                    data={param: payload},
-                    payload=payload,
-                    param=param)
-        
-        # 4. Headers
-        headers = {param: payload}
-        self._probe(ep, base_url, method,
-                headers=headers,
-                payload=payload,
-                param=param)
-        
-        # 5. Path parameters (/users/{param}/profile)
-        if "{" + param + "}" in base_url:
-            path_url = base_url.replace("{" + param + "}", quote_plus(payload))
-            self._probe(ep, path_url, method,
-                    payload=payload,
-                    param=param)
-
+   # -- inside class SSRFAuditor -----------------------------------------
     
-        def _record_issue(
-            self, 
-            ep: Endpoint, 
-            payload: str, 
-            status: int, 
-            latency: float, 
-            note: str, 
-            param: str = None,
-            request_headers: Optional[dict] = None,
-            response_headers: Optional[dict] = None,
-            response_body: Optional[str] = None
-        ) -> None:
-            issue = {
-                "endpoint": f"{ep['method']} {ep['path']}",
-                "parameter": param or "N/A",
-                "payload": payload,
-                "status_code": status,
-                "latency": round(latency, 2),
-                "description": note,
-                "severity": "High" if "Reflected" in note else "Medium",
-                "timestamp": datetime.utcnow().isoformat(),
-                "request_headers": request_headers or {},
-                "response_headers": response_headers or {},
-                "response_body": response_body or "",
-            }
-            
-            with self._lock:
-                # Deduplicatie op endpoint + parameter + payload
-                key = (issue["endpoint"], issue["parameter"], issue["payload"])
-                if not any((i["endpoint"], i["parameter"], i["payload"]) == key 
-                    for i in self._issues):
-                    print(f"[!] SSRF finding: {issue['description']} on {issue['endpoint']} (param: {param})")
-                    self._issues.append(issue)
+              
+  #-------------------------------------------------------------------------
+    def _record_issue(
+        self, 
+        ep: Endpoint, 
+        payload: str, 
+        status: int, 
+        latency: float, 
+        note: str, 
+        param: str = None,
+        request_headers: Optional[dict] = None,
+        response_headers: Optional[dict] = None,
+        response_body: Optional[str] = None,
+        request_cookies: Optional[dict] = None,
+        response_cookies: Optional[dict] = None,
+    ) -> None:
+        issue = {
+            "endpoint": f"{ep['method']} {ep['path']}",
+            "parameter": param or "N/A",
+            "payload": payload,
+            "status_code": status,
+            "latency": round(latency, 2),
+            "description": note,
+            "severity": "High" if "Reflected" in note else "Medium",
+            "timestamp": datetime.utcnow().isoformat(),
+            "request_headers": request_headers or {},
+            "response_headers": response_headers or {},
+            "request_body": None,
+            "response_body": response_body or "",
+            "request_cookies": request_cookies or {},
+            "response_cookies": response_cookies or {},
+        }
+        
+        with self._lock:
+            # Deduplicatie op endpoint + parameter + payload
+            key = (issue["endpoint"], issue["parameter"], issue["payload"])
+            if not any((i["endpoint"], i["parameter"], i["payload"]) == key 
+                for i in self._issues):
+                print(f"[!] SSRF finding: {issue['description']} on {issue['endpoint']} (param: {param})")
+                self._issues.append(issue)
         
         # ------------------------------------------------------------------
     # rapportage-helpers

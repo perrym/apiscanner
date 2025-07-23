@@ -11,13 +11,28 @@ from urllib.parse import urljoin
 from pathlib import Path
 from typing import  Any, List, Dict, Optional
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass , field
 import time
 from urllib.parse import urlparse
 from datetime import datetime
 from report_utils import ReportGenerator
 from requests import Request
 
+def _is_real_issue(issue: dict) -> bool:
+    try:
+        # status_code kan str of int zijn
+        return int(issue.get("status_code", 0)) != 0
+    except (ValueError, TypeError):
+        return False
+# --- helper om dubbele headers te bewaren ----------------------------
+def _headers_to_list(hdrs):
+    if hasattr(hdrs, "getlist"):          # urllib3.HTTPHeaderDict
+        out = []
+        for k in hdrs:
+            for v in hdrs.getlist(k):
+                out.append((k, v))
+        return out
+    return list(hdrs.items())
 
 
 
@@ -44,19 +59,23 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TestResult:
-    test_case: str
-    method: str
-    url: str
-    status_code: int
-    response_time: float
-    is_vulnerable: bool
-    response_sample: Optional[str] = None
-    request_sample: Optional[str] = None
-    params: Optional[dict] = None
-    headers: Optional[dict] = None
-    error: Optional[str] = None
-    timestamp: Optional[str] = None
-    response_headers: Optional[dict] = None  
+    test_case: str = ""
+    method: str = ""
+    url: str = ""
+    status_code: int = 0
+    response_time: float = 0.0
+    is_vulnerable: bool = False
+    response_sample: str = ""
+    request_sample: str = ""
+    params: dict = field(default_factory=dict)
+    headers: list = field(default_factory=list)
+    response_headers: list = field(default_factory=list)
+    request_cookies: dict = field(default_factory=dict)
+    response_cookies: dict = field(default_factory=dict)
+    error: str | None = None
+    timestamp: str = ""
+    request_body: str = ""  # ← nu heeft dit ook een default
+
 
     def to_dict(self):
         return {
@@ -69,9 +88,11 @@ class TestResult:
             "severity": classify_risk(self.status_code, self.response_sample),
             "timestamp": self.timestamp or datetime.now().isoformat(),
             "request_parameters": self.params or {},
-            "request_headers": self.headers or {},
+            "request_headers": self.headers or [],           # ← list!
+            "request_cookies": self.request_cookies or {},   # nieuw
             "request_body": self.request_sample,
-            "response_headers": self.response_headers or {},
+            "response_headers": self.response_headers or [], # ← list!
+            "response_cookies": self.response_cookies or {}, # nieuw
             "response_body": (str(self.response_sample) if self.response_sample else "")
         }
 
@@ -79,6 +100,7 @@ class TestResult:
 class BOLAAuditor:
     def __init__(self, session: requests.Session):
         self.session = session
+        self.issues: list[dict] = []  
         self.object_key_patterns = [
             r'id$', r'uuid$', r'_id$', r'key$',
             r'email$', r'token$', r'name$', r'slug$',
@@ -119,8 +141,13 @@ class BOLAAuditor:
         self._last_endpoints = endpoints
         all_results = []
         for ep in endpoints:
-            all_results.extend(self.test_endpoint(base_url, ep))  # ✅ juiste call
-        self.issues = [r.to_dict() for r in all_results]
+            all_results.extend(self.test_endpoint(base_url, ep))  
+       
+        self.issues = [
+            r.to_dict()
+            for r in all_results
+            if r and r.status_code != 0 
+        ]
         return self.issues
 
        
@@ -214,25 +241,10 @@ class BOLAAuditor:
             results.append(self._test_object_access(base_url,endpoint,name,vals))
         return results
 
-        from datetime import datetime
-    from requests import Request
+ 
 
     def _test_object_access(self,base_url: str,endpoint: dict,name: str,vals: dict) -> TestResult:
-        """
-        Stuur één request naar het opgegeven endpoint en retourneer
-        een TestResult-object met alle relevante gegevens.
-
-        Parameters
-        ----------
-        base_url : root-URL van de API (b.v. https://api.example.com)
-        endpoint : dict met ten minste keys: path, method, parameters
-        name     : beschrijving van deze test-case (b.v. 'leeg_id')
-        vals     : mapping parameter-naam → test-waarde
-        """
-
-        # -------- 1. Request samenstellen --------
         url = urljoin(base_url, endpoint["path"])
-
         query_params: dict[str, str] = {}
         json_body: dict[str, str] = {}
         headers: dict[str, str] = {"User-Agent": "APISecurityScanner/1.0"}
@@ -259,7 +271,8 @@ class BOLAAuditor:
             json=json_body or None          # None voorkomt onnodige 'null' body
         )
         prepared = self.session.prepare_request(req)
-
+                
+        
         # -------- 2. Verzenden & meten --------
         start = time.time()
         try:
@@ -286,9 +299,9 @@ class BOLAAuditor:
         )
         large_body = len(body_text) > 10_000
 
-        is_vuln = status_code == 200 and (contains_sensitive or large_body)
-
+        is_vuln = status_code == 200 and (contains_sensitive or large_body) if status_code != 0 else False
         # -------- 4. Resultaat teruggeven --------
+                  
         return TestResult(
             test_case=name,
             method=prepared.method,
@@ -303,22 +316,27 @@ class BOLAAuditor:
                 else (prepared.body or "")
             ),
             params=query_params,
-            headers=dict(prepared.headers),
-            response_headers=dict(resp.headers) if resp else {},
+            headers=_headers_to_list(prepared.headers),
+            response_headers=_headers_to_list(resp.raw.headers) if resp else [],
+            request_cookies=self.session.cookies.get_dict(),
+            response_cookies=resp.cookies.get_dict() if resp else {},
             error=error_msg,
-            timestamp=datetime.now().isoformat()
+            timestamp=datetime.now().isoformat(),
+            request_body=prepared.body.decode() if isinstance(prepared.body, (bytes, bytearray)) else prepared.body or ""
         )
-      
+
     
 
     def _sanitize_response(self,text:str,max_length:int=200)->str:
         if not text: return ''
         sanitized=re.sub(r'(password|token|secret)"?\s*:\s*"[^"]+"',r'\1":"*****"',text,flags=re.I)
         return (sanitized[:max_length]+'...') if len(sanitized)>max_length else sanitized
-
+    
+       
+    
     def generate_report(self, fmt: str = "markdown") -> str:
         # Skip alle requests die nooit een HTTP-antwoord kregen
-        clean_issues = [i for i in self.issues if i.get("status_code") != 0]
+        clean_issues = [i for i in self.issues if _is_real_issue(i)]
         return ReportGenerator(clean_issues, scanner="Bola", base_url=self.base_url).generate_html()
         
     def _get_base_url(self, results):
@@ -326,9 +344,11 @@ class BOLAAuditor:
             return "N/A"
         parsed = urlparse(results[0].url)
         return f"{parsed.scheme}://{parsed.netloc}"
-            
+    
+  
+           
     def save_report(self, path: str, fmt: str = "markdown"):
-        clean_issues = [i for i in self.issues if i.get("status_code") != 0]
+        clean_issues = [i for i in self.issues if _is_real_issue(i)]
         ReportGenerator(clean_issues, scanner="Bola", base_url=self.base_url).save(path, fmt="html")
 
 

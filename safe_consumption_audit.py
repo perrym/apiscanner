@@ -4,7 +4,7 @@
 # Author: Perry Mertens, 2025    #
 ##################################
 """
-safe_consumption_audit.py - Enhanced OWASP API10:2023 Auditor
+safe_consumption_audit.py - Enhanced OWASP API10:2023 
 This Python module runs an automated safe consumption security audit for REST APIs. 
 It iterates through endpoints from the OpenAPI spec, detects allowed HTTP methods, 
 and sends curated payloads for SQL, NoSQL, XSS, SSTI, path traversal, SSRF, header injection, request smuggling, 
@@ -76,6 +76,23 @@ def listen_for_quit():
 listener_thread = threading.Thread(target=listen_for_quit, daemon=True)
 listener_thread.start()
 
+from collections import defaultdict   # ← staat er al; niets wijzigen
+
+# --- nieuw -----------------------------------------------------------
+def _headers_to_list(headerobj):
+    """
+    Geef alle header‑paren (ook dubbele) terug als lijst van tuples,
+    ongeacht of het een dict of HTTPHeaderDict is.
+    """
+    if hasattr(headerobj, "getlist"):          # urllib3.HTTPHeaderDict
+        out = []
+        for k in headerobj:
+            for v in headerobj.getlist(k):
+                out.append((k, v))
+        return out
+    return list(headerobj.items())
+# ---------------------------------------------------------------------
+
 class SafeConsumptionAuditor:
     def __init__(
         self,
@@ -100,7 +117,7 @@ class SafeConsumptionAuditor:
         # --- basisconfig ----------------------------------------------------
         self.base_url: str = base_url.rstrip("/")
         self.session: requests.Session = session or self._create_secure_session()
-        self.session.headers.update({"User-Agent": "safe_consumption10/10"})
+        self.session.headers.update({"User-Agent": "safe_consumption/10"})
         self.timeout: int = timeout
         self.rate_limit: float = rate_limit
         self.log_monitor: Optional[
@@ -193,11 +210,15 @@ class SafeConsumptionAuditor:
                 endpoint=full_url,           # niet inkorten
                 path=parsed.path or "/",
                 status_code=response.status_code,
-                request_headers=dict(req.headers),
-                response_headers=dict(response.headers),
+                request_headers_list=_headers_to_list(req.headers),
+                response_headers_list=_headers_to_list(response.raw.headers),
                 request_body=self._safe_body(req.body),
                 response_body=response.text,
                 elapsed_ms=response.elapsed.total_seconds() * 1000,
+                request_headers=dict(req.headers),
+                response_headers=dict(response.headers),
+                request_cookies=self.session.cookies.get_dict(),
+                response_cookies=response.cookies.get_dict(),
             )
 
         # ---------- 3. Downgrade obvious false-positives --------------
@@ -476,7 +497,6 @@ class SafeConsumptionAuditor:
         "bson",
         "e11000 duplicate key",
         "json parse error",
-        "unexpected token", 
         "unrecognized pipeline stage",
         "no documents in result",
         "bsonobj size must be smaller",
@@ -485,11 +505,9 @@ class SafeConsumptionAuditor:
         "unrecognized pipeline stage",
         "cannot apply $inc to a value of non-numeric type",
         "fieldpath field names may not contain",
-        "unexpected token",
         "mongonetworkerror",
         "connection timed out",
         "command failed with error",
-        "unauthorized",
         "type mismatch: expected .+ but found",
         "invalid bson field name",
         "invalid operator",

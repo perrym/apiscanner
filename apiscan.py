@@ -7,7 +7,7 @@
 APISCAN is a private and proprietary API security tool,
 developed independently for internal use and research purposes. 
 It supports OWASP API Security Top 10 (2023) testing, OpenAPI-based analysis, active scanning, and multi-format reporting.
-Redistribution is not permitted without explicit permission.
+Redistribution is not permitted without explicit permission. 
 """
 from __future__ import annotations
 import builtins
@@ -97,7 +97,7 @@ def create_output_directory(base_url: str) -> Path:
 def check_api_reachable(url: str, session: requests.Session, retries: int = 3, delay: int = 3):
     for attempt in range(1, retries + 1):
         try:
-            print(f"Checking connection to {url} (attempt {attempt}/{retries})...")
+            print(f"APIscan By Perry Mertens 2025 (C) pamsniffer@gmail.com. \nChecking connection to {url} (attempt {attempt}/{retries})...")
             resp = session.get(url, timeout=5)
             print(f"Response status code: {resp.status_code}")
 
@@ -275,7 +275,7 @@ def main() -> None:
                 except Exception as e:
                     logger.error(f"BOLA test error: {e}")
 
-        bola.issues = [r.to_dict() for r in bola_results]
+        bola.issues = [r.to_dict() for r in bola_results if r.status_code != 0]
         bola.base_url = args.url  
         report = bola.generate_report()
        

@@ -4,7 +4,6 @@
 # Author: Perry Mertens, 2025    #
 ##################################
 
-
 from __future__ import annotations
 import argparse
 import json
@@ -19,6 +18,12 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urljoin, quote_plus
 from report_utils import ReportGenerator
 import requests
+
+def _headers_to_list(hdrs):
+    # Set-Cookie"""
+    if hasattr(hdrs, "getlist"):
+        return [(k, v) for k in hdrs for v in hdrs.getlist(k)]
+    return list(hdrs.items())
 
 Endpoint = Dict[str, Any]
 Finding = Dict[str, Any]
@@ -125,23 +130,42 @@ class MisconfigurationAuditorPro:
         random.shuffle(all_payloads)
         return all_payloads
 
-    def _build_finding(self, endpoint: Endpoint, payload: str, response: requests.Response, 
-                      duration: float, description: str, severity: str) -> Finding:
+    def _build_finding(
+        self,
+        endpoint: Endpoint,
+        payload: str,
+        response: requests.Response,
+        duration: float,
+        description: str,
+        severity: str
+    ) -> Finding:
         return {
-            "name": f"{endpoint['method']} {endpoint['path']}",
-            "endpoint": f"{endpoint['method']} {endpoint['path']}",
-            "operation_id": endpoint.get("operationId", ""),
-            "payload": payload,
-            "status_code": response.status_code,
-            "response_time": duration,
-            "description": description,
-            "severity": severity,
-            "response_headers": dict(response.headers),
+            "name":           f"{endpoint['method']} {endpoint['path']}",
+            "endpoint":       f"{endpoint['method']} {endpoint['path']}",
+            "operation_id":   endpoint.get("operationId", ""),
+            "payload":        payload,
+            "status_code":    response.status_code,
+            "response_time":  duration,
+            "description":    description,
+            "severity":       severity,
+
+            # ── response context ──────────────────────────────────────────
+            "response_headers": _headers_to_list(response.raw.headers),
+            "response_body":    response.text[:2048] if response.text else "",
             "response_body_sample": response.text[:500] if response.text else None,
+            "response_cookies": response.cookies.get_dict(),
+
+            # ── request context ───────────────────────────────────────────
+            "request_headers": _headers_to_list(response.request.headers)
+                            if response.request else [],
+            "request_body":    getattr(response.request, "body", None)
+                            if response.request else None,
+            "request_cookies": self.session.cookies.get_dict(),
+
+            # ── meta ──────────────────────────────────────────────────────
             "timestamp": datetime.now().isoformat(),
-        "request_headers": dict(response.request.headers) if response.request else None,
-        "request_body": getattr(response.request, "body", None) if response.request else None
         }
+
 
     def _enforce_rate_limit(self):
         now = time.time()
@@ -459,40 +483,3 @@ class MisconfigurationAuditorPro:
             scanner="Enhanced Misconfiguration Auditor (API08)", 
             base_url=self.base_url
         ).save(path, fmt=fmt)
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Enhanced OWASP API8 Auditor - Misconfigurations & SSRF")
-    parser.add_argument("--url", required=True, help="Base API URL")
-    parser.add_argument("--swagger", required=True, help="Path to Swagger/OpenAPI-JSON")
-    parser.add_argument("--output", choices=["markdown", "json"], default="markdown")
-    parser.add_argument("--debug", action="store_true", help="Enable debug output")
-    parser.add_argument("--threads", type=int, default=MisconfigurationAuditorPro.DEFAULT_CONCURRENCY, 
-                       help="Number of concurrent threads")
-    parser.add_argument("--rps", type=int, default=MisconfigurationAuditorPro.DEFAULT_REQUESTS_PER_SECOND,
-                       help="Max requests per second")
-    args = parser.parse_args()
-
-    sess = requests.Session()
-    aud = MisconfigurationAuditorPro(
-        args.url, 
-        sess,
-        concurrency=args.threads,
-        requests_per_second=args.rps,
-        debug=args.debug
-    )
-    eps = MisconfigurationAuditorPro.endpoints_from_swagger(args.swagger)
-    aud.test_endpoints(eps)
-
-    print(aud.generate_report(args.output))
-
-
-if __name__ == "__main__":
-    from report_utils import ReportGenerator
-    findings = run_misconfig_audit()  # Zorg dat deze functie bestaat
-    if findings:
-        rg = ReportGenerator(findings, scanner="Misconfiguration Audit", base_url="http://localhost")
-        Path("misconfig_report.html").write_text(rg.generate_html(), encoding="utf-8")
-        print("[+] HTML rapport opgeslagen als misconfig_report.html")
-    else:
-        print("[!] Geen bevindingen gevonden.")

@@ -11,6 +11,13 @@ from urllib.parse import urljoin
 from copy import deepcopy
 from report_utils import ReportGenerator
 
+def _headers_to_list(hdrs):
+    # Set-Cookie
+    if hasattr(hdrs, "getlist"):  # urllib3.HTTPHeaderDict
+        return [(k, v) for k in hdrs for v in hdrs.getlist(k)]
+    return list(hdrs.items())
+
+
 class ObjectPropertyAuditor:
     """Test Broken Object Property Level Authorization (API3:2023)"""
     
@@ -286,10 +293,12 @@ class ObjectPropertyAuditor:
                     'method': response.request.method if response.request else '',
                     'url': response.url,
                     'status_code': response.status_code,
-                    'request_headers': dict(response.request.headers) if response.request else {},
+                    'request_headers': _headers_to_list(response.request.headers) if response.request else [],
                     'request_body': request_payload,
-                    'response_headers': dict(response.headers),
-                    'response_body': response.text[:2048]
+                    'response_headers': _headers_to_list(response.raw.headers),
+                    'response_body': response.text[:2048],
+                    'request_cookies': self.session.cookies.get_dict(),
+                    'response_cookies': response.cookies.get_dict(),
                 }
             except Exception as exc:
                 logging.error(f"Failed to capture HTTP context: {exc}")

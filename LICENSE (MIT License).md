@@ -27,33 +27,137 @@ SOFTWARE.
 README.md
 ---------
 
-# APISCAN  0.1.0-alpha - API Security Assessment Tool
+# APISCAN - OWASP API Security Scanner
 
-APISCAN is an extensible, modular security auditing framework for REST APIs, based on the OWASP API Security Top 10 (2023) risks.
+**Version:** 1.0-beta  
+**Author:** Perry Mertens email:pamsniffer@gmail.com  
+**License:** MIT
 
-It automates detection of vulnerabilities including:
-- Broken Object Level Authorization (BOLA)
-- Broken Authentication
-- Security Misconfigurations
-- Server-Side Request Forgery (SSRF)
-- Improper Inventory Management
-- And more
+## Overview
 
-APISCAN supports OpenAPI/Swagger specification parsing, advanced payload generation, concurrent testing, and evidence-based reporting.
+**APISCAN** is a free, extensible API security scanning tool built in Python that targets the [OWASP API Security Top 10 (2023)](https://owasp.org/www-project-api-security/). It supports Swagger/OpenAPI specifications, performs active vulnerability scans, and generates clear reports in multiple formats.
 
 ## Features
-- Modular structure per OWASP risk category
-- Realistic attack simulation (fuzzing, timing attacks, header tampering)
-- Clear Markdown, JSON, and CSV output formats
-- Designed for both developers and security auditors
+
+- Active scanning of REST APIs using OpenAPI/Swagger definitions.
+- Realistic vulnerability detection (e.g., fuzzing, timing, injection, SSRF).
+- Modular audits for each OWASP API Top 10 risk.
+- CLI with extensive authentication support.
+- Output in DOCX, Markdown, JSON, and TXT.
+
+## Supported Risks
+
+| OWASP API Risk ID | Description                                | Module                        |
+|------------------|--------------------------------------------|-------------------------------|
+| API1             | Broken Object Level Authorization          | `bola_audit.py`              |
+| API2             | Broken Authentication                      | `broken_auth_audit.py`       |
+| API3             | Broken Object Property Level Authorization | `broken_object_property_audit.py` |
+| API4             | Unrestricted Resource Consumption          | `resource_consumption_audit.py` |
+| API5             | Broken Function Level Authorization        | `authorization_audit.py`     |
+| API6             | Sensitive Business Logic                   | `business_flow_audit.py`     |
+| API7             | SSRF (Server-Side Request Forgery)         | `ssrf_audit.py`              |
+| API8             | Security Misconfiguration                  | `misconfiguration_audit.py`  |
+| API9             | Improper Inventory Management              | `inventory_audit.py`         |
+| API10            | Unsafe Consumption of 3rd-Party APIs       | `safe_consumption_audit.py`  |
+| API11            | AI-assisted Security Analysis              | `ai_client.py`               |
+
+## Example Usage
+
+```bash
+python apiscan.py --url https://api.example.com   --swagger openapi.json   --token eyJhbGciOi...   --flow token 
+```
+
+### Authentication Options
+
+- `--token` (Bearer token)
+- `--basic-auth` (username:password)
+- `--apikey` + `--apikey-header`
+- `--ntlm` (domain\user:password)
+- `--client-cert` + `--client-key` (mTLS)
+- `--client-id`, `--client-secret`, `--token-url`, `--auth-url`, `--redirect-uri` (OAuth2)
+
+### Swagger Generation (optional)
+
+```bash
+python swaggergenerator.py --url https://api.example.com --output openapi.json --depth 3 --aggressive
+```
+
+## Output
+
+combined_report.html
+
+## Requirements
+
+```bash
+pip install -r requirements.txt
+```
 
 ## License
-This project is licensed under the MIT License - see the [LICENSE](./LICENSE) file for details.
+
+MIT License - see LICENSE file.
 
 ## Disclaimer
-This tool is intended for educational and authorized security testing purposes only. Unauthorized use against systems without permission is prohibited.
 
----
+**This tool is intended for educational and authorized security testing only. Unauthorized use is prohibited.**
+**Always ensure you have permission before scanning, crawling, or testing any target systems.**
+
 ## Contact
-For any questions, feedback, or responsible disclosure, please contact: pamsniffer@gmail.com
-Perry Mertens 
+
+📧 pamsniffer@gmail.com  
+🌍 https://github.com/perrym/apiscanner
+
+## Command-Line Parameters
+
+- `--url`: Base URL of the API
+- `--swagger`, `help="Path to Swagger/OpenAPI-JSON"`: Path to Swagger/OpenAPI-JSON
+- `--token`, `help="Bearer-token or auth-token"`: Bearer token or auth token
+- `--basic-auth`: Basic authentication in the form user:password
+- `--apikey`: API key for API access
+- `--apikey-header`, `default="X-API-Key"`: Header name for the API key
+- `--ntlm`: NTLM auth in the form domain\user:pass
+- `--client-cert`: 
+- `--client-key`: 
+- `--client-id`: 
+- `--client-secret`: 
+- `--token-url`: 
+- `--auth-url`: 
+- `--redirect-uri`: 
+- `--flow`: Authentication flow to use: token, client, basic, ntlm
+- `--scope`: 
+- `--threads`: 
+- `--cert-password`: Password for client certificate
+- `--debug`: Enable debug output
+- `f"--api{i}`, `help=f"Run only API{i} audit"`:
+
+## 🧠 API11 – AI-assisted Security Review
+
+**Module:** `ai_client.py`  
+**New:** Support for *both local Ollama* and *OpenAI API (GPT-4o)*
+
+This optional module performs AI-driven endpoint analysis based on the OWASP API Top 10. It now supports two modes:
+
+### 1. OpenAI GPT-4o (cloud)
+
+Use this mode when you have a valid OpenAI API key:
+
+```bash
+export OPENAI_API_KEY=sk-...
+python apiscan.py --url https://api.example.com --swagger openapi.json --api11
+```
+
+The module uses `https://api.openai.com/v1/chat/completions` and the `gpt-4o` model by default, but this can be customized via the arguments in `analyze_endpoints_with_gpt()`.
+
+```bash
+python apiscan.py --url https://api.example.com --swagger openapi.json --api11
+```
+
+Use the `--port` parameter to switch from 11434 (Ollama) to another local service. This mode does not require an internet connection or OpenAI key.
+
+### Output
+
+- `ai_analysis_output.json`: JSON file with summaries per endpoint
+- For each endpoint:
+  - OWASP risks
+  - Abuse scenarios
+  - Test strategies
+  - Risk assessment

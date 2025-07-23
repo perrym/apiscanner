@@ -31,13 +31,11 @@ SECRET_KEY = "dummy_key"
 def configure_authentication(args) -> requests.Session:
     """
     Configures authentication for the API scanner based on command-line arguments.
-
     Supported flows:
     - token: Bearer token (--token)
     - client: OAuth2 Client Credentials (--client-id/--client-secret/--token-url)
     - basic: Basic Authentication (--username/--password)
     - ntlm: NTLM Authentication (--username/--password or --ntlm)
-
     Args:
         args: Parsed command-line arguments (from argparse)
 

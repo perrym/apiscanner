@@ -2,6 +2,7 @@
 # APISCAN - API Security Scanner #
 # Licensed under the MIT License #
 # Author: Perry Mertens, 2025    #
+# pamsniffer@gmail.com                                #
 ##################################
 import argparse
 import glob

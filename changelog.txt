@@ -7,7 +7,7 @@ Because I’m home recovering, I finally have the time and focus to dive into my
 ## Added Features:
   - Beter control of false Positive (need still some work)
   - Beter testing for API
-  - New report tool in html 
+  - Beter report tool in html 
   - Added support for multiple authentication mechanisms:
   - Multithreading
   - Bearer Token

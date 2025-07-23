@@ -1,10 +1,10 @@
 # Ultimate Swagger Generator
-# 
-# Licensed under the MIT License. 
-# Copyright (c) 2025 Perry Mertens
-#
-# See the LICENSE file for full license text.
-
+##################################
+# APISCAN - API Security Scanner #
+# Licensed under the MIT License #
+# Author: Perry Mertens, 2025    #
+# pamsniffer@gmail.com                               #
+##################################
 import argparse
 import json
 import re

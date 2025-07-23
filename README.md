@@ -70,7 +70,8 @@ MIT License - see LICENSE file.
 
 ## Disclaimer
 
-This tool is intended for educational and authorized security testing only. Unauthorized use is prohibited.
+**This tool is intended for educational and authorized security testing only. Unauthorized use is prohibited.**
+**Always ensure you have permission before scanning, crawling, or testing any target systems.**
 
 ## Contact
 

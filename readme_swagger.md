@@ -6,21 +6,23 @@ It intelligently crawls, inspects responses, follows links, parses JavaScript fi
 
 ---
 
-## Features
+##  **New version and Features**
 
--  Deep recursive crawling with intelligent endpoint detection
--  Aggressive mode for brute-forcing common API endpoints
--  Supports Basic Authentication, Bearer Tokens, and Form-Based Login
--  Automatic detection of:
-  - REST endpoints
-  - WebSocket URLs
-  - GraphQL endpoints
-  - HATEOAS-style hypermedia links
--  Automatically builds OpenAPI 3.0 specifications
-- ️ Custom headers support for accessing protected APIs
--  JavaScript parsing to discover hidden APIs
--  Beautiful JSON output with optional WebSocket server listings
-- 💬 CLI interface with flexible authentication and crawling options
+- New version with beter checks 
+- Delay scan 
+- Deep recursive crawling with intelligent endpoint detection
+- Aggressive mode for brute-forcing common API endpoints
+- Supports Basic Authentication, Bearer Tokens, and Form-Based Login
+- Automatic detection of:
+- REST endpoints
+- WebSocket URLs
+- GraphQL endpoints
+- HATEOAS-style hypermedia links
+- Automatically builds OpenAPI 3.0 specifications
+-️ Custom headers support for accessing protected APIs
+- JavaScript parsing to discover hidden APIs
+- Beautiful JSON output with optional WebSocket server listings
+- CLI interface with flexible authentication and crawling options
 
 ---
 

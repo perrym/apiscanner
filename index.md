@@ -1,5 +1,5 @@
 ---
-title: APIScan (AI-Aware) OWASP APIScanner by Perry Mertens
+title: APIScan (AI-Aware) OWASP APIScanner by Perry Mertens pamsniffer@gmail.com
 description: Free and open-source API security scanner built in Python...
 <meta content="VvYq2k5BFp5dpIL6JpQhoe90sWEXZTEBbaynlEKCWRE" name="google-site-verification">
 ---
@@ -178,7 +178,8 @@ options:
 This project is licensed under the MIT License - see the [LICENSE](./LICENSE) file for details.
 
 ## Disclaimer
-This tool is intended for educational and authorized security testing purposes only. Unauthorized use against systems without permission is prohibited.
+**This tool is intended for educational and authorized security testing purposes only.**
+**Always ensure you have permission before scanning, crawling, or testing any target systems.**
 
 ## Contact
 For any questions, feedback, or responsible disclosure, please contact: pamsniffer@gmail.com

@@ -2,6 +2,9 @@
 Version:1.0-beta 23 July 2025
 Author: Perry Mertens
 
+30-7-2025
+Add cryptografic checks in API2  normal this is api8.
+
 23-7-2025
 Because I’m home recovering, I finally have the time and focus to dive into my project!
 ## Added Features:

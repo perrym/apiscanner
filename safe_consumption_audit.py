@@ -76,12 +76,12 @@ def listen_for_quit():
 listener_thread = threading.Thread(target=listen_for_quit, daemon=True)
 listener_thread.start()
 
-from collections import defaultdict   # ← staat er al; niets wijzigen
+from collections import defaultdict   # - staat er al; niets wijzigen
 
 # --- nieuw -----------------------------------------------------------
 def _headers_to_list(headerobj):
     """
-    Geef alle header‑paren (ook dubbele) terug als lijst van tuples,
+    Geef alle header-paren (ook dubbele) terug als lijst van tuples,
     ongeacht of het een dict of HTTPHeaderDict is.
     """
     if hasattr(headerobj, "getlist"):          # urllib3.HTTPHeaderDict
@@ -169,7 +169,7 @@ class SafeConsumptionAuditor:
         response: Optional[requests.Response] = None,
         extra: Optional[dict[str, Any]] = None,
     ) -> None:
-        """Registreert één finding in self.issues en toont console-output."""
+        """Registreert --n finding in self.issues en toont console-output."""
 
         # ---------- 0. Noise-filter -----------------------------------
         skip_markers = ("failed to parse", "name 'parsed' is not defined")
@@ -178,7 +178,7 @@ class SafeConsumptionAuditor:
             check_fields.append(str(extra["error"]))
 
         if any(k in f.lower() for k in skip_markers for f in check_fields):
-            return  # overslaan → niet in rapport
+            return  # overslaan - niet in rapport
 
         # ---------- 1. Basiselementen ---------------------------------
         entry: dict[str, Any] = {
@@ -222,7 +222,7 @@ class SafeConsumptionAuditor:
             )
 
         # ---------- 3. Downgrade obvious false-positives --------------
-        # Zet 4xx/405 SQL-injectie-tests naar Info; geen reflectie → Medium
+        # Zet 4xx/405 SQL-injectie-tests naar Info; geen reflectie - Medium
         if issue.startswith("Possible SQL injection") and response:
             if response.status_code in SAFE_STATUSES:
                 entry["severity"] = "Info"
@@ -266,7 +266,7 @@ class SafeConsumptionAuditor:
         Keep only one finding per unique method/path/status/severity combination
         Count how often the same issue occurred
         """
-        seen: dict[tuple, dict] = {}          # key → eerste finding
+        seen: dict[tuple, dict] = {}          # key - eerste finding
         for f in self.issues:
             key = (f.get("method"),
                 f.get("path"),              # pad is al zonder host
@@ -987,7 +987,7 @@ class SafeConsumptionAuditor:
 
                 # ---------- request bouwen ----------------------------------
                 if final_method == "GET":
-                    # • vervang placeholder {id} of eerste cijfer in path
+                    # - vervang placeholder {id} of eerste cijfer in path
                     attack_url = re.sub(
                         r'(%7B\w+?Id%7D|\d+)',
                         urlparse.quote_plus(payload),
@@ -1301,10 +1301,10 @@ class SafeConsumptionAuditor:
         """
         Returns *True* when there are reasonable indicators of successful injection
         is gelukt:
-        • HTTP-500 met SQL/NoSQL/SSTI-keywords
-        • 4xx met specifieke foutpatronen
-        • gereflecteerde payload
-        • time-delay (blind SQL)
+        - HTTP-500 met SQL/NoSQL/SSTI-keywords
+        - 4xx met specifieke foutpatronen
+        - gereflecteerde payload
+        - time-delay (blind SQL)
         """
         content = response.text.lower()
         status  = response.status_code
@@ -1679,7 +1679,7 @@ class SafeConsumptionAuditor:
                         response=r
                     )
 
-                # ---   anders ‘gewone’ 4xx/5xx ---------------------------
+                # ---   anders -gewone- 4xx/5xx ---------------------------
                 else:
                     self._log(
                         "Basic security fail",
@@ -1720,7 +1720,7 @@ class SafeConsumptionAuditor:
                                 url,
                                 "High",
                                 payload=payload,
-                                response=r,          # ← GEEN response_sample meer
+                                response=r,          # - GEEN response_sample meer
                             )
 
                 except Exception as e:
@@ -1958,7 +1958,7 @@ class SafeConsumptionAuditor:
                         )
 
                 except Exception as e:
-                    # netwerk/time-out etc. → Low
+                    # netwerk/time-out etc. - Low
                     self._log(
                         "HPP test failed",
                         url,
@@ -1999,7 +1999,7 @@ class SafeConsumptionAuditor:
                             'Docker Remote API open',
                             f"http://{host}:2375/version",
                             'High',
-                            response=r    # ← volledige Response meegeven
+                            response=r    # - volledige Response meegeven
                         )
             except Exception as e:
                 self._log(
@@ -2045,7 +2045,7 @@ class SafeConsumptionAuditor:
                                 'Kubernetes API open',
                                 url,
                                 'High',
-                                response=r    # ← volledige Response meegeven
+                                response=r    # - volledige Response meegeven
                             )
                 except Exception as e:
                     self._log(
@@ -2268,7 +2268,7 @@ class SafeConsumptionAuditor:
         """
         Verwijdert parser- en netwerkfouten, dedupliceert findings en
         past zonodig de severity aan.  Geeft de opgeschoonde lijst terug
-        én zet self.issues op dezelfde inhoud.
+        -n zet self.issues op dezelfde inhoud.
         """
         cleaned, seen = [], set()
         self.parser_errors, self.network_errors = [], []
@@ -2341,7 +2341,7 @@ class SafeConsumptionAuditor:
         
     def generate_report(self) -> str:
         """Generate an HTML report (gefilterd en gededupliceerd)."""
-        self._filter_issues()                     # ← eerst opschonen!
+        self._filter_issues()                     # - eerst opschonen!
         gen = ReportGenerator(
             issues=self.issues,
             scanner="SafeConsumption (API10)",

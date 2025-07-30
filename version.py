@@ -1,5 +1,5 @@
 # =============================================================================
-#  APISCAN – OWASP API Security Scanner                                       #
+#  APISCAN - OWASP API Security Scanner                                       #
 # =============================================================================
 #  Copyright (c) 2025 Perry Mertens Pamsniffer@gmail.com                      #
 #  This file is part of the APISCAN project.                                  #

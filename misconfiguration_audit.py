@@ -109,7 +109,7 @@ class MisconfigurationAuditorPro:
             "http://127.0.0.1@evil.com/",
             "http://evil.com@127.0.0.1/",
             "http://127%2e0%2e0%2e1/",
-            "http://127。0。0。1/",
+            "http://127-0-0-1/",
             "http://[::1]/",  # IPv6 localhost
             "http://2130706433/",  # Decimal IP
             "http://0x7f000001/",  # Hex IP
@@ -149,20 +149,20 @@ class MisconfigurationAuditorPro:
             "description":    description,
             "severity":       severity,
 
-            # ── response context ──────────────────────────────────────────
+            # -- response context ------------------------------------------
             "response_headers": _headers_to_list(response.raw.headers),
             "response_body":    response.text[:2048] if response.text else "",
             "response_body_sample": response.text[:500] if response.text else None,
             "response_cookies": response.cookies.get_dict(),
 
-            # ── request context ───────────────────────────────────────────
+            # -- request context -------------------------------------------
             "request_headers": _headers_to_list(response.request.headers)
                             if response.request else [],
             "request_body":    getattr(response.request, "body", None)
                             if response.request else None,
             "request_cookies": self.session.cookies.get_dict(),
 
-            # ── meta ──────────────────────────────────────────────────────
+            # -- meta ------------------------------------------------------
             "timestamp": datetime.now().isoformat(),
         }
 

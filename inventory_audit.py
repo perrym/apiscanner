@@ -85,7 +85,7 @@ class InventoryAuditor:
         if content_type in api_types:
             return True
 
-        # 2) Fallback: probeer te parsen als JSON   →  echte OpenAPI heeft 'openapi' of 'swagger' key
+        # 2) Fallback: probeer te parsen als JSON   -  echte OpenAPI heeft 'openapi' of 'swagger' key
         try:
             parsed = resp.json()
             if isinstance(parsed, dict) and {"openapi", "swagger"} & parsed.keys():

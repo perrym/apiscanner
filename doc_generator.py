@@ -261,7 +261,7 @@ def extract_styles(soup: BeautifulSoup) -> Tuple[List[Tag], List[Tag]]:
 
 
 def add_back_links(section: Tag):
-    """Place ↩ links after headings that start with 'Finding'.
+    """Place - links after headings that start with 'Finding'.
 
     BeautifulSoup <Tag> does not always have the method `new_tag` in older bs4 versions. Therefore, we use a separate soup-factory to create the new <a> tags - works in all bs4 versions.
     """
@@ -269,7 +269,7 @@ def add_back_links(section: Tag):
     for hdr in section.find_all(["h2", "h3", "h4", "h5", "h6"]):
         if hdr.get_text(strip=True).lower().startswith("finding"):
             link = factory.new_tag("a", href="#top", **{"class": "back-to-index"})
-            link.string = "↩ Back to index"
+            link.string = "- Back to index"
             hdr.insert_after(link)
 
 # ---------------------- HTML HELPERS -------------------------------
@@ -282,7 +282,7 @@ def build_index(keys: List[str]) -> str:
     for idx, key in enumerate(keys, start=1):
         li = soup.new_tag("li")
         a = soup.new_tag("a", href=f"#rapport{idx}")
-        a.string = RISK_INFO[key]["title"]          # ← e.g.  API1:2023 - Broken Object Level Authorization
+        a.string = RISK_INFO[key]["title"]          # - e.g.  API1:2023 - Broken Object Level Authorization
         li.append(a)
         ul.append(li)
 
@@ -291,7 +291,7 @@ def build_index(keys: List[str]) -> str:
 
 
 def build_header(idx: int, risk_key: str) -> Tag:
-    """Header with full OWASP title and ↩ back-to-index link."""
+    """Header with full OWASP title and - back-to-index link."""
     info = RISK_INFO[risk_key]
     soup = BeautifulSoup(features="html.parser")
 
@@ -299,22 +299,22 @@ def build_header(idx: int, risk_key: str) -> Tag:
         "div", **{"class": "rapport-header", "id": f"rapport{idx}"}
     )
 
-    # ► Title
+    # - Title
     h1 = soup.new_tag("h1")
     h1.string = info["title"]             
     header_div.append(h1)
 
-    # ► ↩ Back to index
+    # - - Back to index
     link_top = soup.new_tag("a", href="#top", **{"class": "back-to-index"})
-    link_top.string = "↩ Back to index"
+    link_top.string = "- Back to index"
     header_div.append(link_top)
 
-    # ► Description
+    # - Description
     p_desc = soup.new_tag("p")
     p_desc.string = info["description"]
     header_div.append(p_desc)
 
-    # ► Recommendations
+    # - Recommendations
     details = soup.new_tag("details")
     summary = soup.new_tag("summary")
     summary.string = "Recommendations"
@@ -365,13 +365,13 @@ from bs4 import BeautifulSoup
 
 def generate_combined_html(output: str, files: List[str]):
     """
-    Combineert meerdere API HTML‑rapporten tot één overzicht
-    met index, OWASP‑koppen, ↩︎‑links én gededupliceerde CSS.
+    Combineert meerdere API HTML-rapporten tot --n overzicht
+    met index, OWASP-koppen, ---links -n gededupliceerde CSS.
     """
     if not files:
         raise ValueError("No files found matching the pattern.")
 
-    # ── Sorteren op API‑nummer ────────────────────────────────────────────────
+    # -- Sorteren op API-nummer ------------------------------------------------
     files_sorted = sorted(
         files,
         key=lambda fp: int(
@@ -385,7 +385,7 @@ def generate_combined_html(output: str, files: List[str]):
     sections_html: list[str] = []
     collected_styles: list[str] = []
 
-    # ── Inhoud en styles verzamelen ──────────────────────────────────────────
+    # -- Inhoud en styles verzamelen ------------------------------------------
     for idx, path in enumerate(files_sorted, start=1):
         risk_key = infer_risk_key(Path(path).name)
         risk_keys.append(risk_key)
@@ -405,7 +405,7 @@ def generate_combined_html(output: str, files: List[str]):
         add_back_links(wrapper)
         sections_html.append(str(wrapper))
 
-    # ── CSS dedupliceren ─────────────────────────────────────────────────────
+    # -- CSS dedupliceren -----------------------------------------------------
     unique_styles: list[str] = []
     seen: set[str] = set()
     for raw in collected_styles:
@@ -414,7 +414,7 @@ def generate_combined_html(output: str, files: List[str]):
             seen.add(css)
             unique_styles.append(css)
 
-    # ── Eind‑HTML samenstellen ───────────────────────────────────────────────
+    # -- Eind-HTML samenstellen -----------------------------------------------
     nav_html = build_index(risk_keys)
 
     final_html = f"""<!DOCTYPE html>
@@ -434,7 +434,7 @@ nav li {{ margin-bottom: 0.4em; }}
 </head>
 <body>
 <a id="top"></a>
-<h1 style="font-size: 28px;">API Report Overview – APIScan by Perry Mertens (c) pamsniffer@gmail.com</h1>
+<h1 style="font-size: 28px;">API Report Overview - APIScan by Perry Mertens (c) pamsniffer@gmail.com</h1>
 <nav>
 {nav_html}
 </nav>
@@ -444,7 +444,7 @@ nav li {{ margin-bottom: 0.4em; }}
 
     final_html = insert_intro(final_html)
     Path(output).write_text(final_html, encoding="utf-8")
-    print(f"Merged into {output} — processed {len(files)} reports.")
+    print(f"Merged into {output} - processed {len(files)} reports.")
 
 
 

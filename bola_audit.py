@@ -74,7 +74,7 @@ class TestResult:
     response_cookies: dict = field(default_factory=dict)
     error: str | None = None
     timestamp: str = ""
-    request_body: str = ""  # ← nu heeft dit ook een default
+    request_body: str = ""  # - nu heeft dit ook een default
 
 
     def to_dict(self):
@@ -88,10 +88,10 @@ class TestResult:
             "severity": classify_risk(self.status_code, self.response_sample),
             "timestamp": self.timestamp or datetime.now().isoformat(),
             "request_parameters": self.params or {},
-            "request_headers": self.headers or [],           # ← list!
+            "request_headers": self.headers or [],           # - list!
             "request_cookies": self.request_cookies or {},   # nieuw
             "request_body": self.request_sample,
-            "response_headers": self.response_headers or [], # ← list!
+            "response_headers": self.response_headers or [], # - list!
             "response_cookies": self.response_cookies or {}, # nieuw
             "response_body": (str(self.response_sample) if self.response_sample else "")
         }
@@ -132,7 +132,7 @@ class BOLAAuditor:
             return getattr(self, "_last_endpoints", [])
 
     def run_audit(self, base_url: str, swagger_path: str) -> List[Dict[str, Any]]:
-        print("→ BOLA audit gestart")
+        print("- BOLA audit gestart")
         self.base_url = base_url
         spec = self.load_swagger(swagger_path)
         if not spec:
@@ -237,7 +237,7 @@ class BOLAAuditor:
         if not endpoint.get('parameters'): return results
         for name,vals in self._generate_test_values(endpoint['parameters']).items():
             time.sleep(self.test_delay)
-            print(f"→ Testing {endpoint['method']} {endpoint['path']} [{name}]")
+            print(f"- Testing {endpoint['method']} {endpoint['path']} [{name}]")
             results.append(self._test_object_access(base_url,endpoint,name,vals))
         return results
 
@@ -260,7 +260,7 @@ class BOLAAuditor:
                 query_params[pname] = value
             elif loc == "header":
                 headers[pname] = value
-            else:                       # body / cookie / form-data → treat as JSON body
+            else:                       # body / cookie / form-data - treat as JSON body
                 json_body[pname] = value
 
         req = Request(
@@ -283,7 +283,7 @@ class BOLAAuditor:
             )
             resp_time = time.time() - start
             error_msg = None
-        except Exception as exc:            # netwerk-timeout, DNS-fout, …
+        except Exception as exc:            # netwerk-timeout, DNS-fout, -
             resp = None
             resp_time = time.time() - start
             error_msg = str(exc)

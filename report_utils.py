@@ -44,9 +44,9 @@ SEVERITY_ORDER = ["Critical", "High", "Medium", "Low", "Info"]
 # report_utils.py  (boven in het bestand, na de imports)
 def _iter_headers(hdrs):
     """
-    Genereer (key, value) paren uit zowel dicts als list‑of‑tuples.
+    Genereer (key, value) paren uit zowel dicts als list-of-tuples.
     """
-    if not hdrs:                       # None of leeg → niets yielden
+    if not hdrs:                       # None of leeg - niets yielden
         return
     if isinstance(hdrs, dict):
         yield from hdrs.items()
@@ -126,7 +126,7 @@ class EnhancedReportGenerator:
        
     # Vervang de _format_response_html functie door deze versie
     def _format_response_html(self, issue: Dict[str, Any]) -> str:
-        status = issue.get("status_code", "‑")
+        status = issue.get("status_code", "-")
         # -- headers -------------------------------------------------------
         hdr_pairs = _iter_headers(issue.get("response_headers"))
         headers = "\n".join(f"{k}: {v}" for k, v in hdr_pairs)
@@ -163,7 +163,7 @@ class EnhancedReportGenerator:
                 "</div>"
             )
 
-        # -- eind‑HTML -----------------------------------------------------
+        # -- eind-HTML -----------------------------------------------------
         return (
             '<div class="response">'
             f"<h4>HTTP {status}</h4>"
@@ -197,7 +197,7 @@ class EnhancedReportGenerator:
 
         #summary_table = self._generate_summary_table(grouped)
         #return self._generate_full_html(summary_table, "".join(findings_html))
-        # ── nieuw: maak echt een count-dict ─────────────────────────────
+        # -- nieuw: maak echt een count-dict -----------------------------
         counts = {sev: len(grouped.get(sev, [])) for sev in ("Critical", "High", "Medium", "Low" , "Info")}
         summary_table = self._generate_summary_table(counts)
         return self._generate_full_html(summary_table, "".join(findings_html))
@@ -250,7 +250,7 @@ class EnhancedReportGenerator:
                 </div>
                 <!-- NEW: back-to-index link -->
                 <div style="text-align: right; margin-top: 10px;">
-                    <a href="#report-nav" style="color:#555;text-decoration:none;">↑ Back to index</a>
+                    <a href="#report-nav" style="color:#555;text-decoration:none;">- Back to index</a>
                 </div>
             </div>
             """)
@@ -308,7 +308,7 @@ class EnhancedReportGenerator:
     # ------------------------------------------------------------------
     def _generate_summary_table(self, counts: dict[str, int]) -> str:
         """
-        Bouwt de ‘Scan Summary’-tabel.
+        Bouwt de -Scan Summary--tabel.
 
         Parameters
         ----------
@@ -441,7 +441,7 @@ class EnhancedReportGenerator:
         <html>
         {self._generate_html_head()}
         <body>
-            <a id="report-nav"></a>   <!-- ← BACK-TO-TOP ANKER -->
+            <a id="report-nav"></a>   <!-- - BACK-TO-TOP ANKER -->
             {self._generate_header()}
             {summary}
             <div class="findings">
@@ -574,7 +574,7 @@ def combine_html_reports(output_dir: Path):
         
         combined_html += """
             <div style="text-align: right; margin-top: 20px;">
-                <a href="#report-nav" style="color: #666; text-decoration: none;">↑ Back to top</a>
+                <a href="#report-nav" style="color: #666; text-decoration: none;">- Back to top</a>
             </div>
         </section>
         """

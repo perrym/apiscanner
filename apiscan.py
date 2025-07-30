@@ -75,7 +75,7 @@ MAX_THREADS = 20
 def styled_print(message: str, status: str = "info"):
     symbols = {
         "info": "Info:", "ok": "OK:", "warn": "WARNING:", "fail": "FAIL:",
-        "run": "->", "done": "✓"
+        "run": "->", "done": "Done"
     }
     colors = {
         "info": "\033[94m", "ok": "\033[92m", "warn": "\033[93m",
@@ -287,21 +287,31 @@ def main() -> None:
     if 2 in selected_apis:
         print(" API2 - Broken Authentication")
         logger.info("Running API2 - Broken Authentication")
-        # Start de authenticatie-auditor
+        norm_eps: list[dict[str, str]] = []
+        for ep in endpoints:                   # endpoints already built earlier
+            rel_path = ep["path"]
+            verb     = ep["method"].upper()
+            full_url = urljoin(args.url.rstrip("/") + "/", rel_path.lstrip("/"))
+            norm_eps.append({
+                "url": full_url,
+                "methods": verb,               # expected by AuthAuditor
+                "path": rel_path,
+                "method": verb,
+            })
         aa = AuthAuditor(args.url, sess)
-        auth_issues = aa.test_authentication_mechanisms([])
+        auth_issues = aa.test_authentication_mechanisms(norm_eps)
         for issue in auth_issues:
-            description = issue.get('description', 'Unknown')
-            endpoint = issue.get('endpoint', '')
-            print(f"-> Auth issue found: {description} at {endpoint}")
-            logger.info(f"Auth issue found: {description} at {endpoint}")
-        report = aa.generate_report()
+            desc = issue.get("description", "Unknown")
+            ep   = issue.get("endpoint", "")
+            print(f"-> Auth issue found: {desc} at {ep}")
+            logger.info(f"Auth issue found: {desc} at {ep}")
+
         html_report = HTMLReportGenerator(
             issues=auth_issues,
             scanner="API2:2023 - Broken Authentication",
-            base_url=args.url
+            base_url=args.url,
         )
-        save_html_report(auth_issues, 'BrokenAuth', args.url, output_dir)
+        save_html_report(auth_issues, "BrokenAuth", args.url, output_dir)
         styled_print(f"API2 complete - {len(auth_issues)} issues", "done")
 
     if 3 in  selected_apis:

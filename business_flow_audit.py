@@ -237,8 +237,8 @@ class BusinessFlowAuditor:
 
         
     def _log(self,flow: Flow,desc: str,sev: str,req: Optional[dict] = None,resp: Optional[requests.Response] = None,) -> None:
-        """Voeg één bevinding toe; sla over bij ontbrekend HTTP-antwoord."""
-        # Skip wanneer er geen of een “0”-response is
+        """Voeg --n bevinding toe; sla over bij ontbrekend HTTP-antwoord."""
+        # Skip wanneer er geen of een -0--response is
         if resp is None or getattr(resp, "status_code", 0) in (0, None):
             return
 
@@ -481,10 +481,10 @@ class BusinessFlowAuditor:
     def _test_rate_limit_sequential(self, flow: Flow):
         """
         Max 25 opeenvolgende verzoeken:
-        * Stop zodra we een 429/503 zien  → goed afgebroken
-        * Stop zodra we een niet-verwerkte fout zien (404/422/5xx) → test niet relevant
-        * Log pas een issue wanneer er minstens één _verwerkt_ antwoord was
-            en we tóch geen 429/503 kregen.
+        * Stop zodra we een 429/503 zien  - goed afgebroken
+        * Stop zodra we een niet-verwerkte fout zien (404/422/5xx) - test niet relevant
+        * Log pas een issue wanneer er minstens --n _verwerkt_ antwoord was
+            en we t-ch geen 429/503 kregen.
         """
         processed_seen = False
         for _ in range(25):

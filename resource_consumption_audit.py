@@ -252,7 +252,7 @@ class ResourceConsumptionAuditor:
             ('zip_bomb', b'PK\x05\x06' + b'\x00'*18, "Critical"),  # Minimal ZIP bomb
         ]
 
-        logging.debug("  → Large payload tests")
+        logging.debug("  - Large payload tests")
         
         # Test query parameters
         for size_name, params, severity in test_cases:
@@ -267,7 +267,7 @@ class ResourceConsumptionAuditor:
                 rt = time.time() - start
                 rs = len(resp.content)
 
-                logging.debug(f"    • {size_name}: status={resp.status_code}, size={self._format_bytes(rs)}, time={rt:.2f}s")
+                logging.debug(f"    - {size_name}: status={resp.status_code}, size={self._format_bytes(rs)}, time={rt:.2f}s")
 
                 if rs > self.thresholds['response_size']:
                     self._log_issue(
@@ -315,7 +315,7 @@ class ResourceConsumptionAuditor:
                     rt = time.time() - start
                     rs = len(resp.content)
                     
-                    logging.debug(f"    • {payload_name}: status={resp.status_code}, size={self._format_bytes(rs)}, time={rt:.2f}s")
+                    logging.debug(f"    - {payload_name}: status={resp.status_code}, size={self._format_bytes(rs)}, time={rt:.2f}s")
 
                     if rs > self.thresholds['response_size']:
                         self._log_issue(
@@ -356,7 +356,7 @@ class ResourceConsumptionAuditor:
             {'query': "' OR 1=1; WAITFOR DELAY '0:0:5'--", "severity": "Critical"},
             {'q': '{"$where": "sleep(5000)"}', "severity": "Critical"},
         ]
-        logging.debug("  → Computational complexity tests")
+        logging.debug("  - Computational complexity tests")
         for query in queries:
             severity = query.pop("severity")
             try:
@@ -369,7 +369,7 @@ class ResourceConsumptionAuditor:
                 )
                 rt = time.time() - start
 
-                logging.debug(f"    • query {list(query.keys())[0]}: status={resp.status_code}, time={rt:.2f}s")
+                logging.debug(f"    - query {list(query.keys())[0]}: status={resp.status_code}, time={rt:.2f}s")
 
                 # Time-based vulnerability detection
                 if rt > 5.0 and any(keyword in str(query).lower() for keyword in ['sleep', 'waitfor', 'delay']):
@@ -402,7 +402,7 @@ class ResourceConsumptionAuditor:
 
     def _test_rate_limiting(self, endpoint: Dict[str, Any]) -> None:
         limit = self.thresholds['rate_limit']
-        logging.debug(f"  → Rate limit test (sustained traffic for 30 seconds, target ≤ {limit} req/min)")
+        logging.debug(f"  - Rate limit test (sustained traffic for 30 seconds, target - {limit} req/min)")
         
         successes = 0
         start_time = time.time()
@@ -421,14 +421,14 @@ class ResourceConsumptionAuditor:
                 if last_resp.status_code == 200:
                     successes += 1
                 elif last_resp.status_code == 429:
-                    logging.debug(f"    • rate limited at request #{request_count}")
+                    logging.debug(f"    - rate limited at request #{request_count}")
             except requests.RequestException as exc:
                 logging.debug(f"    ! Error during ratelimit request #{request_count}: {exc}")
                 last_resp = None
 
         elapsed = time.time() - start_time
         rpm = (successes / elapsed * 60) if elapsed > 0 else 0
-        logging.debug(f"    • sent {request_count} requests, {successes} succeeded (~{rpm:.1f} req/min)")
+        logging.debug(f"    - sent {request_count} requests, {successes} succeeded (~{rpm:.1f} req/min)")
 
         if rpm > limit:
             self._log_issue(
@@ -455,7 +455,7 @@ class ResourceConsumptionAuditor:
     # ------------------------- Batch operations -------------------------- #
 
     def _analyze_batch_response(self, endpoint: Dict[str, Any], size: int, resp: requests.Response, rt: float) -> None:
-        logging.debug(f"    • batch {size}: status={resp.status_code}, time={rt:.2f}s")
+        logging.debug(f"    - batch {size}: status={resp.status_code}, time={rt:.2f}s")
         
         # Check for partial failures
         if resp.status_code == 207:  # Multi-status
@@ -481,7 +481,7 @@ class ResourceConsumptionAuditor:
             self._log_issue(
                 endpoint['url'],
                 "Batch Performance Issue",
-                f"Batch of {size} took {rt:.2f}s (expected ≤{expected_time:.2f}s)",
+                f"Batch of {size} took {rt:.2f}s (expected -{expected_time:.2f}s)",
                 severity,
                 {'batch_size': size, 'response_time': rt, 'threshold': expected_time, 
                  'status_code': resp.status_code, 'body': resp.text[:2048]},
@@ -572,7 +572,7 @@ class ResourceConsumptionAuditor:
     # ------------------------- Concurrent flooding ------------------------- #
 
     def _test_concurrent_flood(self, endpoint: Dict[str, Any]) -> None:
-        logging.debug(f"  → Concurrent flood test ({self.thresholds['concurrent_workers']} workers)")
+        logging.debug(f"  - Concurrent flood test ({self.thresholds['concurrent_workers']} workers)")
         
         method = endpoint.get('method', 'GET')
         url = self._build_url(endpoint['url'])
@@ -616,7 +616,7 @@ class ResourceConsumptionAuditor:
         elapsed = time.time() - start_time
         total_requests = self.thresholds['concurrent_requests']
         logging.debug(
-            f"    • Completed {total_requests} requests in {elapsed:.2f}s: "
+            f"    - Completed {total_requests} requests in {elapsed:.2f}s: "
             f"{successes} succeeded, {errors} errors, {timeouts} timeouts"
         )
 
@@ -663,7 +663,7 @@ class ResourceConsumptionAuditor:
     # ---------------------------------------------------------------- #
 
     def _filtered_issues(self) -> List[Dict[str, Any]]:
-        """Return only findings that received an HTTP response (status ≠ 0)."""
+        """Return only findings that received an HTTP response (status - 0)."""
         return [i for i in self.issues if i.get('status_code', 1) != 0]
 
     def generate_report(self, fmt: str = "markdown") -> str:

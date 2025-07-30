@@ -123,10 +123,10 @@ class UltimateSwaggerGenerator:
         if "#" in path:
             path = path.split("#", 1)[0]
 
-        # numerieke id’s /123  -> /{id}
+        # numerieke id-s /123  -> /{id}
         path = re.sub(r"/\d+", "/{id}", path)
 
-        # Mongo‑achtige 24‑hex ids -> /{objectId}
+        # Mongo-achtige 24-hex ids -> /{objectId}
         path = re.sub(r"/[a-f0-9]{24}", "/{objectId}", path, flags=re.I)
 
         # alles wat eindigt op XxxId of _id  -> placeholder
@@ -438,7 +438,7 @@ class UltimateSwaggerGenerator:
             resp = self._make_request("GET", url, timeout=5)
 
             if not self._is_api_response(resp):
-                print(f"[~] Ignored (non‑API format): {url}")
+                print(f"[~] Ignored (non-API format): {url}")
                 return
 
             clean_path = self._normalise_path(url)
@@ -538,7 +538,7 @@ class UltimateSwaggerGenerator:
 
         # 6. Build the operation object
         operation = {
-            "summary": f"Auto‑discovered {method.upper()} form endpoint",
+            "summary": f"Auto-discovered {method.upper()} form endpoint",
             "responses": {
                 "200": {"description": "Successful form submission"}
             },

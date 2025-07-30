@@ -53,7 +53,7 @@ class AuthorizationAuditor:
         }
         self._get_all_tokens()
 
-    # ─────────────────────────── helpers ─────────────────────────── #
+    # --------------------------- helpers --------------------------- #
 
     def _make_session(self) -> requests.Session:
         s = requests.Session()
@@ -90,7 +90,7 @@ class AuthorizationAuditor:
             return True
         return False
 
-    # ─────────────────────────── tokens ─────────────────────────── #
+    # --------------------------- tokens --------------------------- #
 
     def _get_all_tokens(self) -> None:
         for role, cfg in self.roles.items():
@@ -98,7 +98,7 @@ class AuthorizationAuditor:
                 continue
             cfg["token"] = "dummy-token"  # simplified (placeholder)
 
-    # ─────────────────────────── main tests ─────────────────────────── #
+    # --------------------------- main tests --------------------------- #
 
     def test_authorization(self) -> List[Dict[str, Any]]:
         for ep in self.discovered_endpoints:
@@ -169,7 +169,7 @@ class AuthorizationAuditor:
             uniq.setdefault(k, it)          # eerste wint, latere duplicates skippen
         return list(uniq.values())
 
-    # ─────────────────────────── logging ─────────────────────────── #
+    # --------------------------- logging --------------------------- #
 
     def _log_issue(
         self,
@@ -217,7 +217,7 @@ class AuthorizationAuditor:
 
         self.authz_issues.append(entry)
 
-    # ─────────────────────────── reporting ─────────────────────────── #
+    # --------------------------- reporting --------------------------- #
 
     def _filtered_issues(self) -> List[Dict[str, Any]]:
         return [i for i in self.authz_issues if i.get("status_code")]

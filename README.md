@@ -1,62 +1,95 @@
+# APIScan (AI-Aware) OWASP APIScanner by Perry Mertens pamsniffer@gmail.com
 
-# APISCAN - OWASP API Security Scanner
-
-**Version:** 1.0-beta  
-**Author:** Perry Mertens email:pamsniffer@gmail.com  
+**Version:** 2.0-beta
+**Author:** Perry Mertens ([pamsniffer@gmail.com](mailto:pamsniffer@gmail.com))
 **License:** MIT
 
 ## Overview
 
-**APISCAN** is a free, extensible API security scanning tool built in Python that targets the [OWASP API Security Top 10 (2023)](https://owasp.org/www-project-api-security/). It supports Swagger/OpenAPI specifications, performs active vulnerability scans, and generates clear reports in multiple formats.
+**APISCAN** is an extensible, advanced Python-based API security testing framework targeting the [OWASP API Security Top 10 (2023)](https://owasp.org/www-project-api-security/). It supports Swagger/OpenAPI specifications, performs active vulnerability scanning, and generates comprehensive reports in various formats.
 
-## Features
+## Key Features
 
-- Active scanning of REST APIs using OpenAPI/Swagger definitions.
-- Realistic vulnerability detection (e.g., fuzzing, timing, injection, SSRF).
-- Modular audits for each OWASP API Top 10 risk.
-- CLI with extensive authentication support.
-- Output in DOCX, Markdown, JSON, and TXT.
+* Active scanning based on Swagger/OpenAPI specifications
+* Covers all OWASP API Top 10 (2023) risks
+* Support for real requests, dummy fuzzing, and AI-based review
+* Multiple authentication modes: token, OAuth2, NTLM, basic, mTLS
+* Reports: HTML
 
 ## Supported Risks
 
-| OWASP API Risk ID | Description                                | Module                        |
-|------------------|--------------------------------------------|-------------------------------|
-| API1             | Broken Object Level Authorization          | `bola_audit.py`              |
-| API2             | Broken Authentication                      | `broken_auth_audit.py`       |
-| API3             | Broken Object Property Level Authorization | `broken_object_property_audit.py` |
-| API4             | Unrestricted Resource Consumption          | `resource_consumption_audit.py` |
-| API5             | Broken Function Level Authorization        | `authorization_audit.py`     |
-| API6             | Sensitive Business Logic                   | `business_flow_audit.py`     |
-| API7             | SSRF (Server-Side Request Forgery)         | `ssrf_audit.py`              |
-| API8             | Security Misconfiguration                  | `misconfiguration_audit.py`  |
-| API9             | Improper Inventory Management              | `inventory_audit.py`         |
-| API10            | Unsafe Consumption of 3rd-Party APIs       | `safe_consumption_audit.py`  |
-| API11            | AI-assisted Security Analysis              | `ai_client.py`               |
+| OWASP API Risk ID | Description                                | Module                            |
+| ----------------- | ------------------------------------------ | --------------------------------- |
+| API1              | Broken Object Level Authorization          | `bola_audit.py`                   |
+| API2              | Broken Authentication                      | `broken_auth_audit.py`            |
+| API3              | Broken Object Property Level Authorization | `broken_object_property_audit.py` |
+| API4              | Unrestricted Resource Consumption          | `resource_consumption_audit.py`   |
+| API5              | Broken Function Level Authorization        | `authorization_audit.py`          |
+| API6              | Sensitive Business Logic                   | `business_flow_audit.py`          |
+| API7              | SSRF (Server-Side Request Forgery)         | `ssrf_audit.py`                   |
+| API8              | Security Misconfiguration                  | `misconfiguration_audit.py`       |
+| API9              | Improper Inventory Management              | `inventory_audit.py`              |
+| API10             | Unsafe Consumption of 3rd-Party APIs       | `safe_consumption_audit.py`       |
+| API11             | AI-assisted Security Analysis              | `ai_client.py`                    |
 
-## Example Usage
+---
+
+## Dummy Mode: `swagger_utils.py`
+
+A powerful and modular utility that generates dummy values from OpenAPI schemas, enabling:
+
+* **Realistic fuzz testing** without impacting live production data
+* **Dynamic parameter & request body generation**
+* Support for industry-specific dummy values (e.g. `finance`, `healthcare`, `ecommerce`)
+* `--dummy` CLI option auto-enables dummy injection logic in all audit modules
+
+Internally powered by:
+
+* `OpenAPIRequestBuilder`: builds full request dicts (URL, headers, body, params)
+* Schema resolution support (`$ref`, `oneOf`, `allOf`, etc.)
+* Configurable behavior via `DummyGeneratorConfig`
+
+> Example: In dummy mode, values like `iban`, `price`, `uuid`, `email`, `timestamp`, `SKU`, etc., are auto-filled using intelligent heuristics and schema-aware logic.
+
+---
+
+## Example CLI Usage
 
 ```bash
-python apiscan.py --url https://api.example.com   --swagger openapi.json   --token eyJhbGciOi...   --flow token 
+# Real mode (production or test data)
+python apiscan.py --url https://api.example.com \
+                  --swagger openapi.json \
+                  --token eyJhbGciOi... \
+                  --flow token
+
+# Dummy mode (auto-generated fake values for fuzzing)
+python apiscan.py --url https://api.example.com \
+                  --swagger openapi.json \
+                  --token eyJhbGciOi... \
+                  --flow token \
+                  --dummy
 ```
 
-### Authentication Options
+ `--dummy` enables safe testing using auto-generated, schema-aware dummy values.
 
-- `--token` (Bearer token)
-- `--basic-auth` (username:password)
-- `--apikey` + `--apikey-header`
-- `--ntlm` (domain\user:password)
-- `--client-cert` + `--client-key` (mTLS)
-- `--client-id`, `--client-secret`, `--token-url`, `--auth-url`, `--redirect-uri` (OAuth2)
+---
 
-### Swagger Generation (optional)
+## Swagger Crawler (optional)
 
 ```bash
 python swaggergenerator.py --url https://api.example.com --output openapi.json --depth 3 --aggressive
 ```
 
-## Output
+---
 
-combined_report.html
+## Output Files
+
+* `api_*.html` (one per API risk)
+* `combined_report.html` (if >1 risk enabled)
+* `AI-api11_scanresults.json` (if --api11 used)
+* Raw logs: `audit_*/log/*.log`
+
+---
 
 ## Requirements
 
@@ -64,72 +97,52 @@ combined_report.html
 pip install -r requirements.txt
 ```
 
-## License
-
-MIT License - see LICENSE file.
+---
 
 ## Disclaimer
 
-**This tool is intended for educational and authorized security testing only. Unauthorized use is prohibited.**
-**Always ensure you have permission before scanning, crawling, or testing any target systems.**
+> This tool is intended for authorized security testing and research. Unauthorized scanning is strictly prohibited.
+
+---
 
 ## Contact
 
-📧 pamsniffer@gmail.com  
-🌍 https://github.com/perrym/apiscanner
+📧 [pamsniffer@gmail.com](mailto:pamsniffer@gmail.com)
+🌍 [https://github.com/perrym/apiscanner](https://github.com/perrym/apiscanner)
 
-## Command-Line Parameters
+---
 
-- `--url`: Base URL of the API
-- `--swagger`, `help="Path to Swagger/OpenAPI-JSON"`: Path to Swagger/OpenAPI-JSON
-- `--token`, `help="Bearer-token or auth-token"`: Bearer token or auth token
-- `--basic-auth`: Basic authentication in the form user:password
-- `--apikey`: API key for API access
-- `--apikey-header`, `default="X-API-Key"`: Header name for the API key
-- `--ntlm`: NTLM auth in the form domain\user:pass
-- `--client-cert`: 
-- `--client-key`: 
-- `--client-id`: 
-- `--client-secret`: 
-- `--token-url`: 
-- `--auth-url`: 
-- `--redirect-uri`: 
-- `--flow`: Authentication flow to use: token, client, basic, ntlm
-- `--scope`: 
-- `--threads`: 
-- `--cert-password`: Password for client certificate
-- `--debug`: Enable debug output
-- `f"--api{i}`, `help=f"Run only API{i} audit"`:
+## Command-Line Arguments (summary)
 
-## 🧠 API11 – AI-assisted Security Review
-
-**Module:** `ai_client.py`  
-**New:** Support for *both local Ollama* and *OpenAI API (GPT-4o)*
-
-This optional module performs AI-driven endpoint analysis based on the OWASP API Top 10. It now supports two modes:
-
-### 1. OpenAI GPT-4o (cloud)
-
-Use this mode when you have a valid OpenAI API key:
-
-```bash
-export OPENAI_API_KEY=sk-...
-python apiscan.py --url https://api.example.com --swagger openapi.json --api11
+```
+--url                API base URL
+--swagger            Path to OpenAPI JSON
+--dummy              Enable dummy mode (auto fuzzed values)
+--token              Bearer token
+--basic-auth         Basic auth user:pass
+--apikey             API key
+--apikey-header      Header name for key
+--ntlm               NTLM domain\user:pass
+--client-cert/key    mTLS support
+--flow               Auth flow: token, client, basic, ntlm
+--api1 .. --api11    Run specific OWASP audit(s)
+--threads            Parallelism (default: 2)
+--debug              Enable debug mode
 ```
 
-The module uses `https://api.openai.com/v1/chat/completions` and the `gpt-4o` model by default, but this can be customized via the arguments in `analyze_endpoints_with_gpt()`.
+---
+
+## AI-Driven Audit (API11)
+
+Use AI to review endpoints, infer risks, and suggest abuse/test scenarios. Supports:
+
+* OpenAI GPT-4o (cloud)
 
 ```bash
 python apiscan.py --url https://api.example.com --swagger openapi.json --api11
 ```
 
-Use the `--port` parameter to switch from 11434 (Ollama) to another local service. This mode does not require an internet connection or OpenAI key.
+**Output:**
 
-### Output
-
-- `ai_analysis_output.json`: JSON file with summaries per endpoint
-- For each endpoint:
-  - OWASP risks
-  - Abuse scenarios
-  - Test strategies
-  - Risk assessment
+* `AI-api11_scanresults.json` per endpoint
+* AI-detected OWASP categories, risks, attack vectors

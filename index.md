@@ -8,7 +8,7 @@ description: Free and open-source API security scanner built in Python...
 
 ---
 
-# APISCAN apiscanner 1.0-beta - is a free and extensible API security auditing framework, built in Python, that targets the **OWASP API Security Top 10**.  
+# APISCAN apiscanner 2.0-beta - is a free and extensible API security auditing framework, built in Python, that targets the **OWASP API Security Top 10**.  
 # It supports **OpenAPI/Swagger specs**, performs **active scans** on endpoints, and produces nice reports.
 ## OWASP based (REST) API Security Assessment Tool (by Perry Mertens April 2025)
 
@@ -60,17 +60,14 @@ APISCAN ondersteunt verschillende authenticatievormen via CLI-argumenten:
 
 **Rapportage**
 - Automatische directory aanmaak per scan (`audit_<api-url>_<datum>/`)
-- Per API-kwetsbaarheid een apart rapport in `.txt`
-- Samenvattend rapport `api_summary_report.txt`
-- Automatische generatie van een professioneel `.docx` eindrapport
+- Per API-kwetsbaarheid een apart rapport in `.html`
+- Samenvattend rapport `api_combined_report.txt`
 
 **Gebruiksvriendelijke CLI**
 - Automatische validatie van Swagger-bestanden
 - Herbruikbare sessieconfiguratie met threading-optimalisatie
 
 **Documentatieformaten**
-- Markdown
-- JSON
 - HTML
 
 ---
@@ -84,6 +81,16 @@ python apiscan.py --url https://api.example.com \
   --threads 5
   --flow token 
 ```
+
+# Dummy mode (auto-generated fake values for fuzzing)
+python apiscan.py --url https://api.example.com \
+  --swagger openapi.json \
+  --token eyJhbGciOi... \
+  --flow token \
+  --dummy
+```
+`--dummy` enables safe testing using auto-generated, schema-aware dummy values.
+
 
 **Extra authenticatievoorbeelden:**
 
@@ -106,7 +113,7 @@ pip install -r requirements.txt
 ## Start scanner without or with token 
 python apiscan.py --url http://sample.com --token eyJhbGciOiJSUzI1NiJ9JvbGUiOiJ1c2VyIn0XzR --swagger openapi-spec.json --flow token
 
-APISCAN 0.2.0-alpha API Security Scanner Perry Mertens 2025
+APISCAN 2.0.0-Beta API Security Scanner Perry Mertens 2025
 
 options:
   -h, --help            show this help message and exit
@@ -131,6 +138,7 @@ options:
   --redirect-uri REDIRECT_URI
   --threads THREADS
   --cert-password CERT_PASSWORD
+  --dummy
                         Wachtwoord voor client certificaat
   --debug               Enable debug output
   --api1                Voer alleen API1-audit uit
@@ -143,6 +151,23 @@ options:
   --api8                Voer alleen API8-audit uit
   --api9                Voer alleen API9-audit uit
   --api10               Voer alleen API10-audit uit
+  --api11 
+
+# AI-Driven Audit (API11)
+
+Use AI to review endpoints, infer risks, and suggest abuse/test scenarios. Supports:
+
+* OpenAI GPT-4o (cloud)
+
+```bash
+python apiscan.py --url https://api.example.com --swagger openapi.json --api11
+```
+
+**Output:**
+
+* `AI-api11_scanresults.json` per endpoint
+* AI-detected OWASP categories, risks, attack vectors
+
 
 
 # When you are missing a swagger file without or with token 

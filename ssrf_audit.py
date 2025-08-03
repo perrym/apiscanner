@@ -213,10 +213,10 @@ class SSRFAuditor:
         target_host = urlparse(base_url).hostname or ""
 
         # Abort the scan immediately if the target is localhost
-        if target_host in {"127.0.0.1", "localhost", "::1"}:
-            print(f"[ABORT] Target host is localhost ({target_host}). SSRF scan stopped.")
-            os._exit(1)
-
+        if host in {"127.0.0.1", "localhost", "::1"}:
+            print(f"[SKIP] Localhost target ({host}) – skipping endpoint.")
+            return
+        
         # Define allowed SSRF destinations
         valid_targets = {"example.com", "burpcollaborator.net", "attacker.site"}
         loopback_hosts = {"localhost", "127.0.0.1", "::1"}

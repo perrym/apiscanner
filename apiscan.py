@@ -42,6 +42,7 @@ from auth_utils import configure_authentication
 from report_utils import ReportGenerator, HTMLReportGenerator, RISK_INFO
 from doc_generator import generate_combined_html
 from ai_client import analyze_endpoints_with_gpt, save_ai_summary 
+from swagger_utils import enable_dummy_mode
 
 
 manual_file_map = {
@@ -154,6 +155,7 @@ def main() -> None:
     parser.add_argument("--cert-password", help="Wachtwoord voor client certificaat")
     parser.add_argument("--debug", action="store_true", help="Enable debug output")
     parser.add_argument("--api11", action="store_true", help="Run AI-based OWASP Top 10 analysis using AI or other ")
+    parser.add_argument("--dummy", action="store_true", help="Gebruik dummy data voor alle request bodies en parameters")
     
     # Voeg API selectie argumenten toe
     for i in range(1, 11):
@@ -249,6 +251,9 @@ def main() -> None:
         styled_print("FAIL: No Swagger specification provided - use --swagger", "fail")
         sys.exit(1)
 
+    
+    if args.dummy:
+        enable_dummy_mode(True)
     
     output_dir = create_output_directory(args.url)
     logger.info(f"Output directory: {output_dir}")

@@ -214,7 +214,7 @@ class SSRFAuditor:
 
         # Abort the scan immediately if the target is localhost
         if host in {"127.0.0.1", "localhost", "::1"}:
-            print(f"[SKIP] Localhost target ({host}) – skipping endpoint.")
+            print(f"[SKIP] Localhost target ({host}) - skipping endpoint.")
             return
         
         # Define allowed SSRF destinations

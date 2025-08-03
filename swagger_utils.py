@@ -121,7 +121,7 @@ class OpenAPIRequestBuilder:
 # ----------------------------------------------------------------
     def _create_cache_key(self, field_name: str, schema: Dict) -> str:
         try:
-            # JSON stringify met consistente volgorde → bytes → SHA-1 → hex
+            # JSON stringify met consistente volgorde - bytes - SHA-1 - hex
             schema_key = hashlib.sha1(
                 json.dumps(schema, sort_keys=True).encode("utf-8")
             ).hexdigest()
@@ -278,7 +278,7 @@ class OpenAPIRequestBuilder:
         item_schema = schema.get("items", {})
         min_items = schema.get("minItems", 1)
         max_items = schema.get("maxItems", self.config.max_array_length)
-        # Guard – never let max_items fall below min_items
+        # Guard - never let max_items fall below min_items
         max_items = max(min_items, max_items, 1)
         # Clip to global limit
         max_items = min(max_items, self.config.max_array_length)

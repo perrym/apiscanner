@@ -33,26 +33,6 @@
 | API11             | AI-assisted Security Analysis              | `ai_client.py`                    |
 
 ---
-
-## Dummy Mode: `swagger_utils.py`
-
-A powerful and modular utility that generates dummy values from OpenAPI schemas, enabling:
-
-* **Realistic fuzz testing** without impacting live production data
-* **Dynamic parameter & request body generation**
-* Support for industry-specific dummy values (e.g. `finance`, `healthcare`, `ecommerce`)
-* `--dummy` CLI option auto-enables dummy injection logic in all audit modules
-
-Internally powered by:
-
-* `OpenAPIRequestBuilder`: builds full request dicts (URL, headers, body, params)
-* Schema resolution support (`$ref`, `oneOf`, `allOf`, etc.)
-* Configurable behavior via `DummyGeneratorConfig`
-
-> Example: In dummy mode, values like `iban`, `price`, `uuid`, `email`, `timestamp`, `SKU`, etc., are auto-filled using intelligent heuristics and schema-aware logic.
-
----
-
 ## Example CLI Usage
 
 ```bash

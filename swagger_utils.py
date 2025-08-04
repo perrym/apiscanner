@@ -39,7 +39,7 @@ class DummyGeneratorConfig:
         self.max_array_length: int = 10
         self.strict_mode: bool = False
         self.locale: str = "en-US"
-        self.industry: Optional[str] = None  e'
+        self.industry: Optional[str] = None  
         self.enable_caching: bool = True
         self.default_string_length: int = 12
 

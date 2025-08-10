@@ -1,6 +1,9 @@
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 
 # Ultimate Swagger Generator (Improved v3)
+=======
+>>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes
 #########################################

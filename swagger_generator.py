@@ -1,4 +1,3 @@
-
 #########################################
 # APISCAN - API Security Scanner        #
 # Licensed under the MIT License        #

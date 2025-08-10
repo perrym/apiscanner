@@ -1,5 +1,9 @@
 
+<<<<<<< HEAD
 # Ultimate Swagger Generator (Improved v2.0)
+=======
+# Ultimate Swagger Generator (Improved v3)
+>>>>>>> 3c6ab7fe9cb9c46c789469ef481bd311951fbed8
 #########################################
 # APISCAN - API Security Scanner        #
 # Licensed under the MIT License        #

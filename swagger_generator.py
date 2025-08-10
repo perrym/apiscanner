@@ -1,5 +1,8 @@
+<<<<<<< Updated upstream
 
 # Ultimate Swagger Generator (Improved v3)
+=======
+>>>>>>> Stashed changes
 #########################################
 # APISCAN - API Security Scanner        #
 # Licensed under the MIT License        #

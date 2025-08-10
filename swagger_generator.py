@@ -1,5 +1,5 @@
 
-# Ultimate Swagger Generator (Improved v2)
+# Ultimate Swagger Generator (Improved v3)
 #########################################
 # APISCAN - API Security Scanner        #
 # Licensed under the MIT License        #

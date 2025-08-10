@@ -1,0 +1,53 @@
+# APISCAN - CHANGELOG
+Version:2.0-beta 3-8-2025
+Author: Perry Mertens
+
+3-8-2025
+swagger_util.py enables safe testing using auto-generated, schema-aware dummy values in the swagger file.
+
+30-7-2025
+Add Crypto  checks in API2  normal this is in api8.
+
+23-7-2025
+Because I’m home recovering, I finally have the time and focus to dive into my project!
+## Added Features:
+  - Beter control of false Positive (need still some work)
+  - Beter testing for API
+  - Beter report tool in html 
+  - Added support for multiple authentication mechanisms:
+  - Multithreading
+  - Bearer Token
+  - Basic Authentication
+  - API Key (customizable header)
+  - NTLM Authentication
+  - Client Certificate Authentication (mTLS)
+  - OAuth2 Client Credentials Flow
+  - OAuth2 Authorization Code Flow (interactive browser login)
+  - report function is updated.
+  - HTML Report function
+  - Beter testing on false positives
+  - More PAYLOADS for testing 
+
+13-06-2025
+## Enhancements:
+  - Fully restructured to keep all logic inside the `main()` function:
+  - Prevents variable scope issues
+  - Clean execution from CLI
+  = beter test on false positives
+
+  - extra work to do
+  - Logs are saved to timestamped file: `apiscan_YYYYMMDD_HHMMSS.log`
+  - Log output is still limited 
+  - Log wil includes connection attempts, warnings, and errors
+
+## Bug Fixes:
+-  Fixed `NameError: name 'args' is not defined` caused by code being placed outside `main()`.
+-  Nee to add extra logging, next release
+-  PDF output
+-  Testers for support and comment
+-  Speeds scanner for testing, diffcult part for me (many api's has speed limitation
+
+## Notes:
+- This version is now suitable for scheduled use, auditing APIs with different authentication schemes.
+- Swagger is required for test execution.
+- postman to swagger is a new project and live

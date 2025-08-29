@@ -443,7 +443,7 @@ def main() -> None:
         logger.info("Running API11  GPT-4o audit")
 
         try:
-            # import pas hier, zodat de check pas gebeurt bij api11
+            # import openai
             from ai_client import analyze_endpoints_with_gpt, save_ai_summary
 
             # GPT-4o-run met live probe
@@ -477,17 +477,17 @@ def main() -> None:
     
     total_vulns = sum(summary.values())
     print("Summary of vulnerabilities found")
-    print("---------------------------------------")
+    print("------------------------------------------")
     for k, v in summary.items():
         print(f" {k:18}: {v}")
-    print("---------------------------------------")
+    print("------------------------------------------")
     print(f"  Total found       : {total_vulns}")
     styled_print("Scan complete. All results and logs saved.", "ok")
         
     html_files = sorted(str(f) for f in output_dir.glob("api_*_report.html"))
  
     if not html_files:
-        styled_print("Geen HTML-rapporten om te combineren  stap over.", "info")
+        styled_print("No html to combine ", "info")
     else:
         styled_print("Combining HTML reports ", "info")
         try:

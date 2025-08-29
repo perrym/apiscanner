@@ -45,7 +45,12 @@ def configure_authentication(args) -> requests.Session:
     sess = requests.Session()
     sess.verify = False  # Disabled SSL verification for testing purposes
     logger.warning("SSL verification is disabled (for testing only)")
-
+    
+    if args.flow == "none" or args.flow is None:
+        # geen auth, gewoon een lege sessie
+        print("No authentication flow selected (flow=none). Proceeding without auth.")
+        return sess
+    
     # Backward compatibility: allow --token without --flow
     if hasattr(args, 'token') and args.token and not hasattr(args, 'flow'):
         sess.headers.update({"Authorization": _format_bearer_token(args.token)})
@@ -113,7 +118,7 @@ def configure_authentication(args) -> requests.Session:
         logger.info("NTLM authentication configured")
         return sess
 
-    logger.error(f"Unknown flow type: {args.flow}. Use one of: token, client, basic, ntlm")
+    logger.error(f"Unknown flow type: {args.flow}. Use one of: token, client, basic, ntlm, none")
     sys.exit(1)
 
 

@@ -41,7 +41,6 @@ from version import __version__
 from auth_utils import configure_authentication
 from report_utils import ReportGenerator, HTMLReportGenerator, RISK_INFO
 from doc_generator import generate_combined_html
-from ai_client import analyze_endpoints_with_gpt, save_ai_summary 
 from swagger_utils import extract_variables, write_variables_file, enable_dummy_mode
 
 
@@ -444,6 +443,9 @@ def main() -> None:
         logger.info("Running API11  GPT-4o audit")
 
         try:
+            # import pas hier, zodat de check pas gebeurt bij api11
+            from ai_client import analyze_endpoints_with_gpt, save_ai_summary
+
             # GPT-4o-run met live probe
             ai_results = analyze_endpoints_with_gpt(
                 ai_endpoints,

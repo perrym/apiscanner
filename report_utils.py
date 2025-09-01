@@ -91,17 +91,17 @@ class EnhancedReportGenerator:
         return f"""
             <div class="request">
                 <h4>{html.escape(method)} {html.escape(url)}</h4>
-                <div class="headers">
-                    <h5>Headers</h5>
+                <details open class="headers">
+                    <summary>Headers</summary>
                     <pre>{html.escape(headers) if headers else html.escape("No headers")}</pre>
-                </div>
-                <div class="body">
-                    <h5>Body</h5>
+                </details>
+                <details open class="body">
+                    <summary>Body</summary>
                     <pre>{html.escape(
                         body.decode("utf-8", errors="replace") if isinstance(body, bytes)
                         else (str(body) if str(body).strip() else "[empty]")
                     )}</pre>
-                </div>
+                </details>
             </div>
             """
 
@@ -136,10 +136,10 @@ class EnhancedReportGenerator:
         if resp_cookies:
             cookie_lines = "; ".join(f"{k}={v}" for k, v in resp_cookies.items())
             cookies_html = (
-                '<div class="cookies">'
-                '<h5>Cookies</h5>'
+                '<details open class="cookies">'
+                '<summary>Cookies</summary>'
                 f"<pre>{html.escape(cookie_lines)}</pre>"
-                "</div>"
+                "</details>"
             )
         # -- body / error --------------------------------------------------
         body = issue.get("response_body")
@@ -157,10 +157,10 @@ class EnhancedReportGenerator:
                 else str(body)
             )
             body_html = (
-                '<div class="body">'
-                "<h5>Body</h5>"
+                '<details open class="body">'
+                '<summary>Body</summary>'
                 f"<pre>{html.escape(body_str)}</pre>"
-                "</div>"
+                "</details>"
             )
 
         # -- eind-HTML -----------------------------------------------------
@@ -205,65 +205,54 @@ class EnhancedReportGenerator:
 
 
     def _generate_no_findings_html(self) -> str:
-        return f"""
-        <!DOCTYPE html>
-        <html>
-        {self._generate_html_head()}
-        <body>
-            {self._generate_header()}
-            <div class="no-findings">
-                <h2>No Security Issues Found</h2>
-                <p>The scan completed successfully but no security issues were detected.</p>
-            </div>
-        </body>
-        </html>
-        """
+        parts = []
+        parts.append("\n        <!DOCTYPE html>\n")
+        parts.append("        <html>\n")
+        parts.append(self._generate_html_head())
+        parts.append("        <body>\n")
+        parts.append("            " + self._generate_header() + "\n")
+        parts.append("            <div class=\"no-findings\">\n")
+        parts.append("                <h2>No Security Issues Found</h2>\n")
+        parts.append("                <p>The scan completed successfully but no security issues were detected.</p>\n")
+        parts.append("            </div>\n")
+        parts.append("        </body>\n")
+        parts.append("        </html>\n")
+        return "".join(parts)
+
 
     def _generate_severity_section(self, severity: str, issues: List[Dict[str, Any]]) -> str:
-        severity_styles = {
-            "Critical": "border-left: 4px solid #d32f2f; background-color: #ffebee;",
-             "High":     "border-left: 4px solid #ffa000; background-color: #fff8e1;",
-            "Medium":   "border-left: 4px solid #ffc107; background-color: #fffde7;",
-            "Low":      "border-left: 4px solid #2196f3; background-color: #e3f2fd;",
-            "Info":     "border-left: 4px solid #777; background-color: #f0f0f0;",
-        }
-
-        issues_html = []
+        sev_class = severity.lower()
+        out = []
+        out.append("\n        <div class=\"severity-section\">\n")
+        out.append("            <h2 id=\"" + sev_class + "-section\"><span class=\"badge " + sev_class + "\">" + html.escape(severity) + "</span> Risk Findings (" + str(len(issues)) + ")</h2>\n")
         for idx, issue in enumerate(issues, 1):
-            method = issue.get("method", "GET").upper()
-            url = issue.get("endpoint", "-")
-            
-            issues_html.append(f"""
-            <div class="finding" style="{severity_styles[severity]} margin-bottom: 20px; padding: 15px; border-radius: 4px;">
-                <h3 style="margin-top: 0;">
-                    Finding {idx}: {method} {url}
-                    <small>(HTTP {issue.get('status_code', '-')})</small>
-                </h3>
-                <div class="meta" style="margin-bottom: 15px;">
-                    <p><strong>Description:</strong> {issue.get('description', 'No description provided')}</p>
-                    <p><strong>Status Code:</strong> <span class="status-code">{issue.get('status_code', '-')}</span></p>
-                    <p><strong>Timestamp:</strong> {issue.get('timestamp', self.timestamp)}</p>
-                </div>
-                <div class="request-response" style="display: flex; gap: 20px; margin-top: 15px;">
-                    {self._format_request_html(issue)}
-                    {self._format_response_html(issue)}
-                </div>
-                <!-- NEW: back-to-index link -->
-                <div style="text-align: right; margin-top: 10px;">
-                    <a href="#report-nav" style="color:#555;text-decoration:none;">- Back to index</a>
-                </div>
-            </div>
-            """)
+            method = str(issue.get("method", "GET")).upper()
+            url = issue.get("endpoint") or issue.get("url") or "-"
+            status = issue.get("status_code", "-")
+            ts = issue.get("timestamp", self.timestamp)
+            desc = issue.get("description", "No description provided")
+            out.append("            <div class=\"finding " + sev_class + "\">\n")
+            out.append("                <h3 style=\"margin:0 0 8px 0;\">\n")
+            out.append("                    <span class=\"badge " + sev_class + "\">" + html.escape(severity) + "</span>\n")
+            out.append("                    <span style=\"margin-left:10px;\">Finding " + str(idx) + ": " + html.escape(method) + " " + html.escape(url) + "</span>\n")
+            out.append("                    <small style=\"color:var(--muted);\"> (HTTP " + html.escape(str(status)) + ")</small>\n")
+            out.append("                </h3>\n")
+            out.append("                <div class=\"meta\" style=\"margin-bottom:10px;\">\n")
+            out.append("                    <p style=\"margin:.2em 0;\"><strong>Description:</strong> " + html.escape(str(desc)) + "</p>\n")
+            out.append("                    <p style=\"margin:.2em 0;\"><strong>Status Code:</strong> <span class=\"status-code\">" + html.escape(str(status)) + "</span></p>\n")
+            out.append("                    <p style=\"margin:.2em 0;\"><strong>Timestamp:</strong> " + html.escape(str(ts)) + "</p>\n")
+            out.append("                </div>\n")
+            out.append("                <div class=\"request-response\" style=\"display:flex; gap:16px; margin-top:8px;\">\n")
+            out.append(                     self._format_request_html(issue) + "\n")
+            out.append(                     self._format_response_html(issue) + "\n")
+            out.append("                </div>\n")
+            out.append("                <div style=\"text-align:right; margin-top:10px;\">\n")
+            out.append("                    <a class=\"back-link\" href=\"#report-nav\">- Back to index</a>\n")
+            out.append("                </div>\n")
+            out.append("            </div>\n")
+        out.append("        </div>\n")
+        return "".join(out)
 
-        return f"""
-        <div class="severity-section">
-             <h2 id="{severity.lower()}-section"
-                style="color: #333; margin-top: 30px; padding-bottom: 5px; border-bottom: 1px solid #eee;">
-                {severity} Risk Findings ({len(issues)})
-             </h2>
-            {"".join(issues_html)}
-        </div>
-        """
 
     def old_generate_summary_table(self, grouped: Dict[str, List[Dict[str, Any]]]) -> str:
         return f"""
@@ -306,151 +295,145 @@ class EnhancedReportGenerator:
      # ------------------------------------------------------------------
     #   S U M M A R Y   T A B L E
     # ------------------------------------------------------------------
+
     def _generate_summary_table(self, counts: dict[str, int]) -> str:
         """
-        Bouwt de -Scan Summary--tabel.
-
-        Parameters
-        ----------
-        counts : dict
-            {"Critical": 3, "High": 2, "Medium": 15, "Low": 0}
-
-        Returns
-        -------
-        html : str
+        Build Scan Summary table + proportional bars with percentages.
         """
-        row_tpl = (
-            '<tr>'
-            '  <td style="padding:6px 12px;color:{color};">'
-            '    <a href="#{anchor}-section" style="color:inherit;text-decoration:none;font-weight:600;">'
-            '      {sev}'
-            '    </a>'
-            '  </td>'
-            '  <td style="padding:6px 12px;text-align:right;">{cnt}</td>'
-            '  <td style="padding:6px 12px;">{desc}</td>'
-            '</tr>'
-        )
-
         severity_meta = [
-            ("Critical", "#d32f2f", "Multiple sensitive items exposed"),
-            ("High",     "#ffa000", "Single sensitive item exposed"),
-            ("Medium",   "#ffc107", "200 OK on unprotected endpoint"),
-            ("Low",      "#2196f3", "Errors or minor issues"),
-            ("Info",     "#777",    "Informational finding (e.g. 405 Method Not Allowed)"),
+            ("Critical", "critical", "Multiple sensitive items exposed"),
+            ("High",     "high",     "Single sensitive item exposed"),
+            ("Medium",   "medium",   "200 OK on unprotected endpoint"),
+            ("Low",      "low",      "Errors or minor issues"),
+            ("Info",     "info",     "Informational finding (e.g. 405 Method Not Allowed)"),
         ]
+        total = max(1, sum(counts.get(k, 0) for k, _, _ in severity_meta))
 
-        html = (
-            '<h2 style="margin-top:30px;">Scan Summary</h2>'
-            '<table style="border-collapse:collapse;font-family:Arial, sans-serif;font-size:14px;">'
-            '<thead><tr>'
-            '  <th style="text-align:left;padding:6px 12px;">Severity</th>'
-            '  <th style="text-align:right;padding:6px 12px;">Count</th>'
-            '  <th style="text-align:left;padding:6px 12px;">Description</th>'
+        html_out = (
+            '<h2 style="margin-top:20px;">Scan Summary</h2>'
+            '<table class="summary"><thead><tr>'
+            '<th>Severity</th><th style="text-align:right;">Count</th><th>Description</th>'
             '</tr></thead><tbody>'
         )
 
-        for sev, color, desc in severity_meta:
-            html += row_tpl.format(
-                color=color,
-                anchor=sev.lower(),
-                sev=sev,
-                cnt=counts.get(sev, 0),
-                desc=desc,
+        for label, css, desc in severity_meta:
+            cnt = int(counts.get(label, 0))
+            html_out += (
+                '<tr>'
+                f'<td><a href="#{css}-section" style="text-decoration:none;"><span class="badge {css}">{label}</span></a></td>'
+                f'<td style="text-align:right;">{cnt}</td>'
+                f'<td style="color:var(--muted);">{desc}</td>'
+                '</tr>'
             )
 
-        html += "</tbody></table>"
-        return html
+        html_out += '</tbody></table>'
 
-    
+        return html_out
+
     def _generate_html_head(self) -> str:
-        return f"""
-        <head>
-            <title>API Security Report - {self.scanner} By Perry Mertens pamsniffer@gmail.com (c)2025</title>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <style>
-                body {{
-                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                    line-height: 1.6;
-                    color: #333;
-                    max-width: 1200px;
-                    margin: 0 auto;
-                    padding: 20px;
-                }}
-                h1, h2, h3, h4, h5 {{
-                    color: #2c3e50;
-                }}
-                h1 {{
-                    border-bottom: 2px solid #eee;
-                    padding-bottom: 10px;
-                }}
-                pre {{
-                    background-color: #f5f5f5;
-                    padding: 10px;
-                    border-radius: 4px;
-                    overflow-x: auto;
-                    font-family: Consolas, Monaco, 'Andale Mono', monospace;
-                    white-space: pre-wrap;
-                    margin: 5px 0;
-                }}
-                .request, .response {{
-                    flex: 1;
-                    min-width: 0;
-                    background: white;
-                    padding: 10px;
-                    border-radius: 4px;
-                    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-                }}
-                .headers, .body {{
-                    margin-bottom: 10px;
-                }}
-                .status-code {{
-                    font-weight: bold;
-                    color: #388e3c;
-                }}
-                .no-findings {{
-                    background-color: #e8f5e9;
-                    padding: 20px;
-                    border-radius: 4px;
-                    text-align: center;
-                }}
-                @media (max-width: 768px) {{
-                    .request-response {{
-                        flex-direction: column;
-                    }}
-                }}
-            </style>
-        </head>
-        """
-   
+        parts = []
+        parts.append("\n        <head>\n")
+        parts.append("            <title>API Security Report - " + html.escape(str(self.scanner)) + " (c)2025</title>\n")
+        parts.append("            <meta charset=\"UTF-8\">\n")
+        parts.append("            <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n")
+        parts.append("            <style>\n")
+        parts.append("                :root {\n")
+        parts.append("                  --bg: #0f172a; --panel:#111827; --text:#e5e7eb; --muted:#9ca3af;\n")
+        parts.append("                  --border:#1f2937; --code-bg:#0b1220; --code-ink:#e2e8f0;\n")
+        parts.append("                  --crit:#dc2626; --high:#22c55e; --med:#facc15; --low:#2563eb; --info:#6b7280;\n")
+        parts.append("                  --ok:#22c55e;\n")
+        parts.append("                }\n")
+        parts.append("                @media (prefers-color-scheme: light) {\n")
+        parts.append("                  :root {\n")
+        parts.append("                    --bg:#f8fafc; --panel:#ffffff; --text:#0f172a; --muted:#475569; --border:#e5e7eb;\n")
+        parts.append("                    --code-bg:#f5f7fb; --code-ink:#0f172a;\n")
+        parts.append("                  }\n")
+        parts.append("                }\n")
+        parts.append("\n")
+        parts.append("                html, body { background: var(--bg); color: var(--text); }\n")
+        parts.append("                body {\n")
+        parts.append("                   font-family: 'Inter','Segoe UI',Tahoma,Arial,sans-serif;\n")
+        parts.append("                   line-height:1.6; max-width:1200px; margin:0 auto; padding:24px;\n")
+        parts.append("                }\n")
+        parts.append("                h1, h2, h3, h4, h5 { color: var(--text); margin: .6em 0 .4em; }\n")
+        parts.append("                h1 { border-bottom:1px solid var(--border); padding-bottom:10px; letter-spacing:.2px; }\n")
+        parts.append("                a { color: inherit; }\n")
+        parts.append("\n")
+        parts.append("                .request, .response { flex:1; min-width:0; background:var(--panel); color:var(--text);\n")
+        parts.append("                   border:1px solid var(--border); padding:12px; border-radius:10px; }\n")
+        parts.append("                .headers, .body { margin-bottom:10px; }\n")
+        parts.append("                pre { background: var(--code-bg); color: var(--code-ink); padding:10px; border-radius:8px;\n")
+        parts.append("                     overflow-x:auto; white-space:pre-wrap; border:1px solid var(--border); margin:6px 0;\n")
+        parts.append("                     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }\n")
+        parts.append("                .status-code { font-weight:800; color: var(--ok); }\n")
+        parts.append("\n")
+        parts.append("                /* badges */\n")
+        parts.append("                .badge { display:inline-block; padding:4px 10px; border-radius:999px; font-size:12px; font-weight:700; color:#fff; }\n")
+        parts.append("                .badge.critical { background: var(--crit); }\n")
+        parts.append("                .badge.high     { background: var(--high); }\n")
+        parts.append("                .badge.medium   { background: var(--med); color:#1e293b; }\n")
+        parts.append("                .badge.low      { background: var(--low); }\n")
+        parts.append("                .badge.info     { background: var(--info); }\n")
+        parts.append("\n")
+        parts.append("                /* findings with colored rail */\n")
+        parts.append("                .finding { position:relative; margin-bottom:20px; padding:16px; border-radius:12px;\n")
+        parts.append("                           background:var(--panel); border:1px solid var(--border); }\n")
+        parts.append("                .finding::before { content:\"\"; position:absolute; left:0; top:0; bottom:0; width:6px; border-top-left-radius:12px; border-bottom-left-radius:12px; }\n")
+        parts.append("                .finding.critical::before { background: var(--crit); }\n")
+        parts.append("                .finding.high::before     { background: var(--high); }\n")
+        parts.append("                .finding.medium::before   { background: var(--med); }\n")
+        parts.append("                .finding.low::before      { background: var(--low); }\n")
+        parts.append("                .finding.info::before     { background: var(--info); }\n")
+        parts.append("\n")
+        parts.append("                /* summary table + bars */\n")
+        parts.append("                table.summary { border-collapse:collapse; width:100%; border:1px solid var(--border); border-radius:12px; overflow:hidden; }\n")
+        parts.append("                table.summary th, table.summary td { padding:10px 12px; border-bottom:1px solid var(--border); }\n")
+        parts.append("                table.summary th { text-align:left; color:var(--muted); font-weight:600; }\n")
+        parts.append("                .bars { margin-top:12px; }\n")
+        parts.append("                .bar { color:#fff; padding:6px 10px; margin:6px 0; border-radius:8px; font-weight:700; box-shadow: inset 0 0 4px rgba(0,0,0,.3); letter-spacing:.3px; }\n")
+        parts.append("                .bar.critical { background: var(--crit); }\n")
+        parts.append("                .bar.high     { background: var(--high); }\n")
+        parts.append("                .bar.medium   { background: var(--med); color:#1e293b; font-weight:800; }\n")
+        parts.append("                .bar.low      { background: var(--low); }\n")
+        parts.append("                .bar.info     { background: var(--info); }\n")
+        parts.append("\n")
+        parts.append("                .report-meta { color:var(--muted); }\n")
+        parts.append("                .back-link { color:var(--muted); text-decoration:none; font-size:13px; }\n")
+        parts.append("                @media (max-width:768px) { .request-response { flex-direction:column; } }\n")
+        parts.append("            </style>\n")
+        parts.append("        </head>\n")
+        return "".join(parts)
+
     def _generate_header(self) -> str:
-        return f"""
-        <header style="margin-bottom: 30px;">
-            <h1 style="margin-bottom: 5px;">API Security Report - By Perry Mertens pamsniffer@gmail.com (c)2025</h1>
-            <div class="report-meta" style="color: #666;">
-                <p><strong>Scanner:</strong> {self.scanner}</p>
-                <p><strong>Base URL:</strong> {self.base_url}</p>
-                <p><strong>Timestamp:</strong> {self.timestamp}</p>
-            </div>
-        </header>
-        """
+        parts = []
+        parts.append("\n        <header style=\"margin-bottom: 30px;\">\n")
+        parts.append("            <h1 style=\"margin-bottom: 5px;\">API Security Report - By Perry Mertens (c)2025</h1>\n")
+        parts.append("            <div class=\"report-meta\">\n")
+        parts.append("                <p><strong>Scanner:</strong> " + html.escape(str(self.scanner)) + "</p>\n")
+        parts.append("                <p><strong>Base URL:</strong> " + html.escape(str(self.base_url)) + "</p>\n")
+        parts.append("                <p><strong>Timestamp:</strong> " + html.escape(str(self.timestamp)) + "</p>\n")
+        parts.append("            </div>\n")
+        parts.append("        </header>\n")
+        return "".join(parts)
+
 
     def _generate_full_html(self, summary: str, findings: str) -> str:
-        return f"""
-        <!DOCTYPE html>
-        <html>
-        {self._generate_html_head()}
-        <body>
-            <a id="report-nav"></a>   <!-- - BACK-TO-TOP ANKER -->
-            {self._generate_header()}
-            {summary}
-            <div class="findings">
-                <h2 style="color: #333; border-bottom: 1px solid #eee; padding-bottom: 5px;">Detailed Findings</h2>
-                {findings}
-            </div>
-        </body>
-        </html>
-        """
+        parts = []
+        parts.append("\n        <!DOCTYPE html>\n")
+        parts.append("        <html>\n")
+        parts.append(self._generate_html_head())
+        parts.append("        <body>\n")
+        parts.append("            <a id=\"report-nav\"></a>   <!-- - BACK-TO-TOP ANKER -->\n")
+        parts.append("            " + self._generate_header() + "\n")
+        parts.append("            " + summary + "\n")
+        parts.append("            <div class=\"findings\">\n")
+        parts.append("                <h2 style=\"border-bottom:1px solid var(--border); padding-bottom: 5px;\">Detailed Findings</h2>\n")
+        parts.append("                " + findings + "\n")
+        parts.append("            </div>\n")
+        parts.append("        </body>\n")
+        parts.append("        </html>\n")
+        return "".join(parts)
+
 
     def save(self, path: Union[str, Path]):
         html_content = self.generate_html()

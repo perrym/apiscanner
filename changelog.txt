@@ -12,6 +12,9 @@ Author: Perry Mertens
 - payloads in separate data file
 - Beter testing, that to all on Internet
 
+- solved error during startup openai
+- many other errors.
+
 3-8-2025
 swagger_util.py enables safe testing using auto-generated, schema-aware dummy values in the swagger file.
 

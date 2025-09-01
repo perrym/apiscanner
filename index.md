@@ -8,7 +8,7 @@ description: Free and open-source API security scanner built in Python...
 
 ---
 
-# APISCAN apiscanner 2.0-beta - is a free and extensible API security auditing framework, built in Python, that targets the **OWASP API Security Top 10**.  
+# APISCAN apiscanner 2.0.1-beta - is a free and extensible API security auditing framework, built in Python, that targets the **OWASP API Security Top 10**.  
 # It supports **OpenAPI/Swagger specs**, performs **active scans** on endpoints, and produces nice reports.
 ## OWASP based (REST) API Security Assessment Tool (by Perry Mertens April 2025)
 

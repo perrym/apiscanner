@@ -6,7 +6,7 @@
   <meta name="description" content="APISCAN – AI-enhanced OWASP API Security Scanner by Perry Mertens" />
   <meta content="VvYq2k5BFp5dpIL6JpQhoe90sWEXZTEBbaynlEKCWRE" name="google-site-verification">
   <meta property="og:title" content="APISCAN – OWASP API Security Scanner by Perry Mertens pamsniffer@gmail.com" />
-  <meta property="og:description" content="Extensible, AI-aware scanner for OWASP API Security Top 10 with Swagger/OpenAPI support, auth modes, and HTML reporting." />
+  <meta property="og:description" content="Extensible, APICAN AI-aware scanner for OWASP API Security Top 10 with Swagger/OpenAPI support, auth modes, and HTML reporting." />
   <meta property="og:type" content="website" />
   <meta property="og:image" content="./apiscan_logo.jpg" />
   <meta name="theme-color" content="#0ea5e9" />
@@ -94,7 +94,7 @@
         <div class="cta">
           <a class="btn primary" href="https://github.com/perrym/apiscanner" target="_blank" rel="noopener">⭐ Star on GitHub</a>
           <a class="btn" href="#features">See Features</a>
-          <span class="pill">Version 2.0-beta · MIT</span>
+          <span class="pill">Version 2.0.1-beta · MIT</span>
         </div>
       </div>
       <div class="hero-logo">
@@ -157,12 +157,11 @@ python apiscan.py --url https://api.example.com \
 --apikey / --apikey-header
 --ntlm                domain\user:pass
 --client-cert / --client-key (PEM)
---flow                token | client | basic | ntlm
+--flow                token | client | basic | ntlm | none
 --threads             Parallelism (default 2)
 --dummy               Enable dummy payloads
 --export-vars PATH    Write a fill-in template and exit
---api1..--api11       Run specific audit modules
---debug               Verbose logging</code></pre>
+--api1..--api11       Run specific audit modules</code></pre>
       <p>Author: <strong>Perry Mertens</strong> · <a href="mailto:pamsniffer@gmail.com">pamsniffer@gmail.com</a></p>
     </section>
 

@@ -7,4 +7,4 @@
 #  Licensed under the MIT License.                                            #
 #  See the LICENSE file in the project root for full license information.     #
 # =============================================================================
-__version__ = "2.0-beta"
+__version__ = "2.0.1-beta"

@@ -340,7 +340,7 @@ class EnhancedReportGenerator:
         parts.append("                :root {\n")
         parts.append("                  --bg: #0f172a; --panel:#111827; --text:#e5e7eb; --muted:#9ca3af;\n")
         parts.append("                  --border:#1f2937; --code-bg:#0b1220; --code-ink:#e2e8f0;\n")
-        parts.append("                  --crit:#dc2626; --high:#22c55e; --med:#facc15; --low:#2563eb; --info:#6b7280;\n")
+        parts.append("                  --crit:#dc2626; --high:#facc15; --med:#f97316; --low:#22c55e; --info:#d1d5db;\n")
         parts.append("                  --ok:#22c55e;\n")
         parts.append("                }\n")
         parts.append("                @media (prefers-color-scheme: light) {\n")

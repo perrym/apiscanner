@@ -84,7 +84,7 @@ def listen_for_quit():
             break
 
 
-# Start the listener only when explicitly enabled (CI-safe)
+
 # Q stop function 
 os.environ["APISCAN_ENABLE_CONSOLE_STOP"] = "1"
 
@@ -108,7 +108,6 @@ def _headers_to_list(headerobj):
 
 
 class SafeConsumptionAuditor:
-    # Engine markers and error signatures
     SQL_ENGINE_MARKERS = {
         "sqlsyntaxerror",
         "psql:",
@@ -154,14 +153,13 @@ class SafeConsumptionAuditor:
         "keyerror",
     }
 
-    # Parsing / WAF / generic patterns
     JSON_PARSE_ERRORS = {
-        "invalid character",  # Go JSON parser
-        "unexpected token",  # many frameworks
+        "invalid character",  
+        "unexpected token",  
         "json parse error",
         "malformed json",
-        "no json object could be decoded",  # Python
-        "cannot deserialize instance of",  # Jackson
+        "no json object could be decoded",  
+        "cannot deserialize instance of",  
         "body contains invalid json",
     }
     WAF_PATTERNS = {
@@ -174,6 +172,21 @@ class SafeConsumptionAuditor:
         "bot protection",
         "forbidden by rule",
     }
+   
+    IGNORE_NETWORK_TIMEOUTS = True
+    NETWORK_TIMEOUT_PATTERNS = (
+        "httpconnectionpool",
+        "read timed out",
+        "connect timeout",
+        "connecttimeout",
+        "write timeout",
+        "newconnectionerror",
+        "failed to establish a new connection",
+        "max retries exceeded",
+        "temporarily unavailable",
+    )
+
+    
     GENERIC_4XX = {400, 401, 403, 404, 405, 406, 409, 415, 422, 429}
 
     def __init__(
@@ -200,29 +213,17 @@ class SafeConsumptionAuditor:
         self.timeout: int = timeout
         self.rate_limit: float = rate_limit
         self.log_monitor = log_monitor
-
-        # Optional provider to read server logs (e.g., tail)
         self.server_log_provider: Optional[Callable[[], List[str]]] = None
-
-        # Fast triage
         self.fast_mode = os.getenv("APISCAN_FAST", "1") == "1"
         self.triage_payloads_per_type = 2
-
-        # Per-host parallel throttle
         self.per_host_max_concurrency = int(os.getenv("APISCAN_PER_HOST", "8"))
         self.host_semaphores: defaultdict[str, threading.BoundedSemaphore] = defaultdict(
             lambda: threading.BoundedSemaphore(self.per_host_max_concurrency)
         )
         self.last_request_ts: defaultdict[str, float] = defaultdict(lambda: 0.0)
-
-        # Issues
         self.issues: List[Dict[str, Any]] = []
         self.issues_lock = threading.Lock()
-
-        # Optional canary domain for SSRF OOB detection
         self.canary_domain: str = os.getenv("APISCAN_CANARY", "").strip(".")
-
-        # Load payloads from JSON file
         json_path = Path(__file__).parent / "data" / "injection_payloads.json"
         if not json_path.exists():
             print(f"Error: {json_path} not found. Module cannot continue.")
@@ -253,8 +254,7 @@ class SafeConsumptionAuditor:
         )
 
     # ---------------- Session / Throttle ----------------
-
-    
+  
     @staticmethod
     def _create_secure_session() -> requests.Session:
         """
@@ -294,16 +294,14 @@ class SafeConsumptionAuditor:
         s.mount("http://", adapter)
         s.mount("https://", adapter)
 
-        # --- Optional HTTP/2 (default OFF) ---------------------------------
+        
         # Enable via env var APISCAN_HTTP2=1 or module var APISCAN_HTTP2 = 1
         use_http2 = (os.getenv("APISCAN_HTTP2", "0") == "1") or bool(globals().get("APISCAN_HTTP2", 0))
         if use_http2:
             try:
                 from hyper.contrib import HTTP20Adapter  # pip install hyper h2
-                # Switch HTTPS to HTTP/2-capable adapter; HTTP stays on HTTP/1.1
                 s.mount("https://", HTTP20Adapter())
             except Exception:
-                # If hyper/h2 not installed or mount fails, silently continue on H1.1
                 pass
 
         # Default headers (can be overridden by callers)
@@ -345,7 +343,6 @@ class SafeConsumptionAuditor:
         return str(data)
 
     # ---------------- Logging ----------------
-
     def _log(
         self,
         issue: str,
@@ -356,14 +353,19 @@ class SafeConsumptionAuditor:
         response: Optional[requests.Response] = None,
         extra: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Register one finding in self.issues and print console feedback."""
+        """
+        Central logger: maakt n finding aan. Filtert netwerk-timeouts weg vrdat
+        ze in self.issues belanden (HTTPConnectionPool(...): Read timed out, etc.).
+        """
+        if extra and getattr(self, "IGNORE_NETWORK_TIMEOUTS", True):
+            err_low = str(extra.get("error", "")).lower()
+            if any(p in err_low for p in getattr(self, "NETWORK_TIMEOUT_PATTERNS", ())):
+                return  # niets loggen
 
-        # Skip noisy parser errors
         skip_markers = ("failed to parse", "name 'parsed' is not defined")
         check_fields = [issue]
         if extra and "error" in extra:
             check_fields.append(str(extra["error"]))
-
         if any(k in f.lower() for k in skip_markers for f in check_fields):
             return
 
@@ -378,17 +380,16 @@ class SafeConsumptionAuditor:
             "endpoint": target,
             "status_code": response.status_code if response else "-",
         }
-
         if payload:
             entry["payload"] = payload
         if extra:
             entry.update(extra)
 
+        
         if response is not None:
             req = response.request
             full_url = req.url
             parsed = urlparse.urlparse(full_url)
-
             entry.update(
                 method=req.method,
                 url=full_url,
@@ -406,12 +407,6 @@ class SafeConsumptionAuditor:
                 response_cookies=response.cookies.get_dict(),
             )
 
-        # SQL downgrade on 4xx/no reflection
-        if issue.startswith("Possible SQL injection") and response:
-            if response.status_code in SAFE_STATUSES:
-                entry["severity"] = "Info"
-
-        # Network/timeout -> Info
         if entry.get("status_code") == "-" or "timeout" in str(entry.get("error", "")).lower():
             entry["severity"] = "Info"
 
@@ -427,6 +422,7 @@ class SafeConsumptionAuditor:
         if entry["severity"].lower() != "info":
             print(f"[{entry['severity']}] {issue} @ {entry['url']}")
 
+   
     # ---------------- Detection Helpers ----------------
 
     def _has_engine_marker(self, text: str, attack_type: str) -> bool:
@@ -475,7 +471,7 @@ class SafeConsumptionAuditor:
         e = (str(exc) if exc else "").lower()
         if "hpe_invalid" in e or "invalid chunk size" in e or "http/1.1 400 bad request" in e:
             return "Medium"
-        if elapsed > 8.0 and not e:  # plain read timeout ~10s
+        if elapsed > 8.0 and not e:  
             return "Info"
         return "Info"
 
@@ -649,14 +645,15 @@ class SafeConsumptionAuditor:
                 extra={"error": str(exc), "type": attack_type},
             )
 
+    #-----------------------------------------------
     def _test_header_manipulation(self, endpoint: str) -> None:
         """
         Header-based checks:
-          - Host header attacks
-          - HTTP request smuggling indicators
-          - Security header bypass (X-Forwarded-*)
-          - Header injection reflection
-          - CORS misconfiguration
+        - Host header reflection/poisoning
+        - HTTP Request Smuggling signalen (TE/CL parsers)
+        - Access control bypass via spoofed headers (strikter, minder FPs)
+        - Header injection/reflection (XSS/open redirect)
+        - CORS misconfig
         """
         if stop_requested.is_set():
             return
@@ -670,35 +667,25 @@ class SafeConsumptionAuditor:
 
             # 1) Host header attacks
             host_payloads = [
-                "localhost",
-                "127.0.0.1",
-                "evil.com",
-                f"{domain}.evil.com",
-                "localhost:8080",
-                "2130706433",  # 127.0.0.1 decimal
-                "0x7f000001",  # 127.0.0.1 hex
-                "0177.0000.0000.0001",  # 127.0.0.1 octal-ish
+                "localhost", "127.0.0.1", "evil.com",
+                f"{domain}.evil.com", "localhost:8080",
+                "2130706433", "0x7f000001", "0177.0000.0000.0001"
             ]
-
             for host in host_payloads:
                 if stop_requested.is_set():
                     return
                 try:
                     self._throttle(domain)
                     r = self.session.get(
-                        endpoint,
-                        headers={"Host": host},
-                        timeout=(3, self.timeout),
-                        allow_redirects=False,
+                        endpoint, headers={"Host": host},
+                        timeout=(3, self.timeout), allow_redirects=False
                     )
 
                     if host.lower() in (r.text or "").lower():
                         self._log(
-                            "Host header reflection",
-                            endpoint,
-                            "Medium",
-                            extra={"host_header": host, "response_sample": r.text[:200]},
-                            response=r,
+                            "Host header reflection", endpoint, "Medium",
+                            extra={"host_header": host, "response_sample": (r.text or "")[:200]},
+                            response=r
                         )
 
                     ep_low = endpoint.lower()
@@ -707,91 +694,106 @@ class SafeConsumptionAuditor:
                     ):
                         self._log(
                             "Possible password reset poisoning via Host",
-                            endpoint,
-                            "High",
-                            extra={"host_header": host},
-                            response=r,
+                            endpoint, "High", extra={"host_header": host}, response=r
                         )
 
                 except Exception as e:
-                    severity = self.classify_transport_anomaly(endpoint, "GET", e, 0.0)
-                    self._log("Host header test failed", endpoint, severity, extra={"error": str(e), "host": host})
+                    sev = self.classify_transport_anomaly(endpoint, "GET", e, 0.0)
+                    self._log("Host header test failed", endpoint, sev, extra={"error": str(e), "host": host})
 
-            # 2) HTTP Request Smuggling
+            # 2) HTTP Request Smuggling probes
             smuggling_headers = [
                 ("Transfer-Encoding", "chunked"),
                 ("Content-Length", "0"),
                 ("Content-Length", "100"),
-                ("Content-Length", "abc"),  # invalid CL
+                ("Content-Length", "abc"),
             ]
-
             for header, value in smuggling_headers:
                 if stop_requested.is_set():
                     return
-                r = None
                 try:
                     self._throttle(domain)
                     payload = "0\r\n\r\n" if header.lower() == "transfer-encoding" else ""
                     t0 = time.monotonic()
                     r = self.session.post(
-                        endpoint,
-                        headers={header: value},
-                        data=payload,
-                        timeout=(3, self.timeout),
-                        allow_redirects=False,
+                        endpoint, headers={header: value}, data=payload,
+                        timeout=(3, self.timeout), allow_redirects=False
                     )
                     elapsed = max(0.0, time.monotonic() - t0)
 
                     body_low = (r.text or "").lower()
-                    if r.status_code in (400, 502) and any(
-                        s in body_low for s in ("invalid header", "invalid chunk size", "hpe_invalid", "bad chunk")
-                    ):
+                    if r.status_code in (400, 502) and any(s in body_low for s in (
+                        "invalid header", "invalid chunk size", "hpe_invalid",
+                        "http/1.1 400 bad request", "bad chunk"
+                    )):
                         self._log(
-                            "HTTP Request Smuggling indicator",
-                            endpoint,
-                            "Medium",
-                            extra={"header": f"{header}: {value}", "status": r.status_code},
-                            response=r,
+                            "HTTP Request Smuggling indicator", endpoint, "Medium",
+                            extra={"header": f"{header}: {value}", "status": r.status_code}, response=r
                         )
                     elif r.status_code == 408 or elapsed > (self.timeout * 0.9):
                         sev = self.classify_transport_anomaly(endpoint, "POST", None, elapsed)
                         self._log(
-                            "Request smuggling test borderline/timeout",
-                            endpoint,
-                            sev,
-                            extra={"header": f"{header}: {value}", "elapsed_s": round(elapsed, 3)},
-                            response=r,
+                            "Request smuggling test borderline/timeout", endpoint, sev,
+                            extra={"header": f"{header}: {value}", "elapsed_s": round(elapsed, 3)}, response=r
                         )
 
                 except Exception as e:
                     sev = self.classify_transport_anomaly(endpoint, "POST", e, 0.0)
                     self._log("Request smuggling test failed", endpoint, sev, extra={"error": str(e), "header": header})
 
-            # 3) Security header bypass
+            # 3) Security header bypass (strikter)
             sec_headers = {
                 "X-Forwarded-For": "127.0.0.1",
+                "X-Real-IP": "127.0.0.1",
                 "X-Forwarded-Host": "evil.com",
                 "X-Original-URL": "/admin",
                 "X-Rewrite-URL": "/admin",
-                "X-Real-IP": "127.0.0.1",
             }
+            try:
+                self._throttle(domain)
+                r0 = self.session.get(endpoint, timeout=(3, self.timeout), allow_redirects=False)
+            except Exception:
+                r0 = None
+
+            def _is_html(resp: requests.Response) -> bool:
+                ct = (resp.headers.get("Content-Type") or "").lower()
+                if "text/html" in ct or "application/xhtml+xml" in ct:
+                    return True
+                # kleine fallback-sniff voor HTML dat als text/plain komt
+                head = (resp.text or "")[:200].lstrip().lower()
+                return head.startswith("<!doctype html") or head.startswith("<html")
+
+            ADMIN_RE = re.compile(r'(?i)(?:<title>[^<]*admin[^<]*</title>|\badmin\s*panel\b|href=["\']/admin[^"\']*)')
+
             for h, v in sec_headers.items():
                 if stop_requested.is_set():
                     return
                 try:
                     self._throttle(domain)
                     r = self.session.get(
-                        endpoint, headers={h: v}, timeout=(3, self.timeout), allow_redirects=False
+                        endpoint, headers={h: v},
+                        timeout=(3, self.timeout), allow_redirects=False
                     )
-                    if r.status_code == 200 and "admin" in (r.text or "").lower():
+
+                    became_allowed = (r0 is not None and r0.status_code in {401, 403, 404}) and (r.status_code == 200)
+                    admin_like = _is_html(r) and ADMIN_RE.search(r.text or "") is not None
+                    loc = (r.headers.get("Location") or "").lower()
+                    rewrote_to_admin = ("/admin" in loc)
+                    poisoned_host = (h == "X-Forwarded-Host") and ((v.lower() in loc) or (v.lower() in (r.text or "").lower()))
+
+                    strong_signal = (
+                        (h in {"X-Original-URL", "X-Rewrite-URL"} and (admin_like or rewrote_to_admin)) or
+                        (h in {"X-Forwarded-For", "X-Real-IP"} and became_allowed) or
+                        poisoned_host
+                    )
+                    if strong_signal:
                         self._log(
                             "Possible access control bypass via spoofed header",
-                            endpoint,
-                            "High",
-                            extra={"header": f"{h}: {v}"},
-                            response=r,
+                            endpoint, "High",
+                            extra={"header": f"{h}: {v}", "baseline_status": getattr(r0, "status_code", "-"),
+                                "location": r.headers.get("Location", "")},
+                            response=r
                         )
-
                 except Exception as e:
                     sev = self.classify_transport_anomaly(endpoint, "GET", e, 0.0)
                     self._log("Security header test failed", endpoint, sev, extra={"error": str(e), "header": h})
@@ -809,34 +811,25 @@ class SafeConsumptionAuditor:
                 try:
                     self._throttle(domain)
                     r = self.session.get(
-                        endpoint, headers={h: p}, timeout=(3, self.timeout), allow_redirects=False
+                        endpoint, headers={h: p},
+                        timeout=(3, self.timeout), allow_redirects=False
                     )
 
                     body = r.text or ""
                     if p.lower() in body.lower():
-                        self._log(
-                            "Header-based XSS reflection",
-                            endpoint,
-                            "High",
-                            extra={"header": h, "payload": p},
-                            response=r,
-                        )
+                        self._log("Header-based XSS reflection", endpoint, "High",
+                                extra={"header": h, "payload": p}, response=r)
 
                     loc = r.headers.get("Location", "")
                     if loc and p in loc:
-                        self._log(
-                            "Header-based open redirect",
-                            endpoint,
-                            "Medium",
-                            extra={"header": h, "payload": p, "location": loc},
-                            response=r,
-                        )
+                        self._log("Header-based open redirect", endpoint, "Medium",
+                                extra={"header": h, "payload": p, "location": loc}, response=r)
 
                 except Exception as e:
                     sev = self.classify_transport_anomaly(endpoint, "GET", e, 0.0)
                     self._log("Header injection test failed", endpoint, sev, extra={"error": str(e), "header": h})
 
-            # 5) CORS misconfiguration
+            # 5) CORS misconfiguration (strikt, minder FP op statics)
             cors_origins = ["https://attacker.com", "null", "http://localhost", "http://127.0.0.1"]
             for origin in cors_origins:
                 if stop_requested.is_set():
@@ -844,37 +837,48 @@ class SafeConsumptionAuditor:
                 try:
                     self._throttle(domain)
                     r = self.session.get(
-                        endpoint, headers={"Origin": origin}, timeout=(3, self.timeout), allow_redirects=False
+                        endpoint, headers={"Origin": origin},
+                        timeout=(3, self.timeout), allow_redirects=False
                     )
 
-                    acao = r.headers.get("Access-Control-Allow-Origin", "")
-                    acac = (r.headers.get("Access-Control-Allow-Credentials", "") or "").lower()
+                    acao = (r.headers.get("Access-Control-Allow-Origin") or "")
+                    acac = (r.headers.get("Access-Control-Allow-Credentials") or "").lower()
+                    ctype = (r.headers.get("Content-Type") or "").lower()
+                    disp  = (r.headers.get("Content-Disposition") or "").lower()
+
+                    is_static = (
+                        ctype.startswith(("image/", "video/", "audio/", "font/"))
+                        or "application/octet-stream" in ctype
+                        or "application/pdf" in ctype
+                        or "filename=" in disp
+                    )
 
                     if acao == "*" and acac == "true":
-                        self._log(
-                            "CORS misconfiguration: wildcard with credentials",
-                            endpoint,
-                            "High",
-                            extra={"origin": origin, "acao": acao, "acac": acac},
-                            response=r,
-                        )
-                    elif origin in acao or acao == "*":
+                        self._log("CORS misconfiguration: wildcard with credentials", endpoint, "High",
+                                extra={"origin": origin, "acao": acao, "acac": acac}, response=r)
+                        continue
+
+                    is_textual = (
+                        "application/json" in ctype or ctype.startswith("text/")
+                        or "application/xml" in ctype or "application/javascript" in ctype
+                    )
+
+                    if (acao == "*" or origin in acao):
+                        if is_static and acac != "true":
+                            continue
                         sev = "Medium" if acac == "true" else "Info"
-                        self._log(
-                            "Broad CORS policy",
-                            endpoint,
-                            sev,
-                            extra={"origin": origin, "acao": acao, "acac": acac},
-                            response=r,
-                        )
+                        self._log("Broad CORS policy", endpoint, sev if is_textual else "Info",
+                                extra={"origin": origin, "acao": acao, "acac": acac, "content_type": ctype}, response=r)
 
                 except Exception as e:
                     sev = self.classify_transport_anomaly(endpoint, "GET", e, 0.0)
                     self._log("CORS test failed", endpoint, sev, extra={"error": str(e), "origin": origin})
 
         except Exception as e:
+            # <<< this closes the OUTER try: and fixes the SyntaxError
             self._log("Header manipulation test setup failed", endpoint, "Medium", extra={"error": str(e)})
 
+                            
     # ---------------- Success Detector ----------------
     def _is_injection_successful(
         self,
@@ -885,11 +889,11 @@ class SafeConsumptionAuditor:
         payload: str = "",
     ) -> bool:
         """
-        Geeft True alleen bij sterk bewijs:
+        True alleen bij sterk bewijs:
         - engine/stack markers of sterke foutpatronen
-        - payload-reflectie + 5xx (schaars gebruikt)
+        - payload-reflectie + 5xx (zeldzaam gebruikt)
         - duidelijke context (XSS), of robuuste timing bij blind tests
-        Downgraders (nooit 'succes'):
+        Niet als succes tellen:
         - 400/422 JSON parse errors
         - generieke 4xx/WAF-responses
         - kale 5xx zonder markers
@@ -901,13 +905,13 @@ class SafeConsumptionAuditor:
         text = response.text or ""
         low = text.lower()
 
-        # -- Guards: parse/WAF/generic 4xx --
+        
         if status in {400, 422} and self._is_parse_error(response):
             return False
         if status in self.GENERIC_4XX or self._looks_like_waf(response):
             return False
 
-        # -- 5xx gate: vereis markers/evidence per type --
+      
         if status >= 500:
             if attack_type == "sql":
                 return self._has_sql_evidence(text)
@@ -915,10 +919,9 @@ class SafeConsumptionAuditor:
                 return any(k in low for k in self.NOSQL_ERROR_KEYWORDS) or self._has_engine_marker(low, "nosql")
             if attack_type in {"ssti", "ldap", "xxe"}:
                 return self._has_engine_marker(low, attack_type)
-            # XSS/SSRF leveren zelden 5xx als bewijs
             return False
 
-        # ---------- Per attack-type ----------
+       
         if attack_type == "sql":
             has_sql = self._has_sql_evidence(text)
             time_based = bool(response.elapsed) and (response.elapsed.total_seconds() > baseline_latency * 5)
@@ -930,11 +933,8 @@ class SafeConsumptionAuditor:
             return specific or keywords or self._has_engine_marker(low, "nosql")
 
         if attack_type == "xss":
-            if not payload:
+            if not payload or payload.lower() not in low:
                 return False
-            if payload.lower() not in low:
-                return False
-            # simpele context-checks: attribuut, tagbody, JS-context
             return any(s in text for s in (f'="{payload}"', f">{payload}<", f"({payload})"))
 
         if attack_type == "ssti":
@@ -962,7 +962,6 @@ class SafeConsumptionAuditor:
             return specific or file_leak or self._has_engine_marker(low, "xxe")
 
         return False
-    
 
     def _is_false_positive(self, response: requests.Response) -> bool:
         """Check for common false-positive patterns"""
@@ -1005,6 +1004,13 @@ class SafeConsumptionAuditor:
             self._throttle(urlparse.urlparse(endpoint).netloc or "")
             r = self.session.get(endpoint, timeout=(3, self.timeout), allow_redirects=False)
 
+            if r.status_code >= 500:
+                if self._has_sql_evidence(r.text or ""):
+                    self._log("Possible SQL injection", endpoint, "Critical", response=r)
+                else:
+                    self._log("Server error without SQL evidence", endpoint, "Info", response=r)
+
+            
             if r.status_code >= 400:
                 body = (r.text or "").lower()
                 if any(k in body for k in self.SQL_ERROR_KEYWORDS) or any(rx.search(body) for rx in self.SQL_ERROR_RX):
@@ -1152,7 +1158,7 @@ class SafeConsumptionAuditor:
             "http://127.0.0.1:8080/internal",
         ]
 
-        # include canary OOB only when configured
+        
         if self.canary_domain:
             rid = self.generate_random_id()
             ssrf_payloads.append(f"http://{rid}.{self.canary_domain}")
@@ -1265,7 +1271,7 @@ class SafeConsumptionAuditor:
         try:
             domain = urlparse.urlparse(endpoint).netloc or ""
 
-            # OPTIONS preflight to see if GET is allowed
+          
             try:
                 self._throttle(domain)
                 options_response = self.session.request("OPTIONS", endpoint, timeout=(2, 3), allow_redirects=False)
@@ -1394,7 +1400,7 @@ class SafeConsumptionAuditor:
         if stop_requested.is_set():
             return self.issues
 
-        num_core_tests = 7  # basic, crlf, hpp, sensitive, graphql, ssrf, headers
+        num_core_tests = 7 
         tests_per_endpoint = num_core_tests + len(self.INJECTION_PAYLOADS)
         total_tasks = len(reachable_endpoints) * tests_per_endpoint
 
@@ -1444,29 +1450,26 @@ class SafeConsumptionAuditor:
         print(f"{Fore.CYAN}[INFO] Scan completed. Found {len(self.issues)} issues.{Style.RESET_ALL}")
         return self.issues
 
-    def _has_sql_evidence(self, body: str) -> bool:
-        """Return True only when body shows concrete SQL evidence."""
-        low = (body or "").lower()
+#---------------------- has_sql_evidence 
 
-        # 1) Direct engine/stack markers
+    def _has_sql_evidence(self, body: str) -> bool:
+        low = (body or "").lower()
         if any(k in low for k in self.SQL_ENGINE_MARKERS):
             return True
         if any(rx.search(low) for rx in getattr(self, "SQL_ERROR_RX", [])):
             return True
-
-        # 2) Error keywords + at least one SQL-ish token (guard vs generic 500 pages)
         if any(k in low for k in self.SQL_ERROR_KEYWORDS):
             sqlish = (
                 " sql ", "sqlsyntaxerror", "syntax error at or near",
-                "mysql", "postgres", "psql", "psycopg", "odbc", "ora-", "oracle",
-                "unclosed quotation mark", "incorrect syntax near"
+                "mysql", "postgres", "psql", "psycopg", "odbc",
+                "oracle", "ora-", "unclosed quotation mark", "incorrect syntax near"
             )
             if any(t in low for t in sqlish):
                 return True
-
         return False
 
-    
+
+    # -------------------
     
     def _run_injection_tests_parallel(self, endpoint: str, test_type: str) -> None:
         if stop_requested.is_set():
@@ -1524,53 +1527,127 @@ class SafeConsumptionAuditor:
     def _filter_issues(self) -> list[dict]:
         """
         Clean & dedupe findings:
-        - Verwijdert parser/network ruis (o.a. HTTPConnectionPool timeouts)
-        - Downgradet obvious FP's (JSON parse, WAF/generic 4xx, rate-limits)
-        - Deduplicate op method/path/status/issue/payload
-        - Houdt gevoelige data streng, maar geen noise op keywords
+        - Dropt netwerk-timeouts en parser-noise
+        - Verwijdert 'Possible SQL injection' op 4xx / problem+json / zonder SQL-evidence
+        - Downgradet/filtreert spoofed-header FP's en CORS-ruis op statics
+        - Dedup op (method, path, status, issue, payload)
         """
         cleaned, seen = [], set()
-        self.parser_errors, self.network_errors = [], []
 
-        # Config (fallbacks als de attributen niet bestaan)
+        # Config/fallbacks
         IGNORE_TIMEOUTS = bool(getattr(self, "IGNORE_NETWORK_TIMEOUTS", True))
-        NETWORK_TIMEOUT_PATTERNS = tuple(
-            getattr(
-                self,
-                "NETWORK_TIMEOUT_PATTERNS",
-                (
-                    "httpconnectionpool",
-                    "read timed out",
-                    "connect timeout",
-                    "connecttimeout",
-                    "newconnectionerror",
-                    "failed to establish a new connection",
-                    "max retries exceeded",
-                    "winerror 10060",
-                    "winerror 10061",
-                ),
-            )
-        )
+        NETWORK_TIMEOUT_PATTERNS = tuple(getattr(self, "NETWORK_TIMEOUT_PATTERNS", (
+            "httpconnectionpool", "read timed out", "connect timeout", "connecttimeout",
+            "write timeout", "newconnectionerror", "failed to establish a new connection",
+            "max retries exceeded", "temporarily unavailable", "winerror 10060", "winerror 10061",
+        )))
+        GENERIC_4XX = {400, 401, 403, 404, 405, 406, 409, 415, 422, 429}
 
         for issue in self.issues:
-            desc = str(issue.get("description", "")).lower()
-            err  = str(issue.get("error", "")).lower()
-            body_low = (issue.get("response_body") or "").lower()
+            desc_text = str(issue.get("description", ""))
+            desc_low  = desc_text.lower()
+            err_low   = str(issue.get("error", "")).lower()
+            body      = issue.get("response_body") or ""
+            body_low  = body.lower()
 
-            # --- Skip parser noise ------------------------------------------------
-            if "failed to parse" in desc or "name 'parsed' is not defined" in desc:
-                self.parser_errors.append(issue)
+            
+            if "failed to parse" in desc_low or "name 'parsed' is not defined" in desc_low:
                 continue
 
-            # --- Skip or downgrade network timeouts -------------------------------
-            if any(p in err for p in NETWORK_TIMEOUT_PATTERNS):
-                self.network_errors.append(issue)
+           
+            if any(p in err_low for p in NETWORK_TIMEOUT_PATTERNS):
                 if IGNORE_TIMEOUTS:
                     continue
                 else:
                     issue["severity"] = "Info"
 
-            # --- Dedup key --------------------------------------------------------
+           
+            try:
+                status = int(issue.get("status_code", 0))
+            except (ValueError, TypeError):
+                status = 0
+
+            # response_headers kan dict of list[(k,v)] zijn; response_headers_list idem
+            hdrs_map = {}
+            rh = issue.get("response_headers")
+            if isinstance(rh, dict):
+                hdrs_map = {str(k): str(v) for k, v in rh.items()}
+            elif isinstance(rh, list):
+                hdrs_map = {str(k): str(v) for k, v in rh}
+            else:
+                rh_list = issue.get("response_headers_list") or []
+                try:
+                    hdrs_map = {str(k): str(v) for k, v in rh_list}
+                except Exception:
+                    hdrs_map = {}
+
+            def _h(name: str) -> str:
+                return (hdrs_map.get(name) or hdrs_map.get(name.title()) or "").lower()
+
+            ctype = _h("Content-Type")
+            acao  = _h("Access-Control-Allow-Origin")
+            acac  = _h("Access-Control-Allow-Credentials")
+            cdisp = _h("Content-Disposition")
+            loc_low = _h("Location")
+
+            # --- SQLi: 4xx / problem+json / geen evidence -> volledig weghalen ---
+            if issue.get("issue", "").startswith("Possible SQL injection"):
+                drop = False
+                if status in GENERIC_4XX:
+                    drop = True
+                elif "application/problem+json" in ctype:
+                    drop = True
+                else:
+                    try:
+                        if not self._has_sql_evidence(body):
+                           
+                            drop = (status < 500)  
+                            if status >= 500:
+                                issue["severity"]    = "Info"
+                                issue["issue"]       = "Server error without SQL evidence"
+                                issue["description"] = "Generic 5xx response without SQL/DB markers"
+                    except Exception:
+                        
+                        drop = (status < 500)
+
+                if drop:
+                    continue
+
+            # --- SSRF: generieke connectiefouten of 400/404/405 -> Info ---
+            if desc_low.startswith("possible ssrf"):
+                generic_err = ("connection refused", "timed out", "no route to host", "dns error", "invalid host")
+                if any(g in body_low for g in generic_err) or status in {400, 404, 405}:
+                    issue["severity"] = "Info"
+
+            # --- Spoofed-header bypass: zwakke signalen downgraden ---
+            if desc_low.startswith("possible access control bypass via spoofed header"):
+                is_json   = "application/json" in ctype
+                admin_hit = re.search(r'(?i)(<title>[^<]*admin[^<]*</title>|\badmin\s*panel\b|href=["\']/admin)', body) is not None
+                if is_json and not loc_low:
+                    issue["severity"] = "Info"
+                elif not admin_hit and "/admin" not in loc_low:
+                    issue["severity"] = "Info"
+
+            # --- Broad CORS policy: static/binary zonder credentials -> weg ---
+            if issue.get("issue", "").lower().startswith("broad cors policy"):
+                is_static = (
+                    ctype.startswith(("image/", "video/", "audio/", "font/"))
+                    or "application/octet-stream" in ctype
+                    or "application/pdf" in ctype
+                    or "filename=" in cdisp
+                )
+                if is_static and acac != "true" and issue.get("severity") in (None, "Low", "Info"):
+                    continue
+
+            # --- 404 mag nooit High/Critical ---
+            if status == 404 and issue.get("severity") in ("High", "Critical"):
+                issue["severity"] = "Info"
+
+            # --- Timeout/missing status -> Info ---
+            if issue.get("status_code") == "-" or "timeout" in err_low:
+                issue["severity"] = "Info"
+
+            # --- Dedup ---
             dedup_key = (
                 issue.get("method"),
                 issue.get("path") or issue.get("endpoint"),
@@ -1582,77 +1659,15 @@ class SafeConsumptionAuditor:
                 continue
             seen.add(dedup_key)
 
-            # --- Safe parse van status -------------------------------------------
-            try:
-                status = int(issue.get("status_code", 0))
-            except (ValueError, TypeError):
-                status = 0
-
-            # --- Content-Type inspectie (RFC7807 etc.) ---------------------------
-            ctype = ""
-            hdrs = issue.get("response_headers") or dict(issue.get("response_headers_list") or [])
-            try:
-                for k, v in (hdrs.items() if isinstance(hdrs, dict) else hdrs):
-                    if str(k).lower() == "content-type":
-                        ctype = str(v).lower()
-                        break
-            except Exception:
-                pass
-
-            # --- Downgrades voor injection FP's op generieke 4xx/429 --------------
-            if issue.get("description", "").startswith(
-                ("Possible SQL injection", "Possible NOSQL injection", "Possible SSTI", "Possible LDAP injection")
-            ) and status in {400, 401, 403, 404, 405, 406, 409, 415, 422, 429}:
-                issue["severity"] = "Info"
-
-            # RFC7807 problem+json -> Info
-            if "application/problem+json" in ctype and status in {400, 401, 403, 404, 405, 422}:
-                issue["severity"] = "Info"
-
-            # SQLi: downgrade als er geen harde SQL-evidence in body zit
-            if issue.get("issue", "").startswith("Possible SQL injection"):
-                try:
-                    if not self._has_sql_evidence(issue.get("response_body") or ""):
-                        issue["severity"] = "Info"
-                except Exception:
-                    # als helper niet bestaat, niets doen
-                    pass
-
-            # SSRF: generieke connectiefouten of 400/404/405 -> Info
-            if desc.startswith("possible ssrf"):
-                generic_err = ("connection refused", "timed out", "no route to host", "dns error", "invalid host")
-                if any(g in body_low for g in generic_err) or status in {400, 404, 405}:
-                    issue["severity"] = "Info"
-
-            # Sensitive data exposure: alleen hoog als het ook echt 'secret-like' is
-            if "sensitive data exposure" in desc:
-                kw = ("token", "password", "secret", "apikey", "api key", "accesskey", "credential", "private key")
-                path_low = str(issue.get("path") or issue.get("endpoint") or "").lower()
-                looks_secret = False
-                try:
-                    looks_secret = self._looks_like_secret(issue.get("response_body") or "")
-                except Exception:
-                    pass
-                if any(k in path_low for k in kw) or (any(k in body_low for k in kw) and not looks_secret):
-                    issue["severity"] = "Info"
-
-            # WAF/generic: als body WAF-signalen bevat, Info houden
-            waf_markers = ("cloudflare", "akamai", "imperva", "mod_security", "request blocked", "access denied")
-            if any(w in body_low for w in waf_markers) and status in {403, 406, 429}:
-                issue["severity"] = "Info"
-
-            # 404 kan nooit High/Critical
-            if status == 404 and issue.get("severity") in ("High", "Critical"):
-                issue["severity"] = "Info"
-
             cleaned.append(issue)
 
         self.issues = cleaned
-        # final dedupe op dezelfde sleutel
         self._dedupe_issues()
         return self.issues
 
-        
+    def _filtered(self) -> list[dict]:
+        return self._filter_issues()
+    
     def _looks_like_secret(self, text: str) -> bool:
         """
         Heuristic to decide if a token in the body looks like a real secret.

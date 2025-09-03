@@ -11,8 +11,10 @@ Author: Perry Mertens
 - more tweaks function 
 - payloads in separate data file
 - Beter testing, that to all on Internet
+- Need to do more optimizing of interface
+- Optimizing software and use of SQLite database
 
-- solved error during startup openai
+- Solved error during startup openai
 - many other errors.
 
 3-8-2025

@@ -7,18 +7,20 @@ from __future__ import annotations
 import json
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
 
 import requests
+from tqdm import tqdm
 from report_utils import ReportGenerator
 
 Issue = Dict[str, Any]
 
 _MAX_BODY_LEN = 2048  # trim bodies to 2 kB
-
+_MAX_WORKERS = 10  # maximum number of threads
 
 class InventoryAuditor:
     """OWASP API-Security 2023 - API-9 Improper Inventory Management."""
@@ -54,7 +56,6 @@ class InventoryAuditor:
         self._lock = threading.Lock()
         self._issues: List[Issue] = []
         self._security_headers_checked = False
-        
 
     # ------------------------------------------------------------------ #
     # Helpers
@@ -67,7 +68,7 @@ class InventoryAuditor:
 
     def _filtered_issues(self) -> List[Issue]:
         """Remove empty or malformed issues."""
-        return [i for i in self._issues if i.get("issue") and i.get("target")]
+        return [i for i in self._issues if i.get("issue") and i.get("endpoint")]
 
     def _is_api_response(self, resp: requests.Response) -> bool:
         """
@@ -85,52 +86,61 @@ class InventoryAuditor:
         if content_type in api_types:
             return True
 
-        # 2) Fallback: probeer te parsen als JSON   -  echte OpenAPI heeft 'openapi' of 'swagger' key
+        # 2) Fallback: probeer te parsen als JSON - echte OpenAPI heeft 'openapi' of 'swagger' key
         try:
             parsed = resp.json()
             if isinstance(parsed, dict) and {"openapi", "swagger"} & parsed.keys():
                 return True
-        except ValueError:
+        except (ValueError, json.JSONDecodeError):
             pass
 
         return False
-
 
     # ------------------------------------------------------------------ #
     # Public API
     # ------------------------------------------------------------------ #
     def test_inventory(self, documented_paths: List[Any]) -> List[Issue]:
+        """Test alle paden en retourneer gevonden issues."""
         doc_set: set[str] = {
             (p["path"] if isinstance(p, dict) else p).rstrip("/")
             for p in documented_paths
         }
 
+        # Genereer alle te controleren paden
+        paths_to_check = []
+        
         # Static debug paths
-        for p in self._DEBUG_PATHS:
-            self._check_path(p, doc_set)
-
+        paths_to_check.extend(self._DEBUG_PATHS)
+        
         # Simple version guessing
         for v in range(1, 8):
-            for prefix in ["", "/api", "/rest", "/services", "/orders" ,"/products", "/apis"]:
-                self._check_path(f"{prefix}/v{v}", doc_set)
+            for prefix in ["", "/api", "/rest", "/services", "/orders", "/products", "/apis"]:
+                paths_to_check.append(f"{prefix}/v{v}")
+
+        # Controleer paden met threading en tqdm voor voortgang
+        with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
+            # Submit alle taken
+            future_to_path = {
+                executor.submit(self._check_path, path, doc_set): path 
+                for path in paths_to_check
+            }
+            
+            # Verwerk resultaten met tqdm voor voortgangsvisualisatie
+            for future in tqdm(
+                as_completed(future_to_path), 
+                total=len(paths_to_check),
+                desc="Testing paths",
+                unit="path"
+            ):
+                path = future_to_path[future]
+                try:
+                    future.result()  # Haal resultaat op (of verwerk excepties)
+                except Exception as e:
+                    self._log(f"Error testing path {path}", path, f"Exception: {str(e)}")
 
         return self._issues
 
-    def generate_report(self, fmt: str = "html") -> str:
-        gen = ReportGenerator(
-            self._filtered_issues(),
-            scanner="Inventory (API-09)",
-            base_url=self.base_url,
-        )
-        return gen.generate_html() if fmt == "html" else gen.generate_markdown()
-
-    def save_report(self, path: str, fmt: str = "html") -> None:
-        ReportGenerator(
-            self._filtered_issues(),
-            scanner="Inventory (API-09)",
-            base_url=self.base_url,
-        ).save(path, fmt=fmt)
-
+    
     # ------------------------------------------------------------------ #
     # Internal checks
     # ------------------------------------------------------------------ #
@@ -143,7 +153,8 @@ class InventoryAuditor:
             resp = self.session.head(url, timeout=self.timeout)
             if resp.status_code == 405:
                 resp = self.session.get(url, timeout=self.timeout)
-        except requests.RequestException:
+        except requests.RequestException as e:
+            self._log(f"Request error for path {path}", path, f"Exception: {str(e)}")
             return
 
         if resp.request.method == "HEAD" and resp.status_code < 400:
@@ -207,7 +218,6 @@ class InventoryAuditor:
         # Extract external hosts in response
         self._extract_hosts(resp.text)
 
-
     # ------------------------------------------------------------------ #
     # Detail helpers
     # ------------------------------------------------------------------ #
@@ -241,7 +251,6 @@ class InventoryAuditor:
                 response,                
             )                            
 
-
     def _max_version(self, paths: set[str]) -> int:
         max_v = 0
         for p in paths:
@@ -253,8 +262,9 @@ class InventoryAuditor:
         return max_v
 
     def _extract_hosts(self, body: str) -> None:
+        base_hostname = urlparse(self.base_url).hostname
         for host in re.findall(r"https?://([\w.-]+)/", body):
-            if host not in urlparse(self.base_url).hostname:
+            if host != base_hostname:
                 self._log(
                     "Reference to external host",
                     host,
@@ -305,12 +315,17 @@ class InventoryAuditor:
             self._issues.append(entry)
 
 
-    def _filtered_issues(self) -> List[Issue]:
-        return [i for i in self._issues if i.get('issue') and i.get('target')]
+    def generate_report(self, fmt: str = "html") -> str:
+        gen = ReportGenerator(
+            self._filtered_issues(),
+            scanner="Inventory (API-09)",
+            base_url=self.base_url,
+        )
+        return gen.generate_html() if fmt == "html" else gen.generate_markdown()
 
-    def generate_report(self, fmt: str='html') -> str:
-        gen = ReportGenerator(self._filtered_issues(), scanner='Inventory (API09)', base_url=self.base_url)
-        return gen.generate_html() if fmt=='html' else gen.generate_markdown()
-
-    def save_report(self, path: str, fmt: str='html'):
-        ReportGenerator(self._filtered_issues(), scanner='Inventory (API09)', base_url=self.base_url).save(path, fmt=fmt)
+    def save_report(self, path: str, fmt: str = "html") -> None:
+        ReportGenerator(
+            self._filtered_issues(),
+            scanner="Inventory (API-09)",
+            base_url=self.base_url,
+        ).save(path, fmt=fmt)

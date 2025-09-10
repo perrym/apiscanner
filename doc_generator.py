@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner #
 # Licensed under the MIT License #
 # Author: Perry Mertens, 2025    #
-# pamsniffer@gmail.com                                #
+# pamsniffer@gmail.com           #
 ##################################
 import argparse
 import glob
@@ -225,7 +225,7 @@ def infer_risk_key(filename: str) -> str:
     """Infer risk key from filename via numeric ID or regex aliases."""
     lower = filename.lower()
 
-    # Numeric 'apiX' detection
+    
     num_match = re.search(r"api(\d+)", lower)
     if num_match:
         num_map = {
@@ -282,7 +282,7 @@ def build_index(keys: List[str]) -> str:
     for idx, key in enumerate(keys, start=1):
         li = soup.new_tag("li")
         a = soup.new_tag("a", href=f"#rapport{idx}")
-        a.string = RISK_INFO[key]["title"]          # - e.g.  API1:2023 - Broken Object Level Authorization
+        a.string = RISK_INFO[key]["title"]          
         li.append(a)
         ul.append(li)
 

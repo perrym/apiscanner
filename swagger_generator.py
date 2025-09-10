@@ -1,8 +1,7 @@
 #########################################
 # APISCAN - API Security Scanner        #
 # Licensed under the MIT License        #
-# Author: Perry Mertens, 2025           #
-# Tweaks by ChatGPT helper              #
+# Author: Perry Mertens  2025           #
 #########################################
 import argparse
 import json

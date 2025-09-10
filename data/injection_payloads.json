@@ -432,7 +432,7 @@
     "pls-\\d+: .+",
     "tns-\\d+: .+",
     "table or view does not exist",
-    "snapshot too old",
+    "snapshot",
     "unique constraint \\(\\S+\\) violated",
     "integrity constraint \\(\\S+\\) violated",
     "missing expression",

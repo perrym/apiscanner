@@ -1,5 +1,5 @@
 ##############################################
-# APISCAN - API Security Scanner             #
+# APISCAN - API Security Scanner   2025      #
 # Licensed under the MIT License             #
 # Author: Perry Mertens pamsniffer@gmail.com #
 ##############################################

@@ -1,4 +1,4 @@
-# Ultimate Swagger Generator
+# Ultimate Swagger Generator, find hidden api's  1.0
 
 **Ultimate Swagger Generator** is an advanced API documentation crawler and generator, designed to automatically discover RESTful APIs, WebSockets, GraphQL endpoints, and other services from a target website or API server.
 
@@ -52,7 +52,7 @@ Always ensure you have permission before scanning, crawling, or testing any targ
 ## Contact
 
 For questions, improvements, or responsible disclosure, please contact:  
-📧 **pamsniffer@gmail.com**
+ **pamsniffer@gmail.com**
 
 ---
 

@@ -41,16 +41,16 @@ manual_file_map = {
 
 SEVERITY_ORDER = ["Critical", "High", "Medium", "Low", "Info"]
 
-# report_utils.py  (boven in het bestand, na de imports)
+
 def _iter_headers(hdrs):
     """
     Genereer (key, value) paren uit zowel dicts als list-of-tuples.
     """
-    if not hdrs:                       # None of leeg - niets yielden
+    if not hdrs:                       
         return
     if isinstance(hdrs, dict):
         yield from hdrs.items()
-    else:                              # aannemen: Iterable[Tuple[str, str]]
+    else:                              
         yield from hdrs
 
 
@@ -124,7 +124,7 @@ class EnhancedReportGenerator:
         
         return "\n".join(markdown)
        
-    # Vervang de _format_response_html functie door deze versie
+    
     def _format_response_html(self, issue: Dict[str, Any]) -> str:
         status = issue.get("status_code", "-")
         # -- headers -------------------------------------------------------
@@ -195,8 +195,7 @@ class EnhancedReportGenerator:
                 
             findings_html.append(self._generate_severity_section(lvl, grouped[lvl]))
 
-        #summary_table = self._generate_summary_table(grouped)
-        #return self._generate_full_html(summary_table, "".join(findings_html))
+       
         # -- nieuw: maak echt een count-dict -----------------------------
         counts = {sev: len(grouped.get(sev, [])) for sev in ("Critical", "High", "Medium", "Low" , "Info")}
         summary_table = self._generate_summary_table(counts)
@@ -448,7 +447,7 @@ def combine_html_reports(output_dir: Path):
     from bs4 import BeautifulSoup
     import html
 
-    # Base template with improved styling
+    
     combined_html = f"""<!DOCTYPE html>
     <html>
     <head>
@@ -507,7 +506,7 @@ def combine_html_reports(output_dir: Path):
         <p><strong>Generated:</strong> {html.escape(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))}</p>
     """
 
-    # Process each report file
+    
     html_files = sorted(output_dir.glob("api_*_report.html"))
     reports = []
     
@@ -526,7 +525,7 @@ def combine_html_reports(output_dir: Path):
             print(f"Error processing {file.name}: {str(e)}")
             continue
 
-    # Add navigation links
+   
     nav_links = []
     for i, (report_id, title, _) in enumerate(reports, 1):
         nav_links.append(f'<li><a href="#section-{i}">{html.escape(title)}</a></li>')
@@ -537,7 +536,7 @@ def combine_html_reports(output_dir: Path):
     </script>
     """
 
-    # Add report sections with all findings
+    
     for i, (report_id, title, soup) in enumerate(reports, 1):
         body = soup.body
         if not body:
@@ -548,7 +547,7 @@ def combine_html_reports(output_dir: Path):
             <h2>{html.escape(title)}</h2>
         """
         
-        # Add all relevant content sections
+       
         for element in body.find_all(['div', 'section'], recursive=False):
             if 'findings' in element.get('class', []) or \
                'severity-section' in element.get('class', []) or \

@@ -1,10 +1,10 @@
-# APISCAN  OWASP API Security Scanner
-
+# APISCAN  OWASP API Security Scanner by Perry Mertens pamsniffer@gmail.com 2025 (c)
+<meta content="VvYq2k5BFp5dpIL6JpQhoe90sWEXZTEBbaynlEKCWRE" name="google-site-verification">
 **Version:** 1.0 (Release)  
 **Author:** Perry Mertens ([pamsniffer@gmail.com](mailto:pamsniffer@gmail.com))  
 **License:** MIT
 
-APISCAN is an extensible, AIaware API security scanner targeting the **OWASP API Security Top 10 (2023)**.  
+APISCAN is an extensible, AI-Aware API security scanner targeting the **OWASP API Security Top 10 (2023)**.  
 It understands Swagger/OpenAPI, supports multiple authentication flows (incl. OAuth2, NTLM, mTLS), and produces clean HTML reports.
 
 ---

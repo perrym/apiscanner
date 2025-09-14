@@ -1,9 +1,8 @@
 ---
 title: APISCAN v1.0  AI-Aware OWASP API Security Scanner by Perry Mertens
 description: Free and open-source API security scanner built in Python with AI support, multi-auth, and rich reporting.
-<meta content="VvYq2k5BFp5dpIL6JpQhoe90sWEXZTEBbaynlEKCWRE" name="google-site-verification">
 ---
-
+<meta content="VvYq2k5BFp5dpIL6JpQhoe90sWEXZTEBbaynlEKCWRE" name="google-site-verification">
 [![View on GitHub](https://img.shields.io/badge/GitHub-View%20Repository-blue?logo=github)](https://github.com/perrym/apiscanner)
 
 # APISCAN v1.0  OWASP API Security Scanner

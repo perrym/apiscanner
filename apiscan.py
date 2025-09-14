@@ -18,6 +18,7 @@ import json
 import logging
 import queue
 import sys
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -425,11 +426,41 @@ def main() -> None:
     if 11 in selected_apis:
         styled_print("API11 - AI-assisted OWASP analysis", "info")
         logger.info("Running API11 - AI-assisted audit")
+
+        # --- Preflight: check required environment variables ---
+        required = ["LLM_PROVIDER", "LLM_MODEL", "LLM_API_KEY"]
+        missing = [v for v in required if not os.getenv(v)]
+        if missing:
+            styled_print(
+                f"Missing required LLM settings for API11: {', '.join(missing)}",
+                "fail"
+            )
+            print(
+                "\nSet them, for example:\n"
+                "  export LLM_PROVIDER=openai_compat\n"
+                "  export LLM_MODEL=gpt-4o-mini\n"
+                "  export LLM_API_KEY=sk-...\n"
+            )
+            sys.exit(3)
+
         try:
-            from ai_client import analyze_endpoints_with_gpt, save_ai_summary
-            ai_results = analyze_endpoints_with_gpt(ai_endpoints, live_base_url=args.url, print_results=True)
-            save_ai_summary(ai_results, output_dir / "AI-api11_scanresults.json")
-            styled_print(f"API11 complete - {len(ai_results)} endpoints analyzed", "done")
+            # Test LLM connection first
+            from ai_client import live_probe
+            probe_result = live_probe()
+            
+            if not probe_result.get("ok", False):
+                styled_print(f"LLM connection failed: {probe_result.get('error', 'Unknown error')}", "fail")
+                logger.error(f"LLM connection failed: {probe_result}")
+            else:
+                styled_print(f"Connected to LLM provider: {probe_result.get('provider', 'Unknown')}", "ok")
+                
+                from ai_client import analyze_endpoints_with_llm, save_ai_summary
+                ai_results = analyze_endpoints_with_llm(ai_endpoints, live_base_url=args.url, print_results=True)
+                save_ai_summary(ai_results, output_dir / "AI-api11_scanresults.json")
+                styled_print(f"API11 complete - {len(ai_results)} endpoints analyzed", "done")
+        except ImportError as e:
+            styled_print(f"AI client not available: {e}", "fail")
+            logger.exception("AI client import error")
         except Exception as e:
             styled_print(f"AI analysis failed: {e}", "fail")
             logger.exception("AI analysis exception")

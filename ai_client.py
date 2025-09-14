@@ -1,133 +1,337 @@
-# APISCAN - API Security Scanner #
-# Licensed under the MIT License #
-# Author: Perry Mertens, 2025    #
-import json
-import logging
+##############################################
+# APISCAN - API Security Scanner             #
+# Licensed under the MIT License             #
+# Author: Perry Mertens pamsniffer@gmail.com #
+##############################################
 import os
-import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import asdict, dataclass
-from pathlib import Path
-from typing import Dict, List, Optional, Union
+import json
+import time
+import ssl
+from typing import Any, Dict, List, Tuple, Optional
+from urllib.parse import urljoin, urlencode
+
 import requests
-from openai import OpenAI
-# OpenAI credentials/config
-API_KEY = os.environ.get('OPENAI_API_KEY')
-# Default model selection
-MODEL_NAME = os.environ.get('OPENAI_MODEL', 'gpt-4o')
-# Optional custom API base
-API_BASE = os.environ.get('OPENAI_API_BASE', 'https://api.openai.com/v1')
-if not API_KEY:
-    raise RuntimeError('Environment variable OPENAI_API_KEY is not set')
-# OpenAI client instance
-client = OpenAI(api_key=API_KEY, base_url=API_BASE)
-# OWASP API Security Top 10 labels
-OWASP_TOP_10 = ['API1: Broken Object Level Authorization', 'API2: Broken Authentication', 'API3: Broken Object Property Level Authorization', 'API4: Unrestricted Resource Consumption', 'API5: Broken Function Level Authorization', 'API6: Unrestricted Access to Sensitive Business Flows', 'API7: Server Side Request Forgery', 'API8: Security Misconfiguration', 'API9: Improper Inventory Management', 'API10: Unsafe Consumption of APIs']
-# System prompt template for model
-SYSTEM_PROMPT = f'You are an API security expert specialised in the OWASP API Security Top 10.\nEvaluate the following REST endpoint for vulnerabilities and assign ONE risk label.\n\nRisk levels:\nInformal - No security implications\nLow      - Minor vulnerability with limited impact\nMedium   - Significant vulnerability requiring attention\nHigh     - Critical vulnerability needing immediate remediation\n\nOWASP categories to consider:\n{chr(10).join(OWASP_TOP_10)}\n\nRequired analysis components:\n1. Risk assessment\n2. Brief explanation (max 3 sentences)\n3. Relevant OWASP category (exact name)\n4. Secure coding recommendation\n5. Concise reasoning steps\n\nAnswer ONLY in valid JSON:\n{{\n  "risk": "<Informal|Low|Medium|High>",\n  "explanation": "",\n  "owasp_category": "",\n  "recommendation": "",\n  "reasoning": ""\n}}\n'.strip()
-LIVE_BASE_URL: Optional[str] = None
-# Live probe timeout
-LIVE_TIMEOUT = 4
-# Thread pool size
-MAX_WORKERS = 5
-# Basic logger setup
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
-logger = logging.getLogger(__name__)
-# Regex to extract JSON blocks
-_JSON_RE = re.compile('```json\\s*({[\\s\\S]*?})\\s*```', re.IGNORECASE)
+"""
+# Using a local model on port 1123
+export LLM_PROVIDER=local
+export LLM_API_BASE=http://localhost
+export LLM_API_PORT=1123
+export LLM_MODEL=my-local-model
 
-# Extract JSON payload from text/code fence
-def extract_json_block(text: str) -> str:
-    m = _JSON_RE.search(text)
-    return m.group(1).strip() if m else text.strip()
+# Using a custom API on a specific port
+export LLM_PROVIDER=custom
+export LLM_API_BASE=http://api.mycompany.com
+export LLM_API_PORT=8080
+export LLM_MODEL=company-model
+export LLM_API_KEY=your_api_key
 
-# Optional live HTTP probe for endpoint
-def _live_probe(ep: Dict[str, str]) -> Dict[str, object]:
-    if LIVE_BASE_URL is None:
-        return {'text': 'no live probe'}
-    method = ep.get('method', 'GET').upper()
-    path = re.sub('\\{[^/]+\\}', '1', ep.get('path', '/'))
-    url = LIVE_BASE_URL.rstrip('/') + path
-    headers = {'Accept': 'application/json', 'User-Agent': 'apiscan-client', 'Content-Type': 'application/json'}
-    try:
-        resp = requests.request(method, url, timeout=LIVE_TIMEOUT, headers=headers, verify=False)
-        status = resp.status_code
-        size = len(resp.content)
-        body_text = resp.text[:200].replace('\n', ' ').replace('\r', '')
-        return {'text': f'{method} {status} ({size} B)\nRequest headers: {headers}\nResponse headers: {dict(resp.headers)}\nResponse body (truncated): {body_text}', 'request_headers': headers, 'response_headers': dict(resp.headers), 'response_body_snippet': body_text, 'response_body_full': resp.text}
-    except requests.RequestException as exc:
-        return {'text': f'{method} ERROR ({exc.__class__.__name__})', 'request_headers': headers, 'response_headers': {}, 'response_body_snippet': '', 'response_body_full': ''}
+# Using DeepSeek with a proxy on a custom port
+export LLM_PROVIDER=deepseek
+export LLM_API_BASE=https://proxy.example.com
+export LLM_API_PORT=8443
+export LLM_API_KEY=your_deepseek_api_key
+export LLM_MODEL=deepseek-chat
 
-# Build the user prompt for analysis
-def _build_prompt(ep: Dict[str, str], live: str) -> str:
-    return SYSTEM_PROMPT + f"\n\n### Endpoint\nMethod: {ep['method']}\nPath: {ep['path']}\nLive probe: {live}"
+# Using a local Ollama instance
+export LLM_PROVIDER=local
+export LLM_API_BASE=http://localhost
+export LLM_API_PORT=11434
+export LLM_MODEL=llama2
+"""
+# Environment
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai_compat").strip().lower()
+MODEL_NAME = os.getenv("LLM_MODEL", "gpt-4o-mini")
+API_KEY = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or os.getenv("AZURE_OPENAI_API_KEY") or os.getenv("DEEPSEEK_API_KEY") or os.getenv("MISTRAL_API_KEY")
+API_BASE = os.getenv("LLM_API_BASE", "").rstrip("/")
+API_PORT = os.getenv("LLM_API_PORT", "").strip()
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
+AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")
+VERIFY_SSL = os.getenv("LLM_VERIFY_SSL", "true").strip().lower() not in ("0", "false", "no")
+CONNECT_TIMEOUT = float(os.getenv("LLM_CONNECT_TIMEOUT", "10"))
+READ_TIMEOUT = float(os.getenv("LLM_READ_TIMEOUT", "60"))
+TIMEOUT = (CONNECT_TIMEOUT, READ_TIMEOUT)
+DEFAULT_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.0"))
+DEFAULT_TOP_P = float(os.getenv("LLM_TOP_P", "0.95"))
+DEFAULT_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "1024"))
+USER_AGENT = os.getenv("LLM_USER_AGENT", "apiscan-ai-client/1.0")
+#-------------------------------------------------------------
+# Providers: openai_compat, azure_openai, anthropic, ollama
+#----------------------------------------------------------------
+def _mask_headers(h: Dict[str, str]) -> Dict[str, str]:
+    def mask(v: str) -> str:
+        if not v:
+            return v
+        return (v[:6] + "") if len(v) > 6 else ""
+    out = {}
+    for k, v in h.items():
+        lk = k.lower()
+        if lk in ("authorization", "cookie", "set-cookie", "x-api-key"):
+            out[k] = mask(v)
+        else:
+            out[k] = v
+    return out
 
-# Result container for endpoint analysis
-@dataclass
-class EndpointAnalysis:
-    path: str
-    method: str
-    risk: str
-    explanation: str
-    owasp_category: str
-    recommendation: str
-    reasoning: str
-    request_headers: Optional[Dict[str, str]] = None
-    response_headers: Optional[Dict[str, str]] = None
-    response_body_snippet: Optional[str] = None
-    response_body_full: Optional[str] = None
-    false_positive_likelihood: Optional[str] = None
+def _headers_json(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    h = {"Content-Type": "application/json", "User-Agent": USER_AGENT}
+    if extra:
+        h.update(extra)
+    return h
 
-    @classmethod
-    def from_gpt(cls, ep: Dict[str, str], obj: Dict[str, Union[str, dict, list]]) -> 'EndpointAnalysis':
+def _requests_session() -> requests.Session:
+    s = requests.Session()
+    return s
 
-        def _to_str(v):
-            if isinstance(v, dict):
-                return v.get('level') or v.get('value') or json.dumps(v)
-            if isinstance(v, (list, tuple)):
-                return ', '.join(map(str, v))
-            return str(v) if v is not None else 'Unknown'
-        return cls(path=ep['path'], method=ep['method'], risk=_to_str(obj.get('risk')), explanation=_to_str(obj.get('explanation')), owasp_category=_to_str(obj.get('owasp_category')), recommendation=_to_str(obj.get('recommendation')), reasoning=_to_str(obj.get('reasoning')), request_headers=obj.get('request_headers'), response_headers=obj.get('response_headers'), response_body_snippet=obj.get('response_body_snippet'), response_body_full=obj.get('response_body_full'), false_positive_likelihood=obj.get('false_positive_likelihood'))
+def _normalize_openai_messages(messages: List[Dict[str, str]], system: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    return messages, system
 
-# Analyse one endpoint with streaming output
-def _analyse_one(self, ep: dict, base_url: str) -> Optional[EndpointAnalysis]:
-    try:
-        prompt = self._build_prompt(ep, base_url)
-        print(f"\n[SCAN] {ep['method']} {ep['path']}")
-        print('=' * 60)
-        collected_text = ''
-        with self.client.chat.completions.stream(model=self.model, messages=[{'role': 'system', 'content': 'You are an API security expert specialized in OWASP API Top 10 (2023).'}, {'role': 'user', 'content': prompt}], temperature=0.0, top_p=0.05, max_tokens=800) as stream:
-            for event in stream:
-                if event.type == 'message.delta' and event.delta.content:
-                    print(event.delta.content, end='', flush=True)
-                    collected_text += event.delta.content
-                elif event.type == 'message.completed':
-                    print('\n' + '-' * 60)
+def _normalize_anthropic_messages(messages: List[Dict[str, str]], system: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    norm = []
+    for m in messages:
+        role = m.get("role")
+        if role == "system":
+            continue
+        if role not in ("user", "assistant"):
+            role = "user" if role == "tool" else "user"
+        norm.append({"role": role, "content": m.get("content", "")})
+    return norm, system or ""
+
+def _is_ollama_base(url: str) -> bool:
+    return ":11434" in url or url.endswith(":11434")
+
+def _build_base_url() -> str:
+    if LLM_PROVIDER == "azure_openai":
+        return AZURE_OPENAI_ENDPOINT
+    if API_BASE:
+        if API_PORT and not API_BASE.endswith(f":{API_PORT}"):
+            return f"{API_BASE}:{API_PORT}"
+        return API_BASE
+    
+    if LLM_PROVIDER == "ollama":
+        return "http://localhost:11434"
+    if LLM_PROVIDER == "anthropic":
+        return "https://api.anthropic.com"
+    return "https://api.openai.com/v1"
+
+def _openai_compat_chat(messages: List[Dict[str, str]], system: Optional[str], model: str, temperature: float, top_p: float, max_tokens: int) -> str:
+    base = _build_base_url().rstrip("/")
+    url = urljoin(base + "/", "chat/completions")
+    payload = {"model": model, "messages": messages, "temperature": temperature, "top_p": top_p, "max_tokens": max_tokens}
+    headers = _headers_json({"Authorization": f"Bearer {API_KEY}"} if API_KEY else None)
+    with _requests_session() as s:
+        r = s.post(url, headers=headers, json=payload, timeout=TIMEOUT, verify=VERIFY_SSL)
+        r.raise_for_status()
+        data = r.json()
+    return data.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+
+def _azure_openai_chat(messages: List[Dict[str, str]], system: Optional[str], model: str, temperature: float, top_p: float, max_tokens: int) -> str:
+    if not AZURE_OPENAI_ENDPOINT:
+        raise RuntimeError("AZURE_OPENAI_ENDPOINT not set")
+    base = AZURE_OPENAI_ENDPOINT.rstrip("/")
+   
+    qs = urlencode({"api-version": AZURE_OPENAI_API_VERSION})
+    url = f"{base}/openai/deployments/{model}/chat/completions?{qs}"
+    payload = {"messages": messages, "temperature": temperature, "top_p": top_p, "max_tokens": max_tokens}
+    headers = _headers_json({"api-key": API_KEY} if API_KEY else None)
+    with _requests_session() as s:
+        r = s.post(url, headers=headers, json=payload, timeout=TIMEOUT, verify=VERIFY_SSL)
+        r.raise_for_status()
+        data = r.json()
+    return data.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+
+def _anthropic_chat(messages: List[Dict[str, str]], system: Optional[str], model: str, temperature: float, top_p: float, max_tokens: int) -> str:
+    base = _build_base_url().rstrip("/")
+    url = urljoin(base + "/", "v1/messages")
+    norm_msgs, sys_prompt = _normalize_anthropic_messages(messages, system)
+    headers = _headers_json({
+        "x-api-key": API_KEY or "",
+        "anthropic-version": "2023-06-01"
+    })
+    payload = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "system": sys_prompt or "",
+        "messages": norm_msgs
+    }
+    with _requests_session() as s:
+        r = s.post(url, headers=headers, json=payload, timeout=TIMEOUT, verify=VERIFY_SSL)
+        r.raise_for_status()
+        data = r.json()
+    content = data.get("content", [])
+    if content and isinstance(content, list):
+        for part in content:
+            if part.get("type") == "text" and "text" in part:
+                return part["text"]
+    return ""
+
+def _ollama_chat(messages: List[Dict[str, str]], system: Optional[str], model: str, temperature: float, top_p: float, max_tokens: int) -> str:
+    base = _build_base_url().rstrip("/")
+    url = urljoin(base + "/", "api/chat")
+    
+    payload = {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+        "options": {
+            "temperature": temperature
+        }
+    }
+    headers = _headers_json()
+    with _requests_session() as s:
+        r = s.post(url, headers=headers, json=payload, timeout=TIMEOUT, verify=VERIFY_SSL)
+        r.raise_for_status()
+        data = r.json()
+    msg = data.get("message", {}) or {}
+    return msg.get("content", "") or ""
+
+def _extract_json(text: str) -> Any:
+    if not text:
+        return None
+    t = text.strip()
+    if "```" in t:
+        parts = t.split("```")
+        
+        for segment in reversed(parts):
+            seg = segment.strip()
+            if seg.startswith("{") and seg.endswith("}"):
+                try:
+                    return json.loads(seg)
+                except Exception:
+                    pass
+            if seg.startswith("json"):
+                seg2 = seg[4:].strip()
+                if seg2.startswith("{") and seg2.endswith("}"):
+                    try:
+                        return json.loads(seg2)
+                    except Exception:
+                        pass
+    
+    if t.startswith("{") and t.endswith("}"):
         try:
-            analysis_json = json.loads(extract_json_block(collected_text))
-        except json.JSONDecodeError:
-            analysis_json = {'raw_text': collected_text.strip()}
-        return EndpointAnalysis(endpoint=ep, analysis=analysis_json, timestamp=datetime.utcnow().isoformat())
-    except Exception as e:
-        print(f'[ERROR] Streaming analysis failed: {e}')
-        return EndpointAnalysis(endpoint=ep, analysis={'error': str(e)}, timestamp=datetime.utcnow().isoformat())
+            return json.loads(t)
+        except Exception:
+            return None
+    
+    try:
+        start = t.index("{")
+        end = t.rindex("}") + 1
+        candidate = t[start:end]
+        return json.loads(candidate)
+    except Exception:
+        return None
 
-# Run analysis concurrently over endpoints
-def analyze_endpoints_with_gpt(endpoints: List[Dict[str, str]], *, live_base_url: Optional[str]=None, print_results: bool=True) -> List[EndpointAnalysis]:
-    global LIVE_BASE_URL
-    if live_base_url:
-        LIVE_BASE_URL = live_base_url.rstrip('/')
-    results: List[EndpointAnalysis] = []
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        futs = {pool.submit(_analyse_one, ep): ep for ep in endpoints}
-        for fut in as_completed(futs):
-            results.append(fut.result())
+def chat_json(messages: List[Dict[str, str]], system: Optional[str] = None, model: Optional[str] = None, temperature: Optional[float] = None, top_p: Optional[float] = None, max_tokens: Optional[int] = None) -> Any:
+    m = model or MODEL_NAME
+    temp = DEFAULT_TEMPERATURE if temperature is None else float(temperature)
+    tp = DEFAULT_TOP_P if top_p is None else float(top_p)
+    mt = DEFAULT_MAX_TOKENS if max_tokens is None else int(max_tokens)
+
+    if LLM_PROVIDER == "azure_openai":
+        text = _azure_openai_chat(messages, system, m, temp, tp, mt)
+    elif LLM_PROVIDER == "anthropic":
+        text = _anthropic_chat(messages, system, m, temp, tp, mt)
+    elif LLM_PROVIDER == "ollama":
+        text = _ollama_chat(messages, system, m, temp, tp, mt)
+    else:
+        text = _openai_compat_chat(messages, system, m, temp, tp, mt)
+
+    obj = _extract_json(text)
+    return obj if obj is not None else {"raw": text}
+
+def live_probe() -> Dict[str, Any]:
+    base = _build_base_url()
+    info = {"provider": LLM_PROVIDER, "base_url": base, "model": MODEL_NAME, "verify_ssl": VERIFY_SSL, "timeout": TIMEOUT}
+    try:
+        if LLM_PROVIDER == "azure_openai":
+            qs = urlencode({"api-version": AZURE_OPENAI_API_VERSION})
+            url = f"{base}/openai/deployments/{MODEL_NAME}/chat/completions?{qs}"
+            headers = _headers_json({"api-key": API_KEY or ""})
+            body = {"messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}
+        elif LLM_PROVIDER == "anthropic":
+            url = urljoin(base + "/", "v1/messages")
+            headers = _headers_json({"x-api-key": API_KEY or "", "anthropic-version": "2023-06-01"})
+            body = {"model": MODEL_NAME, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}
+        elif LLM_PROVIDER == "ollama":
+            url = urljoin(base.rstrip("/") + "/", "api/chat")
+            headers = _headers_json()
+            body = {"model": MODEL_NAME, "messages": [{"role": "user", "content": "ping"}], "stream": False}
+        else:
+            url = urljoin(base.rstrip("/") + "/", "chat/completions")
+            headers = _headers_json({"Authorization": f"Bearer {API_KEY}"} if API_KEY else None)
+            body = {"model": MODEL_NAME, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}
+
+        with _requests_session() as s:
+            r = s.post(url, headers=headers, json=body, timeout=TIMEOUT, verify=VERIFY_SSL)
+            ok = r.ok
+            data = {}
+            try:
+                data = r.json()
+            except Exception:
+                data = {"text": r.text[:500]}
+            return {
+                "ok": ok,
+                "status_code": r.status_code,
+                "url": url,
+                "request_headers": _mask_headers(headers),
+                "response_headers": _mask_headers(dict(r.headers)),
+                "data": data
+            }
+    except Exception as ex:
+        return {"ok": False, "error": str(ex), "info": info}
+
+def analyze_endpoints_with_llm(endpoints, live_base_url: str = "", print_results: bool = False, model: str = None):
+    """
+    Analyze a list of endpoints using the configured LLM.
+    endpoints: iterable of {"path": str, "method": str}
+    Returns: list of {"path","method","analysis": <json or {"raw": text}>} or {"error": "..."}.
+    """
+    results = []
+    system_prompt = (
+        "You are an API security expert specialised in the OWASP API Security Top 10. "
+        "Return only JSON with keys: risk_level (Informal|Low|Medium|High), explanation, owasp, secure_coding."
+    )
+    for ep in endpoints:
+        path = ep.get("path", "")
+        method = ep.get("method", "").upper()
+        user_msg = (
+            f"Evaluate endpoint for OWASP API Top 10 risks. "
+            f"Base URL: {live_base_url} | Method: {method} | Path: {path}. "
+            f"Return a single concise JSON object as specified."
+        )
+        msgs = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_msg},
+        ]
+        try:
+            obj = chat_json(msgs, model=model)  
             if print_results:
-                logger.info('[%-4s] %-55s => %-8s | %s', results[-1].method, results[-1].path, results[-1].risk, results[-1].owasp_category)
+                print(f"{method} {path} -> {obj}")
+            results.append({"path": path, "method": method, "analysis": obj})
+        except Exception as ex:
+            results.append({"path": path, "method": method, "error": str(ex)})
     return results
 
-# Save results to JSON file
-def save_ai_summary(results: List[EndpointAnalysis], file_path: str | Path):
-    with open(file_path, 'w', encoding='utf-8') as fp:
-        json.dump([asdict(r) for r in results], fp, indent=2)
-    logger.info('Saved AI summary %s', file_path)
+
+def save_ai_summary(results, out_path):
+    """Write results to JSON file and return the file path."""
+    import json
+    from pathlib import Path
+    p = Path(out_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+    return str(p)
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--system", default="", help="System prompt")
+    parser.add_argument("--message", default="Return a JSON object: {\"hello\":\"world\"}", help="User message")
+    parser.add_argument("--model", default=None)
+    args = parser.parse_args()
+    msgs = []
+    if args.system:
+        msgs.append({"role": "system", "content": args.system})
+    msgs.append({"role": "user", "content": args.message})
+    result = chat_json(msgs, system=args.system, model=args.model)
+    print(json.dumps(result, ensure_ascii=False, indent=2))

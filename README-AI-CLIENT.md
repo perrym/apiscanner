@@ -14,10 +14,10 @@ Supports:
 
 ## Features
 
-- 🔗 Works with multiple LLM providers using the same interface  
-- ⚡ Lightweight — no heavy SDKs, only `requests`  
-- 📦 JSON in → JSON out (safe for automation pipelines)  
-- 🛡️ Secrets masked in logs, TLS and timeouts configurable  
+- Works with multiple LLM providers using the same interface  
+- Lightweight — no heavy SDKs, only `requests`  
+- JSON in → JSON out (safe for automation pipelines)  
+- Secrets masked in logs, TLS and timeouts configurable  
 
 ---
 

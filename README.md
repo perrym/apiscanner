@@ -157,3 +157,4 @@ python swagger_generator.py \
 
 -  [pamsniffer@gmail.com](mailto:pamsniffer@gmail.com)
 -  GitHub: <https://github.com/perrym/apiscanner>
+-  Medium> <https://medium.com/@PerryPM/apiscan-a-practical-approach-to-api-security-testing-by-perry-mertens-96b5e676c071>

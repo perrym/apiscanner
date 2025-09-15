@@ -66,6 +66,24 @@ manual_file_map = {
 logger = logging.getLogger("apiscan")
 MAX_THREADS = 20
 
+def extract_endpoints_from_paths(spec):
+    endpoints = []
+    paths = (spec or {}).get("paths", {})
+    for path, ops in paths.items():
+        if not isinstance(ops, dict):
+            continue
+        for method, op in ops.items():
+            if method.upper() in ("GET","POST","PUT","PATCH","DELETE","OPTIONS","HEAD"):
+                endpoints.append({
+                    "path": path,
+                    "method": method.upper(),
+                    "operationId": op.get("operationId") or f"{method}_{path.strip('/').replace('/','_')}",
+                    "tags": op.get("tags", []),
+                    "raw": op
+                })
+    return endpoints
+
+
 
 def styled_print(message: str, status: str = "info") -> None:
     symbols = {"info": "Info:", "ok": "OK:", "warn": "WARNING:", "fail": "FAIL:", "run": "->", "done": "Done"}
@@ -206,7 +224,10 @@ def main() -> None:
 
         bola = BOLAAuditor(sess)      # geen spec in constructor
         bola.spec = spec              # spec hier aan de auditor hangen
-        endpoints = bola.get_object_endpoints(spec)   # <-- GEEF spec MEE
+        endpoints = bola.get_object_endpoints(spec)
+        if not endpoints:
+            print("[debug] No endpoints found by discovery — falling back to paths")
+            endpoints = extract_endpoints_from_paths(spec)
 
         ai_endpoints = [
             {"path": ep["path"], "method": ep["method"]}

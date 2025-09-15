@@ -104,7 +104,7 @@ class SafeConsumptionAuditor:
             self.INJECTION_PAYLOADS = payloads_data['injection_payloads']
             self.CRLF_PAYLOADS = payloads_data['crlf_payloads']
             self.HPP_PARAMS = payloads_data['hpp_params']
-            #self.SSRF_PAYLOADS = payloads_data[''] #need to change error handeling
+            self.SSRF_PAYLOADS = payloads_data['ssrf_payloads']
             self.NOSQL_ERROR_KEYWORDS = payloads_data['nosql_error_keywords']
             self.SQL_ERROR_KEYWORDS = payloads_data['sql_error_keywords']
             self.SQL_ERROR_REGEX = payloads_data['sql_error_regex']
@@ -694,48 +694,11 @@ class SafeConsumptionAuditor:
             self._log('CRLF test setup failed', endpoint, 'Medium', extra={'error': str(e)})
 
     def _test_ssrf(self, endpoint: str) -> None:
-        if stop_requested.is_set():
-            return
-        ssrf_payloads = ['http://169.254.169.254/latest/meta-data/', 'http://metadata.google.internal/computeMetadata/', 'http://127.0.0.1:8080/internal']
-        if self.canary_domain:
-            rid = self.generate_random_id()
-            ssrf_payloads.append(f'http://{rid}.{self.canary_domain}')
-        vulnerable_params = ['url', 'image', 'path', 'request', 'endpoint', 'redirect']
-        try:
-            domain = urlparse.urlparse(endpoint).netloc or ''
-            for param in vulnerable_params:
-                for payload in ssrf_payloads:
-                    if stop_requested.is_set():
-                        return
-                    try:
-                        self._throttle(domain)
-                        get_response = self.session.get(endpoint, params={param: payload}, timeout=(3, max(self.timeout, 10)), allow_redirects=False)
-                        self._throttle(domain)
-                        post_response = self.session.post(endpoint, data={param: payload}, timeout=(3, max(self.timeout, 10)), allow_redirects=False)
-                        if self._is_ssrf_successful(get_response, payload):
-                            self._log('Possible SSRF vulnerability (GET)', get_response.url, 'High', payload=payload, response=get_response, extra={'parameter': param})
-                        if self._is_ssrf_successful(post_response, payload):
-                            self._log('Possible SSRF vulnerability (POST)', post_response.url, 'High', payload=payload, response=post_response, extra={'parameter': param})
-                    except Exception as e:
-                        self._log('SSRF test failed', endpoint, 'Info', extra={'error': str(e), 'param': param, 'payload': payload})
-        except Exception as e:
-            self._log('SSRF test setup failed', endpoint, 'Medium', extra={'error': str(e)})
+        return
 
     def _is_ssrf_successful(self, response: requests.Response, payload: str) -> bool:
-        content = (response.text or '').lower()
-        cloud_indicators = ['/latest/meta-data', '169.254.169.254', 'instance-id', 'ami-id', 'availability-zone', 'computemetadata', 'metadata.google.internal', 'project-id']
-        if any((ind in content for ind in cloud_indicators)):
-            return True
-        if self.canary_domain:
-            try:
-                host = (urlparse.urlparse(payload).hostname or '').lower()
-            except Exception:
-                host = ''
-            if host and host.endswith(self.canary_domain.lower()):
-                if host in content or any((host in str(v).lower() for v in response.headers.values())):
-                    return True
-        return False
-
+        return
+        
     @staticmethod
     def generate_random_id(length: int=8) -> str:
         return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length))
@@ -875,7 +838,7 @@ class SafeConsumptionAuditor:
                 for ep in reachable_endpoints:
                     if stop_requested.is_set():
                         break
-                    test_fns = [partial(self._test_basic_security, ep), partial(self._test_crlf_injection, ep), partial(self._test_hpp, ep), partial(self._test_sensitive_data_exposure, ep), partial(self._test_graphql_introspection, ep), partial(self._test_ssrf, ep), partial(self._test_header_manipulation, ep)]
+                    test_fns = [partial(self._test_basic_security, ep), partial(self._test_crlf_injection, ep), partial(self._test_hpp, ep), partial(self._test_sensitive_data_exposure, ep), partial(self._test_graphql_introspection, ep), partial(self._test_header_manipulation, ep)]
                     for t in self.INJECTION_PAYLOADS:
                         test_fns.append(partial(self._run_injection_tests_parallel, ep, t))
                     for fn in test_fns:

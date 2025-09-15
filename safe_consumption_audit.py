@@ -104,7 +104,7 @@ class SafeConsumptionAuditor:
             self.INJECTION_PAYLOADS = payloads_data['injection_payloads']
             self.CRLF_PAYLOADS = payloads_data['crlf_payloads']
             self.HPP_PARAMS = payloads_data['hpp_params']
-            self.SSRF_PAYLOADS = payloads_data['ssrf_payloads']
+            #self.SSRF_PAYLOADS = payloads_data[''] #need to change error handeling
             self.NOSQL_ERROR_KEYWORDS = payloads_data['nosql_error_keywords']
             self.SQL_ERROR_KEYWORDS = payloads_data['sql_error_keywords']
             self.SQL_ERROR_REGEX = payloads_data['sql_error_regex']

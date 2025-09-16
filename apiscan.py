@@ -168,7 +168,8 @@ def main() -> None:
     parser.add_argument("--debug", action="store_true", help="Enable debug output (verbose logging)")
     parser.add_argument("--api11", action="store_true", help="Run AI-assisted OWASP Top 10 analysis")
     parser.add_argument("--dummy", action="store_true", help="Use dummy data for request bodies and parameters")
-    parser.add_argument("--export_vars", metavar="PATH", help="Export variables template (YAML if .yml/.yaml else JSON) and exit")
+    parser.add_argument("--export_vars", metavar="PATH", help="Export variables template YAML if .yml/.yaml else JSON")
+    parser.add_argument("--proxy", help="Optional proxy URL, e.g. http://127.0.0.1:8080")
 
 
     for i in range(1, 11):
@@ -201,6 +202,19 @@ def main() -> None:
     logger.propagate = False
 
     sess = configure_authentication(args)
+    # --- Optional proxy wiring (applies to all modules using this session) ---
+    if getattr(args, 'proxy', None):
+        sess.proxies.update({
+            "http": args.proxy,
+            "https": args.proxy
+        })
+        banner = f"PROXY MODE ENABLED -> {args.proxy}"
+        logger.info(banner)
+        try:
+            print(Fore.MAGENTA + banner + Style.RESET_ALL)
+        except Exception:
+            print(banner)
+
     adapter = HTTPAdapter(pool_connections=args.threads * 4, pool_maxsize=args.threads * 4, max_retries=3)
     sess.mount("http://", adapter)
     sess.mount("https://", adapter)
@@ -222,8 +236,8 @@ def main() -> None:
         with swagger_path.open("r", encoding="utf-8") as f:
             spec = json.load(f)
 
-        bola = BOLAAuditor(sess)      # geen spec in constructor
-        bola.spec = spec              # spec hier aan de auditor hangen
+        bola = BOLAAuditor(sess)      
+        bola.spec = spec              
         endpoints = bola.get_object_endpoints(spec)
         if not endpoints:
             print("[debug] No endpoints found by discovery — falling back to paths")
@@ -239,11 +253,11 @@ def main() -> None:
 
     except (FileNotFoundError, ValueError) as e:
         logger.error(f"Swagger processing failed: {e}")
-        styled_print(str(e), "fail")  # geen extra "FAIL:" prefix hier
+        styled_print(str(e), "fail") 
         sys.exit(1)
     except Exception as e:
         logger.error(f"Unexpected error during Swagger parsing: {e}")
-        styled_print("Unexpected error during Swagger parsing", "fail")  # voorkom "FAIL: FAIL:"
+        styled_print("Unexpected error during Swagger parsing", "fail")  
         sys.exit(1)
 
 
@@ -276,7 +290,7 @@ def main() -> None:
         bola.base_url = args.url
         bola.spec = spec
 
-        endpoints = bola.get_object_endpoints(spec) or []   # <-- GEEF spec MEE
+        endpoints = bola.get_object_endpoints(spec) or []  
 
         max_workers = max(1, min(args.threads, MAX_THREADS))
         if max_workers == 1:
@@ -516,7 +530,7 @@ def main() -> None:
     print(f" {'TOTAL VULNERABILITIES':<22}: {total_color}{total_vulnerabilities:>3}{Style.RESET_ALL}")
     print("="*50)
     
-    # Add risk assessment
+    
     if total_vulnerabilities == 0:
         risk_level = "LOW RISK"
         risk_color = Fore.GREEN

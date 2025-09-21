@@ -1,8 +1,11 @@
 # APISCAN  OWASP API Security Scanner by Perry Mertens pamsniffer@gmail.com 2025 (c)
 <meta content="VvYq2k5BFp5dpIL6JpQhoe90sWEXZTEBbaynlEKCWRE" name="google-site-verification">
+
 **Version:** 1.1 (Release)  
 **Author:** Perry Mertens ([pamsniffer@gmail.com](mailto:pamsniffer@gmail.com))  
 **License:** MIT
+
+
 
 [![GitHub](https://img.shields.io/badge/GitHub-perrym%2Fapiscanner-0ea5e9?logo=github)](https://github.com/perrym/apiscanner)
 [![Medium](https://img.shields.io/badge/Medium-Article-black?logo=medium)](https://medium.com/@PerryPM/apiscan-a-practical-approach-to-api-security-testing-by-perry-mertens-96b5e676c071)

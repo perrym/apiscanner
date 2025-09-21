@@ -3,8 +3,7 @@
 # Licensed under the MIT License             #
 # Author: Perry Mertens pamsniffer@gmail.com #
 ##############################################
-""""
-APISCAN is a private and proprietary API security tool, developed independently for internal use and research purposes.
+"""APISCAN is a private and proprietary API security tool, developed independently for internal use and research purposes.
 It supports OWASP API Security Top 10 (2023) testing, OpenAPI-based analysis, active scanning, and multi-format reporting.
 Redistribution is not permitted without explicit permission.
 Important: Testing with APISCAN is only permitted on systems and APIs for which you have explicit authorization. 
@@ -113,19 +112,17 @@ def save_html_report(issues, risk_key: str, url: str, output_dir: Path) -> None:
 def check_api_reachable(url: str, session: requests.Session, retries: int = 3, delay: int = 3) -> None:
     for attempt in range(1, retries + 1):
         try:
-            print(f"APISCAN by Perry Mertens pamsniffer@gmail.com(2025)\nChecking connection to {url} (attempt {attempt}/{retries})...")
-            resp = session.get(url, timeout=5)
+            print("APISCAN by Perry Mertens pamsniffer@gmail.com(2025)")
+            print(f"Checking connection to {url} (attempt {attempt}/{retries})...")
+            resp = session.get(url, timeout=5, verify=getattr(session, 'verify', True))
             print(f"Response status code: {resp.status_code}")
             if not resp.content:
                 print("Empty response body detected.")
-            if resp.status_code == 200 and any(w in resp.text.lower() for w in ["unauthorized", "access denied", "login", "authentication required"]):
-                print("Received 200 OK but access denied content detected.")
-                sys.exit(2)
-            if resp.status_code in (401, 403):
-                print(f"Authentication failed with status {resp.status_code}.")
-                sys.exit(2)
             if resp.status_code < 400:
                 print(f"Connection successful to {url} (status: {resp.status_code})")
+                return
+            if resp.status_code in (401, 403):
+                print(f"Authentication required or forbidden (status {resp.status_code}). Continuing.")
                 return
             print(f"Unexpected response from server: {resp.status_code}")
             return
@@ -139,9 +136,383 @@ def check_api_reachable(url: str, session: requests.Session, retries: int = 3, d
                 sys.exit(1)
 
 
+
+# ---- URL sanitizer & ID mapping ----
+import re as _re_sub
+
+_ID_MAP = {}
+
+def load_id_map(path: str | None):
+    global _ID_MAP
+    _ID_MAP = {}
+    if not path:
+        return
+    try:
+        import json as _json
+        from pathlib import Path as _Path
+        _ID_MAP = _json.loads(_Path(path).read_text(encoding="utf-8"))
+        styled_print(f"Loaded IDs map with {len(_ID_MAP)} entries", "info")
+    except Exception as e:
+        styled_print(f"Could not read ids-file: {e}", "warn")
+        _ID_MAP = {}
+
+def _id_lookup(name: str) -> str | None:
+    if not name:
+        return None
+    key = name.strip()
+    return str(_ID_MAP.get(key)) if key in _ID_MAP else None
+
+import re
+from typing import Optional, List
+from urllib.parse import urlsplit, urlunsplit
+
+def _apply_rewrites(full_url, rewrites):
+    if not rewrites:
+        return full_url
+    original = full_url
+    for rule in rewrites:
+        if "=>" not in rule: 
+            continue
+        pat, rep = [x.strip() for x in rule.split("=>", 1)]
+        try:
+            new_url = re.sub(pat, rep, full_url)
+            if new_url != full_url:
+                print(f"[rewrite] {pat!r} => {rep!r} :: {full_url} -> {new_url}")
+            full_url = new_url
+        except re.error as e:
+            print(f"[rewrite] invalid regex {pat!r}: {e}")
+    return full_url
+
+
+def _normalize_path_generic(path: str) -> str:
+    if not path:
+        return "/"
+    path = re.sub(r'//+', '/', path)
+    path = re.sub(r'/v(\d+)(?=/|$)(?!\.)', r'/v\1.00', path)
+    prev = None
+    while path != prev:
+        prev = path
+        # /A/A -> /A
+        path = re.sub(r'/([^/]+)/\1(?=/|$)', r'/\1', path)
+        # /A/B/A -> /A/B
+        path = re.sub(r'/([^/]+)/([^/]+)/\1(?=/|$)', r'/\1/\2', path)
+
+    # 4) Trailing slash weg (behalve root)
+    if len(path) > 1 and path.endswith('/'):
+        path = path[:-1]
+
+    return path or "/"
+
+# ------------     Geneeric URL-normalisatie + and optional  rewrites -----------
+#_sanitize_url: normalizes the path (collapse double slashes, convert /vN/vN.00,
+# fold repeated segments) and then applies your --rewrite rules.
+def _sanitize_url(url: str, rewrites: list[str] | None = None) -> str:
+    if not isinstance(url, str) or not url:
+        return url
+    parts = urlsplit(url)
+    path  = _normalize_path_generic(parts.path or "/")
+    out   = urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
+    out = _apply_rewrites(out, rewrites)
+    return out
+
+
+# _sanitize_url2: same behavior, but with disable=True it skips normalization and only applies your --rewrite rules
+def _sanitize_url2(url: str, rewrites: list[str] | None = None, disable: bool = False) -> str:
+    if not isinstance(url, str) or not url:
+        return url
+    if disable:
+        return _apply_rewrites(url, rewrites)
+    parts = urlsplit(url)
+    path  = _normalize_path_generic(parts.path or "/")
+    out   = urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
+    out   = _apply_rewrites(out, rewrites)
+    return out
+
+
+
+# ---- Generic header overrides helper ----
+def _merge_header_overrides(args) -> dict:
+    """
+    Build case-insensitive header overrides map:
+      lower_name -> (Original-Case, value)
+    Sources:
+      --flow token + --token -> Authorization: Bearer <token>
+      --apikey + --apikey-header -> header: value
+      --extra-header "Name: value" (repeatable)
+      --headers-file JSON { "Header-Name": "value" }
+    """
+    overrides = {}
+    def put(name, value):
+        if not name or value is None:
+            return
+        overrides[str(name).lower()] = (str(name), str(value))
+ 
+    if str(getattr(args, "flow", "")).lower() == "token":
+        tok = getattr(args, "token", None)
+        if tok:
+            put("Authorization", f"Bearer {tok}")
+
+   
+    if getattr(args, "apikey", None) and getattr(args, "apikey_header", None):
+        put(getattr(args, "apikey_header"), getattr(args, "apikey"))
+
+    # ------------- Extra headers ----------------
+    for raw in (getattr(args, "extra_header", None) or []):
+        if not raw or ":" not in raw:
+            continue
+        name, val = raw.split(":", 1)
+        put(name.strip(), val.strip())
+
+    hf = getattr(args, "headers_file", None)
+    if hf:
+        try:
+            with open(hf, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                for k,v in data.items():
+                    put(k, v)
+        except Exception:
+            pass
+
+    return overrides
+
+# ---- Verify helpers ----
+def _parse_success_codes(spec_str: str):
+    """
+    Parse '200-299,302,307-308' into a matcher for success codes.
+    Returns a function ok(code)->bool.
+    """
+    parts = [p.strip() for p in (spec_str or "").split(",") if p.strip()]
+    ranges = []
+    singles = set()
+    for p in parts:
+        if "-" in p:
+            a,b = p.split("-",1)
+            try:
+                a = int(a); b = int(b)
+                if a <= b:
+                    ranges.append((a,b))
+            except Exception:
+                pass
+        else:
+            try:
+                singles.add(int(p))
+            except Exception:
+                pass
+    def ok(code: int) -> bool:
+        if code in singles: return True
+        for a,b in ranges:
+            if a <= code <= b: return True
+        return False
+    return ok
+
+def verify_plan(args, session, spec: dict, base_url: str, csv_path: str = 'apiscan-verify.csv', rewrites=None, disable_sanitize: bool = False):
+
+    if rewrites is None:
+        rewrites = []
+    import csv, time, json
+    ok_code = _parse_success_codes(getattr(args, 'success_codes', '200-299'))
+    paths = (spec or {}).get('paths', {}) or {}
+    results = []
+    total = 0; oks = 0; fails = 0
+    for pth, item in paths.items():
+        if not isinstance(item, dict): continue
+        for m in ('GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS'):
+            op = item.get(m.lower())
+            if not isinstance(op, dict): continue
+            url = (base_url.rstrip('/') + '/' + pth.lstrip('/'))
+            try:
+                url = _plan_fill_path_params(url)
+            except Exception:
+                pass
+            url = _sanitize_url2(url, rewrites, disable=disable_sanitize)
+
+            ct, body, as_json = (None, None, False)
+            if m in ('POST','PUT','PATCH'):
+                try:
+                    ct, body, as_json = _plan_body_from_requestbody(op)
+                except Exception:
+                    pass
+                if ct and 'json' in ct:
+                    ct = 'application/json; charset=UTF-8'
+
+            headers = {}
+            if ct:
+                headers['Content-Type'] = ct
+            overrides = _merge_header_overrides(args)
+            for _, (orig, val) in overrides.items():
+                headers[orig] = val
+           
+            for p in op.get('parameters', []) or []:
+                try:
+                    if p.get('in') != 'header' or not p.get('name'):
+                        continue
+                    name = str(p['name'])
+                    lname = name.lower()
+                    if lname == 'content-length':
+                        continue
+                    if name in headers or lname in {k.lower() for k in headers.keys()}:
+                        continue
+                    if 'example' in p and p['example'] not in (None, ''):
+                        headers[name] = str(p['example'])
+                        continue
+                    schema = p.get('schema') or {}
+                    if 'example' in schema and schema['example'] not in (None, ''):
+                        headers[name] = str(schema['example']); continue
+                    if 'default' in schema and schema['default'] not in (None, ''):
+                        headers[name] = str(schema['default']); continue
+                except Exception:
+                    pass
+
+            t0 = time.time()
+            try:
+                if m in ('POST','PUT','PATCH'):
+                    if ct and 'json' in ct and as_json and isinstance(body, (dict, list)):
+                        r = session.request(m, url, headers=headers, json=body, timeout=getattr(args,'timeout',10), verify=not getattr(args,'insecure',False))
+                    elif body is not None:
+                        r = session.request(m, url, headers=headers, data=body, timeout=getattr(args,'timeout',10), verify=not getattr(args,'insecure',False))
+                    else:
+                        r = session.request(m, url, headers=headers, timeout=getattr(args,'timeout',10), verify=not getattr(args,'insecure',False))
+                else:
+                    r = session.request(m, url, headers=headers, timeout=getattr(args,'timeout',10), verify=not getattr(args,'insecure',False))
+                status = r.status_code
+            except Exception as e:
+                status = 0
+            ms = int((time.time()-t0)*1000)
+            ok = ok_code(status)
+            total += 1; oks += 1 if ok else 0; fails += 1 if not ok else 0
+            print(f"[VERIFY] {m} {url} -> {status} ({ms} ms){' OK' if ok else ' FAIL'}")
+            results.append([m, url, status, ms, 'OK' if ok else 'FAIL'])
+
+    try:
+        with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+            w = csv.writer(f); w.writerow(['method','url','status','ms','result'])
+            w.writerows(results)
+        print(f"[VERIFY] written: {csv_path}  OK={oks} FAIL={fails} TOTAL={total}")
+    except Exception as e:
+        print(f"[VERIFY] CSV write failed: {e}")
+    return oks, fails, total
+
+
+# ---- URL sanitizer & ID mapping ----
+import re as _re_sub
+
+_ID_MAP = {}
+
+def load_id_map(path: str | None):
+    global _ID_MAP
+    _ID_MAP = {}
+    if not path:
+        return
+    try:
+        import json as _json
+        from pathlib import Path as _Path
+        _ID_MAP = _json.loads(_Path(path).read_text(encoding="utf-8"))
+        styled_print(f"Loaded IDs map with {len(_ID_MAP)} entries", "info")
+    except Exception as e:
+        styled_print(f"Could not read ids-file: {e}", "warn")
+        _ID_MAP = {}
+
+def _id_lookup(name: str) -> str | None:
+    if not name:
+        return None
+    key = name.strip()
+    return str(_ID_MAP.get(key)) if key in _ID_MAP else None
+
+def _sanitize_url(url: str, rewrites: list[str] | None = None) -> str:
+    return _sanitize_url2(url, rewrites, disable=False)
+
+# ---- Planning helpers: build full dry-run plan over all endpoints ----
+import json as _json
+
+def _plan_sample_for(name: str) -> str:
+    v = _id_lookup(name)
+    if v is not None:
+        return v
+    n = (name or '').lower()
+    if 'uuid' in n or 'guid' in n:
+        return '00000000-0000-4000-8000-000000000000'
+    if n.endswith('id') or 'id' in n or any(k in n for k in ['number','no','seq','version']):
+        return '1'
+    if 'code' in n:
+        return 'C123'
+    if 'email' in n:
+        return 'user@example.com'
+    if 'date' in n:
+        return '2025-01-01'
+    return 'sample' 
+
+def _plan_fill_path_params(url: str) -> str:
+    import re as _re
+    return _re.sub(r'{([^}]+)}', lambda m: _plan_sample_for(m.group(1)), url)
+
+def _plan_build_example_from_schema(schema: dict):
+    if not isinstance(schema, dict): return {}
+    t = schema.get('type')
+    if t == 'object' or 'properties' in schema:
+        return {k: _plan_build_example_from_schema(v) for k, v in (schema.get('properties') or {}).items()}
+    if t == 'array': return [_plan_build_example_from_schema(schema.get('items', {}) or {})]
+    if t == 'integer': return 1
+    if t == 'number':  return 1
+    if t == 'boolean': return False
+    if t == 'string':  return 'string'
+    return {}
+
+def _plan_body_from_requestbody(op: dict):
+    rb = (op or {}).get('requestBody') or {}
+    content = rb.get('content') or {}
+    mt = 'application/json' if 'application/json' in content else (next(iter(content.keys()), None))
+    if not mt: return None, None, False
+    block = content.get(mt) or {}
+    ex = block.get('example')
+    if ex is None and isinstance(block.get('examples'), dict):
+        first = next(iter(block['examples'].values()), {})
+        ex = first.get('value')
+    if ex is None and 'schema' in block:
+        ex = _plan_build_example_from_schema(block['schema'])
+    as_json = ('json' in mt) and isinstance(ex, (dict, list))
+    return mt, ex, as_json
+
+def plan_requests(spec, base_url, csv_path='apiscan-plan.csv', rewrites=None, disable_sanitize: bool = False):
+    if rewrites is None:
+        rewrites = []
+    import csv as _csv
+    paths = (spec or {}).get('paths', {}) or {}
+    rows = []
+    count = 0
+    for pth, item in paths.items():
+        if not isinstance(item, dict): continue
+        for m in ('GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS'):
+            op = item.get(m.lower())
+            if not isinstance(op, dict): continue
+            url = (base_url.rstrip('/') + '/' + pth.lstrip('/'))
+            url = _plan_fill_path_params(url)
+            url = _sanitize_url2(url, rewrites, disable=disable_sanitize)
+            ct, body, as_json = (None, None, False)
+            if m in ('POST','PUT','PATCH'):
+                ct, body, as_json = _plan_body_from_requestbody(op)
+                if ct and 'json' in ct:
+                    ct = 'application/json; charset=UTF-8'
+            blen = (len(_json.dumps(body)) if isinstance(body,(dict,list)) else len(body or '')) if body is not None else 0
+            print(f'[PLAN] {m} {url} ct={ct} len={blen} json={as_json}')
+            rows.append([m, url, ct or '', blen, 'json' if as_json else 'raw'])
+            count += 1
+    try:
+        with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+            w = _csv.writer(f); w.writerow(['method','url','content_type','body_len','mode'])
+            w.writerows(rows)
+        print(f'[PLAN] written: {csv_path} ({count} requests)')
+    except Exception as e:
+        print(f'[PLAN] CSV write failed: {e}')
+    return count
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=f"APISCAN {__version__} - API Security Scanner")
     parser.add_argument("--url", required=True, help="Base URL of the API to scan")
+    parser.add_argument('--plan-only', action='store_true', help='Build all requests and write apiscan-plan.csv, do not send')
+    parser.add_argument('--plan-then-scan', action='store_true', help='First build full plan (CSV), then perform the scan')
+    parser.add_argument('--verify-plan', action='store_true', help='After planning, actually send each planned request and expect success')
+    parser.add_argument('--success-codes', default='200-299', help='Comma list of codes or ranges, e.g., 200-299,302')
     parser.add_argument("--swagger", required=True, help="Path to Swagger/OpenAPI JSON file")
     parser.add_argument("--flow",
         choices=["none","token","client","basic","ntlm","auth"],
@@ -170,12 +541,16 @@ def main() -> None:
     parser.add_argument("--dummy", action="store_true", help="Use dummy data for request bodies and parameters")
     parser.add_argument("--export_vars", metavar="PATH", help="Export variables template YAML if .yml/.yaml else JSON")
     parser.add_argument("--proxy", help="Optional proxy URL, e.g. http://127.0.0.1:8080")
+    parser.add_argument("--ids-file", help="JSON file mapping path parameter names to concrete values")
+    parser.add_argument("--rewrite", action="append", default=[], help="Regex=>replacement rewrite applied to each URL (can be repeated)")
+    parser.add_argument("--no-sanitize", action="store_true", help="Disable built-in URL normalization; only apply explicit --rewrite rules")
 
 
     for i in range(1, 11):
         parser.add_argument(f"--api{i}", action="store_true", help=f"Run only API{i} audit")
 
     args = parser.parse_args()
+    load_id_map(getattr(args, 'ids_file', None))
 
     builtins.debug_mode = args.debug
     if args.debug:
@@ -204,11 +579,12 @@ def main() -> None:
     sess = configure_authentication(args)
     # --- Optional proxy wiring (applies to all modules using this session) ---
     if getattr(args, 'proxy', None):
+        pr = args.proxy if "://" in args.proxy else f"http://{args.proxy}"
         sess.proxies.update({
-            "http": args.proxy,
-            "https": args.proxy
+            "http": pr,
+            "https": pr
         })
-        banner = f"PROXY MODE ENABLED -> {args.proxy}"
+        banner = f"PROXY MODE ENABLED -> {pr}"
         logger.info(banner)
         try:
             print(Fore.MAGENTA + banner + Style.RESET_ALL)
@@ -240,7 +616,7 @@ def main() -> None:
         bola.spec = spec              
         endpoints = bola.get_object_endpoints(spec)
         if not endpoints:
-            print("[debug] No endpoints found by discovery — falling back to paths")
+            print("[debug] No endpoints found by discovery  falling back to paths")
             endpoints = extract_endpoints_from_paths(spec)
 
         ai_endpoints = [
@@ -250,7 +626,6 @@ def main() -> None:
 
         logger.debug(f"Swagger loaded - {len(endpoints)} endpoints")
         styled_print(f"Swagger loaded - {len(endpoints)} endpoints found", "ok")
-
     except (FileNotFoundError, ValueError) as e:
         logger.error(f"Swagger processing failed: {e}")
         styled_print(str(e), "fail") 
@@ -259,6 +634,20 @@ def main() -> None:
         logger.error(f"Unexpected error during Swagger parsing: {e}")
         styled_print("Unexpected error during Swagger parsing", "fail")  
         sys.exit(1)
+    # ---- Full planning phase (dry run over all endpoints) ----
+    base = args.url
+    if getattr(args, 'plan_only', False) or getattr(args, 'plan_then_scan', False):
+        plan_requests(spec, base, csv_path='apiscan-plan.csv', rewrites=getattr(args, 'rewrite', []), disable_sanitize=getattr(args, 'no_sanitize', False))
+        if getattr(args, 'plan_only', False):
+            styled_print('Plan-only mode: done.', 'ok')
+            return
+    # ----------- Optional verification (send planned requests and expect success)
+    if getattr(args, 'verify_plan', False):
+        oks, fails, total = verify_plan(args, sess, spec, base, csv_path='apiscan-verify.csv', rewrites=getattr(args, 'rewrite', []), disable_sanitize=getattr(args, 'no_sanitize', False))
+        if fails > 0 and not getattr(args, 'plan_then_scan', False):
+            styled_print(f'Verify found {fails} failures out of {total}', 'warn')
+        elif fails == 0:
+            styled_print('Verify passed: all planned requests succeeded', 'ok')
 
 
     if args.dummy:
@@ -516,7 +905,7 @@ def main() -> None:
     
     total_vulnerabilities = sum(vulnerability_summary.values())
     
-    # Print formatted summary
+    #---------------- Print formatted summary
     print("\n" + "="*50)
     print("VULNERABILITY SCAN SUMMARY".center(50))
     print("="*50)

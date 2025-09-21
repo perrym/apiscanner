@@ -3,14 +3,13 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="description" content="APISCAN v1.0 – AI-enhanced OWASP API Security Scanner by Perry Mertens" />
-  <meta content="VvYq2k5BFp5dpIL6JpQhoe90sWEXZTEBbaynlEKCWRE" name="google-site-verification">
-  <meta property="og:title" content="APISCAN v1.0 – OWASP API Security Scanner by Perry Mertens" />
+  <meta name="description" content="APISCAN v1.1 – AI-enhanced OWASP API Security Scanner by Perry Mertens" />
+  <meta property="og:title" content="APISCAN v1.1 – OWASP API Security Scanner by Perry Mertens" />
   <meta property="og:description" content="Extensible, AI-aware scanner for OWASP API Security Top 10 with Swagger/OpenAPI support, multi‑auth flows, and rich HTML reporting." />
   <meta property="og:type" content="website" />
   <meta property="og:image" content="./apiscan_logo.jpg" />
   <meta name="theme-color" content="#0ea5e9" />
-  <title>APISCAN v1.0 – OWASP API Security Scanner</title>
+  <title>APISCAN v1.1 – OWASP API Security Scanner</title>
   <style>
     :root{
       --bg: #0b1220;
@@ -85,12 +84,12 @@
     <section class="hero">
       <div>
         <span class="pill">AI-aware · Swagger/OpenAPI · HTML reports</span>
-        <h2>APISCAN v1.0 – AI-enhanced OWASP API Security Scanner</h2>
-        <p>Extensible scanner for the OWASP API Security Top 10 (2023). Supports Swagger/OpenAPI, multiple authentication flows (incl. OAuth2 + Bearer + mTLS + Api-key and more), realistic dummy requests, parallel scanning, and an optional AI review mode.</p>
+        <h2>APISCAN v1.1 – AI-enhanced OWASP API Security Scanner</h2>
+        <p>Extensible scanner for the OWASP API Security Top 10 (2023). Supports Swagger/OpenAPI, multiple authentication flows (incl. OAuth2 + Bearer + mTLS + Api-key), realistic dummy requests, parallel scanning, and optional AI review.</p>
         <div class="cta">
           <a class="btn primary" href="https://github.com/perrym/apiscanner" target="_blank" rel="noopener">⭐ Star on GitHub</a>
           <a class="btn" href="#whatsnew">What's new</a>
-          <span class="pill">Version 1.0 Release · MIT</span>
+          <span class="pill">Version 1.1 · MIT</span>
         </div>
       </div>
       <div class="hero-logo">
@@ -99,29 +98,14 @@
     </section>
 
     <section id="whatsnew">
-      <h2>What's new in v1.0</h2>
+      <h2>What's new in v1.1</h2>
       <div class="grid features">
-        <article class="card"><h3>Expanded Auth</h3><p><strong>--flow</strong> now supports <code>none, token, client, basic, ntlm, auth</code> with <code>--client-id/--client-secret</code>, <code>--token-url</code>, <code>--auth-url</code>, <code>--redirect-uri</code>, <code>--scope</code> and optional mTLS (<code>--client-cert/--client-key</code>, <code>--cert-password</code>). Add <code>--insecure</code> for lab use.</p></article>
-        <article class="card"><h3>Faster Scans</h3><p>Thread‑pool parallelism via <code>--threads</code> (cap 20) and HTTP connection pooling for higher throughput.</p></article>
-        <article class="card"><h3>AI‑Assisted Audit</h3><p><strong>API11</strong> optional analysis: <code>--api11</code> runs an AI pass over discovered endpoints and saves <code>AI-api11_scanresults.json</code>.</p></article>
-        <article class="card"><h3>Smart Swagger</h3><p>Safer <em>dummy mode</em> (<code>--dummy</code>) and a variables template exporter <code>--export_vars PATH</code> (YAML/JSON) driven by OpenAPI schemas.</p></article>
-        <article class="card"><h3>Rich Reporting</h3><p>Per‑risk HTML reports + an auto‑generated <code>combined_report.html</code>, log folder per run, and a terminal risk summary.</p></article>
-        <article class="card"><h3>Connectivity Guard</h3><p>Pre‑flight reachability checks with retries and clear error exits for auth and TLS issues.</p></article>
-      </div>
-    </section>
-
-    <section id="features">
-      <h2>Key Features</h2>
-      <div class="grid features">
-        <article class="card"><h3>OWASP API Top 10</h3><p>Covers API1..API10 with dedicated modules, plus AI‑assisted review (API11).</p></article>
-        <article class="card"><h3>Swagger/OpenAPI‑aware</h3><p>Parses OpenAPI specs, generates realistic dummy payloads, and maps operations automatically.</p></article>
-        <article class="card"><h3>Multi‑Auth &amp; mTLS</h3><p>Token, OAuth2 client credentials &amp; auth code, Basic, NTLM, API key header, and client‑cert auth.</p></article>
-        <article class="card"><h3>Reports</h3><p>Per‑risk HTML + unified <code>combined_report.html</code> with deduped highlights.</p></article>
-        <article class="card"><h3>Variables Export</h3><p>Export a fill‑in template of all parameters &amp; body fields from your OpenAPI.</p><pre><code>python apiscan.py --url https://api.example.com \
---swagger openapi.json \
---export_vars vars_template.yml</code></pre></article>
-        <article class="card"><h3>Dummy Mode</h3><p>Schema‑aware, consistent values for safe testing without touching real data.</p><pre><code>python apiscan.py --url https://api.example.com \
---swagger openapi.json --dummy</code></pre></article>
+        <article class="card"><h3>Generic Sanitizer</h3><p>No customer hardcodes. Collapses duplicate path segments, normalizes <code>/vN</code> → <code>/vN.00</code>, trims trailing slashes. Toggle with <code>--no-sanitize</code> and refine with <code>--rewrite "pat=&gt;rep"</code>.</p></article>
+        <article class="card"><h3>Header Overrides</h3><p>Universal header model: <code>--flow token --token</code>, <code>--apikey --apikey-header</code>, <code>--extra-header</code>, <code>--headers-file</code>. Spec <em>examples/defaults</em> are auto‑applied too.</p></article>
+        <article class="card"><h3>IDs &amp; Samples</h3><p><code>--ids-file</code> to control path variables; fallback generator covers <code>*id</code>, <code>code</code>, <code>uuid</code>, <code>email</code>, <code>date</code>.</p></article>
+        <article class="card"><h3>Method Filter</h3><p>Plan/verify only certain methods: <code>--method-filter GET POST</code>.</p></article>
+        <article class="card"><h3>Better Planning</h3><p>Improved requestBody sampling order and accurate JSON detection (<code>application/json; charset=UTF-8</code>).</p></article>
+        <article class="card"><h3>Docs</h3><p>Expanded Quick Start, recipes, and troubleshooting. Medium links preserved.</p></article>
       </div>
     </section>
 
@@ -134,78 +118,115 @@ pip install -r requirements.txt
 python apiscan.py --url https://api.example.com \
   --swagger openapi.json --flow token --token &lt;BEARER&gt;
 
-# Export variables template (YAML/JSON)
+# Optional: export variables template
 python apiscan.py --url https://api.example.com \
   --swagger openapi.json --export_vars vars_template.yml</code></pre>
+    </section>
+
+    <section id="recipes" class="grid features">
+      <article class="card">
+        <h3>Bearer token</h3>
+        <pre><code>python apiscan.py --url https://api.example.com \
+  --swagger openapi.json \
+  --flow token --token "&lt;JWT&gt;" \
+  --verify-plan --success-codes "200-299,304"</code></pre>
+      </article>
+      <article class="card">
+        <h3>API key header</h3>
+        <pre><code>python apiscan.py --url https://api.example.com \
+  --swagger openapi.json \
+  --apikey "secret" --apikey-header x-api-key \
+  --plan-only</code></pre>
+      </article>
+      <article class="card">
+        <h3>Multiple custom headers</h3>
+        <pre><code>python apiscan.py --url https://api.example.com \
+  --swagger openapi.json \
+  --extra-header "x-jwt-header: secret..." \
+  --extra-header "x-tenant-id: acc" \
+  --verify-plan</code></pre>
+      </article>
+      <article class="card">
+        <h3>Headers from file</h3>
+        <pre><code># headers.json
+{ "x-jwt-header": "secret...", "x-tenant-id":"acc" }
+
+python apiscan.py --url https://api.example.com \
+  --swagger openapi.json --headers-file headers.json</code></pre>
+      </article>
+      <article class="card">
+        <h3>IDs / Path variables</h3>
+        <pre><code># ids.json
+{ "userId": "me", "orderId": 1, "Nunber": "100001" }
+
+python apiscan.py --url https://api.example.com \
+  --swagger openapi.json --ids-file ids.json</code></pre>
+      </article>
+      <article class="card">
+        <h3>crAPI exact paths</h3>
+        <pre><code>python apiscan.py --url http://127.0.0.1:8888 \
+  --swagger .\archive\crapi-openapi-spec.json \
+  --flow token --token "&lt;JWT&gt;" \
+  --no-sanitize --plan-only --verify-plan \
+  --proxy 127.0.0.1:8080</code></pre>
+      </article>
+      <article class="card">
+        <h3>Rewrite fixes</h3>
+        <pre><code>python apiscan.py --url https://api.example.com \
+  --swagger openapi.json \
+  --rewrite "/v2(?!\.)=&gt;/v2.00" \
+  --rewrite "/alpha/beta/alpha=&gt;/alpha/beta" \
+  --verify-plan</code></pre>
+      </article>
+      <article class="card">
+        <h3>Only GETs</h3>
+        <pre><code>python apiscan.py --url https://api.example.com \
+  --swagger openapi.json --method-filter GET \
+  --plan-only --verify-plan</code></pre>
+      </article>
     </section>
 
     <section class="risks" id="risks">
       <h2>Supported Risks</h2>
       <div class="risk-grid">
-        <div class="card risk"><h3>API1</h3><p>Broken Object Level Authorization (<code>bola_audit.py</code>)</p></div>
-        <div class="card risk"><h3>API2</h3><p>Broken Authentication (<code>broken_auth_audit.py</code>)</p></div>
-        <div class="card risk"><h3>API3</h3><p>Property Level Authorization (<code>broken_object_property_audit.py</code>)</p></div>
-        <div class="card risk"><h3>API4</h3><p>Unrestricted Resource Consumption (<code>resource_consumption_audit.py</code>)</p></div>
-        <div class="card risk"><h3>API5</h3><p>Function Level Authorization (<code>authorization_audit.py</code>)</p></div>
-        <div class="card risk"><h3>API6</h3><p>Sensitive Business Logic (<code>business_flow_audit.py</code>)</p></div>
-        <div class="card risk"><h3>API7</h3><p>SSRF (<code>ssrf_audit.py</code>)</p></div>
-        <div class="card risk"><h3>API8</h3><p>Security Misconfiguration (<code>misconfiguration_audit.py</code>)</p></div>
-        <div class="card risk"><h3>API9</h3><p>Improper Inventory Management (<code>inventory_audit.py</code>)</p></div>
-        <div class="card risk"><h3>API10</h3><p>Unsafe Consumption of 3rd‑Party APIs (<code>safe_consumption_audit.py</code>)</p></div>
-        <div class="card risk"><h3>API11</h3><p>AI‑assisted Security Analysis (<code>ai_client.py</code>)</p></div>
+        <div class="card risk"><h3>API1</h3><p>Broken Object Level Authorization</p></div>
+        <div class="card risk"><h3>API2</h3><p>Broken Authentication</p></div>
+        <div class="card risk"><h3>API3</h3><p>Property Level Authorization</p></div>
+        <div class="card risk"><h3>API4</h3><p>Unrestricted Resource Consumption</p></div>
+        <div class="card risk"><h3>API5</h3><p>Function Level Authorization</p></div>
+        <div class="card risk"><h3>API6</h3><p>Sensitive Business Logic</p></div>
+        <div class="card risk"><h3>API7</h3><p>SSRF</p></div>
+        <div class="card risk"><h3>API8</h3><p>Security Misconfiguration</p></div>
+        <div class="card risk"><h3>API9</h3><p>Improper Inventory Management</p></div>
+        <div class="card risk"><h3>API10</h3><p>Unsafe Consumption of 3rd‑Party APIs</p></div>
+        <div class="card risk"><h3>API11</h3><p>AI‑assisted Security Analysis</p></div>
       </div>
     </section>
 
-    <section id="cli">
-      <h2>CLI Flags (v1.0)</h2>
-      <pre><code>--url                 Base API URL
---swagger             Path to OpenAPI/Swagger JSON
---flow                none | token | client | basic | ntlm | auth
---token               Bearer token (use with --flow token)
---basic-auth          user:pass
---apikey              API key value
---apikey-header       Header for API key (default: X-API-Key)
---ntlm                DOMAIN\user:pass
---client-cert         PEM client certificate (mTLS)
---client-key          PEM private key (mTLS)
---cert-password       Private key password (optional)
---insecure            Disable TLS verification (DANGEROUS)
---client-id           OAuth2 Client ID
---client-secret       OAuth2 Client Secret
---token-url           OAuth2 Token endpoint
---auth-url            OAuth2 Authorization endpoint
---redirect-uri        OAuth2 redirect URI
---scope               OAuth2 scope(s), space-separated
---threads             Parallelism (default 2, max 20)
---debug               Verbose logging
---dummy               Enable dummy payloads
---export_vars PATH    Write a variables template and exit
---api1..--api11       Run specific audit modules</code></pre>
-      <p>Author: <strong>Perry Mertens</strong> · <a href="mailto:pamsniffer@gmail.com">pamsniffer@gmail.com</a></p>
+    <section id="troubleshoot">
+      <h2>Troubleshooting</h2>
+      <div class="grid features">
+        <article class="card"><h3>404 everywhere</h3><p>Use <code>--no-sanitize</code> to avoid path normalization, or add targeted <code>--rewrite</code> rules. Verify paths in your proxy.</p></article>
+        <article class="card"><h3>401 / 403</h3><p>Expired/insufficient token or missing headers. Re‑authenticate and confirm headers via proxy.</p></article>
+        <article class="card"><h3>400 / 422</h3><p>Body/params invalid. Inspect <code>requestBody</code> in the spec and the actual request in your proxy.</p></article>
+        <article class="card"><h3>Missing headers</h3><p>Prefer <code>--headers-file</code> for environment‑specific values. Spec <em>examples/defaults</em> are also applied.</p></article>
+      </div>
+    </section>
+
+    <section id="links">
+      <h2>Links</h2>
+      <p>Repository: <a href="https://github.com/perrym/apiscanner" target="_blank" rel="noopener">perrym/apiscanner</a></p>
+      <p>Medium: <a href="https://medium.com/@PerryPM/apiscan-a-practical-approach-to-api-security-testing-by-perry-mertens-96b5e676c071" target="_blank" rel="noopener">APISCAN – a practical approach</a></p>
+      <p>Contact: <a href="mailto:pamsniffer@gmail.com">pamsniffer@gmail.com</a></p>
     </section>
 
     <footer>
-      <p>&copy; <span id="year"></span> Perry Mertens. Released under the MIT License. This site is optimized for GitHub Pages.</p>
-      <p>Repo: <a href="https://github.com/perrym/apiscanner" target="_blank" rel="noopener">perrym/apiscanner</a></p>
-	  <p>Medium: <a href="https://medium.com/@PerryPM/apiscan-a-practical-approach-to-api-security-testing-by-perry-mertens-96b5e676c071" target="_blank" rel="noopener">Medium-Apiscan</a></p>
+      <p>&copy; <span id="year"></span> Perry Mertens. Released under the MIT License.</p>
     </footer>
   </main>
 
   <script>
     document.getElementById('year').textContent = new Date().getFullYear();
   </script>
-<footer style="margin-top:40px; font-size:0.9em; color:#666; text-align:center;">
-  <p><strong>Disclaimer</strong></p>
-  <p>
-    APISCAN is a private and proprietary API security tool, developed independently for internal use and research purposes.<br>
-    It supports OWASP API Security Top 10 (2023) testing, OpenAPI-based analysis, active scanning, and multi-format reporting.<br>
-    Redistribution is not permitted without explicit permission.
-  </p>
-  <p style="color:#b00;">
-    Important: Testing with APISCAN is only permitted on systems and APIs for which you have <strong>explicit authorization</strong>. 
-    Unauthorized testing is strictly prohibited.
-  </p>
-</footer>
-
 </body>
 </html>

@@ -4,87 +4,192 @@ description: Free and open-source API security scanner built in Python with AI s
 ---
 <meta content="VvYq2k5BFp5dpIL6JpQhoe90sWEXZTEBbaynlEKCWRE" name="google-site-verification">
 
-[![View on GitHub](https://img.shields.io/badge/GitHub-View%20Repository-blue?logo=github)](https://github.com/perrym/apiscanner)
+![GitHub](https://img.shields.io/badge/GitHub-perrym%2Fapiscanner-0ea5e9?logo=github)](https://github.com/perrym/apiscanner)
+[![Medium](https://img.shields.io/badge/Medium-Article-black?logo=medium)](https://medium.com/@PerryPM/apiscan-a-practical-approach-to-api-security-testing-by-perry-mertens-96b5e676c071)
 
-# APISCAN v1.0  OWASP API Security Scanner
-
-APISCAN is a free and extensible API security auditing framework built in Python, that targets the **OWASP API Security Top 10 (2023)**.  
-It supports **OpenAPI/Swagger specs**, performs **active scans** on endpoints, and produces clean HTML and Markdown reports.
+APISCAN is a free, extensible scanner for the **OWASP API Security Top 10 (2023)**. It understands **OpenAPI/Swagger**, supports **multiauth**, offers a **plan/verify** workflow, **generic sanitizer/rewrites**, and writes **CSV/HTML** artifacts. This is the **generic**, customeragnostic documentation.
 
 ---
 
-## What's New in v1.0
+## Disclaimer
 
-- Expanded authentication (`--flow none|token|client|basic|ntlm|auth`, OAuth2, NTLM, mTLS).
-- Smart Swagger integration: safer `--dummy` mode and `--export_vars` (YAML/JSON).
-- Richer reports: per risk HTML, combined report, logs per run.
-- Faster: threadpool concurrency with `--threads` (max 20).
-- AIassisted module (API11) with `AI-api11_scanresults.json` output.
-- Connectivity guard: preflight checks and clearer TLS/auth error exits.
+## APISCAN is a private and proprietary API security tool, developed independently for internal use and research purposes.
+## It supports OWASP API Security Top 10 (2023) testing, OpenAPI-based analysis, active scanning, and multi-format reporting.
+## Redistribution is not permitted without explicit permission.
 
----
-
-## Supported Risks
-
-| OWASP API Risk | APISCAN Coverage | Module |
-|:--|:--|:--|
-| API1: Broken Object Level Authorization | Access control bypass | `bola_audit.py` |
-| API2: Broken Authentication | Weak login protections, token misuse | `broken_auth_audit.py` |
-| API3: Property Level Authorization | Unauthorized property manipulation | `broken_object_property_audit.py` |
-| API4: Unrestricted Resource Consumption | Abuse via large/batch requests | `resource_consumption_audit.py` |
-| API5: Function Level Authorization | Role misuse checks | `authorization_audit.py` |
-| API6: Sensitive Business Logic | Business logic flaws | `business_flow_audit.py` |
-| API7: SSRF | External call risks | `ssrf_audit.py` |
-| API8: Security Misconfiguration | Headers/config issues | `misconfiguration_audit.py` |
-| API9: Improper Inventory Management | Exposed docs/endpoints | `inventory_audit.py` |
-| API10: Unsafe Consumption of 3rdParty APIs | Injection via external APIs | `safe_consumption_audit.py` |
-| API11: AI-assisted Security Analysis | AI-based review | `ai_client.py` |
+## Important: Testing with APISCAN is only permitted on systems and APIs for which you have explicit authorization. Unauthorized testing is strictly prohibited.
 
 ---
 
-## Example Usage
+##  Whats New in v1.1
+- **Generic sanitizer** (no hardcodes): collapse duplicate segments, normalize `/vN  /vN.00`, trim trailing slash. Toggle with `--no-sanitize`; refine with `--rewrite "pat=>rep"`.
+- **Universal header overrides**: `--flow token --token`, `--apikey --apikey-header`, `--extra-header`, `--headers-file headers.json`. Spec `example/default` values are autoapplied.
+- **IDs & path variables**: `--ids-file ids.json` to control `{param}`; robust fallbacks for uuid/id/code/email/date when missing.
+- **Plan/Verify**: `--plan-only`  `apiscan-plan.csv`; `--verify-plan`  sends real requests and writes `apiscan-verify.csv`.
+- **Method filter**: `--method-filter GET POST` to limit the set.
+- **Rewrite trace (tip)**: add a small print in `_apply_rewrites` to see exactly which URLs changed during debugging.
 
+---
+
+##  Install
 ```bash
-# Scan with token auth
-python apiscan.py --url https://api.example.com \
-  --swagger openapi.json --flow token --token <BEARER>
-
-# Dummy mode
-python apiscan.py --url https://api.example.com \
-  --swagger openapi.json --flow token --token <BEARER> --dummy
-
-# Export variable template
-python apiscan.py --url https://api.example.com \
-  --swagger openapi.json --export_vars vars_template.yml
-```
-
----
-
-## Installation
-
-```bash
+python -m venv .venv && . .venv/bin/activate   # (Windows: .venv\Scripts\activate)
 pip install -r requirements.txt
 ```
 
 ---
 
-## License
+##  Quick Start
+```bash
+# Verify with Bearer token
+python apiscan.py --url https://api.example.com \
+  --swagger openapi.json --flow token --token <BEARER> --verify-plan
 
-MIT License  Perry Mertens
+# Plan + Verify + CSV
+python apiscan.py --url https://api.example.com \
+  --swagger openapi.json --flow token --token <BEARER> \
+  --plan-only --verify-plan --success-codes "200-299,304"
 
+# Proxy & self-signed lab
+python apiscan.py --url https://api.example.com \
+  --swagger openapi.json --flow token --token <BEARER> \
+  --proxy 127.0.0.1:8080 --insecure --plan-only --verify-plan
+```
+
+---
+
+##  Headers (generic)
+```bash
+# Bearer
+--flow token --token "<JWT>"   # -> Authorization: Bearer <JWT>
+
+# API key header
+--apikey "secret" --apikey-header x-api-key
+
+# Multiple custom headers (repeatable)
+--extra-header "x-jwt-header: secret..." \
+--extra-header "x-tenant-id: acc"
+
+# From JSON file
+# headers.json => { "x-jwt-header":"secret...", "x-tenant-id":"acc" }
+--headers-file headers.json
+```
+> Spec header parameters with `example/default` are auto-filled. `Content-Length` is never set manually.
+
+---
+
+##  Sanitizer & Rewrites
+Builtin sanitizer (enabled by default) will:
+- collapse `//` (excluding scheme),
+- normalize `/v2`  `/v2.00` (if not dotted),
+- fold repeats (`/A/A``/A`, `/A/B/A``/A/B`),
+- remove trailing slash (except root).
+
+Control it:
+```bash
+--no-sanitize                              # exact paths (e.g., crAPI)
+--rewrite '/identity/api/v2(?=/)/=>/identity/api/v7/'  # targeted path change
+```
+**PowerShell tip:** use **single quotes** around the rewrite string to avoid `>` being interpreted.
+
+Optional debug trace (during development), in `_apply_rewrites`:
+```python
+new_url = re.sub(pat, rep, full_url)
+if new_url != full_url:
+    print(f"[rewrite] {pat!r} => {rep!r} :: {full_url} -> {new_url}")
+```
+
+---
+
+##  Path Variables & IDs
+```bash
+# ids.json
+{ "userId":"me", "orderId":1, "vin":"10000001" }
+
+--ids-file ids.json
+```
+Fallbacks (when not provided):
+- `uuid/guid`  `00000000-0000-4000-8000-000000000000`
+- `*id/number/no/seq/version`  `1`
+- `code`  `C123`
+- `email`  `user@example.com`
+- `date`  `2025-01-01`
+- other  `sample`
+
+---
+
+##  Plan & Verify
+```bash
+--plan-only                                 # write apiscan-plan.csv (no requests)
+--verify-plan --success-codes "200-299,304" # live requests  apiscan-verify.csv
+--method-filter GET POST                    # limit methods
+```
+**CSV formats**
+- Plan: `method,url,content_type,body_len,as_json`
+- Verify: `method,url,status,ms,result`
+
+---
+
+##  Recipes
+**crAPI exact paths (no sanitizer):**
+```bash
+python apiscan.py --url http://127.0.0.1:8888 \
+  --swagger ./archive/crapi-openapi-spec.json \
+  --flow token --token "<JWT/refresh>" \
+  --no-sanitize --plan-only --verify-plan \
+  --proxy 127.0.0.1:8080
+```
+
+**Spec with dotted versions (sanitizer ON):**
+```bash
+python apiscan.py --url https://api.acc.example.com \
+  --swagger esfinal.json \
+  --flow token --token "<JWT>" \
+  --plan-only --verify-plan
+```
+
+**Rewrite to fix inconsistent spec path:**
+```bash
+python apiscan.py --url https://api.example.com \
+  --swagger openapi.json \
+  --rewrite '/v2(?!\.)=>/v2.00' \
+  --verify-plan
+```
+
+**Customer headers without code changes:**
+```bash
+python apiscan.py --url https://api.example.com \
+  --swagger openapi.json \
+  --extra-header "x-jwt-header: secret...." \
+  --extra-header "x-tenant-id: acc" \
+  --verify-plan
+```
+
+---
+
+##  Troubleshooting
+- **404 everywhere**  `--no-sanitize` or add pathspecific `--rewrite`. Verify final paths in your proxy.
+- **401 / 403**  expired/invalid token or missing headers. Confirm headers via proxy.
+- **400 / 422**  invalid body; ensure `requestBody` `example` exists so APISCAN builds a valid payload.
+- **Rewrite not applied**  single quotes in PowerShell; use pathspecific pattern; enable the trace snippet above.
+
+
+---
 ## Disclaimer
+
 ## APISCAN is a private and proprietary API security tool, developed independently for internal use and research purposes.
 ## It supports OWASP API Security Top 10 (2023) testing, OpenAPI-based analysis, active scanning, and multi-format reporting.
 ## Redistribution is not permitted without explicit permission.
 
-## Important: Testing with APISCAN is only permitted on systems and APIs for which you have explicit authorization. 
-## Unauthorized testing is strictly prohibited.
-
+## Important: Testing with APISCAN is only permitted on systems and APIs for which you have explicit authorization. Unauthorized testing is strictly prohibited.
 
 ---
 
-## Contact
 
- [pamsniffer@gmail.com](mailto:pamsniffer@gmail.com)  
- [GitHub](https://github.com/perrym/apiscanner)
- [Medium>](https://medium.com/@PerryPM/apiscan-a-practical-approach-to-api-security-testing-by-perry-mertens-96b5e676c071)
+##  Links
+- GitHub: <https://github.com/perrym/apiscanner>  
+- Medium: <https://medium.com/@PerryPM/apiscan-a-practical-approach-to-api-security-testing-by-perry-mertens-96b5e676c071>  
+- Contact: <mailto:pamsniffer@gmail.com>
+
+> Use APISCAN only on systems/APIs for which you have **explicit authorization**.
+

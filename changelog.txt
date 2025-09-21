@@ -1,14 +1,16 @@
 # APISCAN - CHANGELOG
-Version:1.0 release 9-9-2025
+Version:1.1 release 21-9-2025
 Author: Perry Mertens pamsniffer@gmail.com
 
 I’m excited to announce the first official release of APISCAN (v1.0) – a private API security auditing tool.
 
 APISCAN supports:
 - Automated scanning aligned with the OWASP API Security Top 10 (2023)
-- OpenAPI/Swagger-based analysis
+- OpenAPI/Swagger-based  json and YML analysis
 - Active endpoint testing
 - Improved error handling and modular design
+- proxy support add en more 
+- need to work on error handeling on apis is very difficult  
 
 This marks a solid foundation for further development, with focus on scalability, accuracy, and extensibility in future versions.
 - Beter interface

@@ -24,8 +24,8 @@ openai>=1.0.0
 # Typing & util
 python-dateutil>=2.8.2
 typing_extensions>=4.11.0
-pyyaml>= 6.0.0
-Hyper>=7.0.0
-h2>=0.7.0
+PyYAML>=6.0.2
+Hyper>=0.7.0
+h2>= 2.0.0
 anthropic>=0.67.0
 

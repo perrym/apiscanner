@@ -6,7 +6,7 @@
   <meta content="VvYq2k5BFp5dpIL6JpQhoe90sWEXZTEBbaynlEKCWRE" name="google-site-verification">
   <meta name="description" content="APISCAN v1.1 – AI-enhanced OWASP API Security Scanner by Perry Mertens" />
   <meta property="og:title" content="APISCAN v1.1 – OWASP API Security Scanner by Perry Mertens" />
-  <meta property="og:description" content="Extensible, AI-aware scanner for OWASP API Security Top 10 with Swagger/OpenAPI support, multi-auth flows, and rich HTML reporting." />
+  <meta property="og:description" content="Extensible, AI-aware scanner for OWASP API Security Top 10 with Swagger/OpenAPI support, multi‑auth flows, and rich HTML reporting." />
   <meta property="og:type" content="website" />
   <meta property="og:image" content="./apiscan_logo.jpg" />
   <meta name="theme-color" content="#0ea5e9" />
@@ -214,7 +214,29 @@ python apiscan.py --url https://api.example.com \
       </div>
     </section>
 
-    <section id="links">
+    
+    <section id="prereq">
+      <h2>Prerequisite: You need an OpenAPI/Swagger file</h2>
+      <p>APISCAN works from an <strong>OpenAPI/Swagger</strong> specification to plan and verify calls.<br>
+      If you <strong>already have</strong> a Swagger/OpenAPI file (e.g., <code>openapi.json</code> or <code>swagger.yaml</code>), you can use it directly with <code>--swagger</code>.</p>
+
+      <p>If you <strong>only have a Postman collection</strong>, convert it first:</p>
+      <ol>
+        <li>Export your Postman collection (<code>*.postman_collection.json</code>).</li>
+        <li>Convert it to OpenAPI/Swagger using the open-source converter:
+          <a href="https://github.com/perrym/postman-to-swagger" target="_blank" rel="noopener">https://github.com/perrym/postman-to-swagger</a>.
+        </li>
+        <li>Use the converted file with APISCAN via <code>--swagger</code>.</li>
+      </ol>
+
+      <h3>Example conversion flow</h3>
+      <pre><code># Convert Postman -&gt; Swagger/OpenAPI (see repo for options)
+python postman-to-swagger.py --input ./MyCollection.postman_collection.json --output ./openapi.json
+
+# Then run APISCAN using the converted spec
+python apiscan.py --url https://api.example.com --swagger ./openapi.json --plan-only --verify-plan</code></pre>
+    </section>
+<section id="links">
       <h2>Links</h2>
       <p>Repository: <a href="https://github.com/perrym/apiscanner" target="_blank" rel="noopener">perrym/apiscanner</a></p>
       <p>Medium: <a href="https://medium.com/@PerryPM/apiscan-a-practical-approach-to-api-security-testing-by-perry-mertens-96b5e676c071" target="_blank" rel="noopener">APISCAN – a practical approach</a></p>

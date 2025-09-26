@@ -135,7 +135,7 @@ python apiscan.py --url http://127.0.0.1:8888 \
 **Spec with dotted versions (sanitizer ON):**
 ```bash
 python apiscan.py --url https://api.acc.example.com \
-  --swagger esfinal.json \
+  --swagger openai.json \
   --flow token --token "<JWT>" \
   --plan-only --verify-plan
 ```

@@ -1,8 +1,9 @@
-##############################################
-# APISCAN - API Security Scanner             #
-# Licensed under the MIT License             #
-# Author: Perry Mertens pamsniffer@gmail.com #
-##############################################
+########################################################
+# APISCAN - API Security Scanner                       #
+# Licensed under the MIT License                       #
+# Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
+########################################################
+
 """APISCAN is a private and proprietary API security tool, developed independently for internal use and research purposes.
 It supports OWASP API Security Top 10 (2023) testing, OpenAPI-based analysis, active scanning, and multi-format reporting.
 Redistribution is not permitted without explicit permission.
@@ -22,6 +23,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
+OUT_DIR: Path | None = None
+
 from typing import Any
 from urllib.parse import urljoin
 
@@ -118,24 +121,22 @@ def check_api_reachable(url: str, session: requests.Session, retries: int = 3, d
             print(f"Response status code: {resp.status_code}")
             if not resp.content:
                 print("Empty response body detected.")
-            if resp.status_code < 400:
-                print(f"Connection successful to {url} (status: {resp.status_code})")
+            code = resp.status_code
+            if 200 <= code < 400:
+                print(f"Connection successful to {url} (status: {code})")
                 return
-            if resp.status_code in (401, 403):
-                print(f"Authentication required or forbidden (status {resp.status_code}). Continuing.")
+            if code in (401, 403):
+                print(f"Authentication required or forbidden (status {code}). Continuing.")
                 return
-            print(f"Unexpected response from server: {resp.status_code}")
-            return
+            print(f"Unexpected response from server: {code}")
         except requests.exceptions.RequestException as e:
             logger.error(f"Attempt {attempt} failed: {e}")
-            if attempt < retries:
-                print(f"Retrying in {delay} seconds...")
-                time.sleep(delay)
-            else:
-                print(f"ERROR: Cannot connect to {url} after {retries} attempts.")
-                sys.exit(1)
-
-
+        if attempt < retries:
+            print(f"Retrying in {delay} seconds...")
+            time.sleep(delay)
+        else:
+            print(f"ERROR: Cannot connect to {url} after {retries} attempts.")
+            sys.exit(1)
 
 # ---- URL sanitizer & ID mapping ----
 import re as _re_sub
@@ -308,6 +309,10 @@ def _parse_success_codes(spec_str: str):
 
 def verify_plan(args, session, spec: dict, base_url: str, csv_path: str = 'apiscan-verify.csv', rewrites=None, disable_sanitize: bool = False):
 
+    if csv_path is None:
+        csv_path = str(OUT_DIR / 'apiscan-plan.csv') if OUT_DIR else 'apiscan-plan.csv'
+    if csv_path is None:
+        csv_path = str(OUT_DIR / 'apiscan-verify.csv') if OUT_DIR else 'apiscan-verify.csv'
     if rewrites is None:
         rewrites = []
     import csv, time, json
@@ -394,34 +399,6 @@ def verify_plan(args, session, spec: dict, base_url: str, csv_path: str = 'apisc
     return oks, fails, total
 
 
-# ---- URL sanitizer & ID mapping ----
-import re as _re_sub
-
-_ID_MAP = {}
-
-def load_id_map(path: str | None):
-    global _ID_MAP
-    _ID_MAP = {}
-    if not path:
-        return
-    try:
-        import json as _json
-        from pathlib import Path as _Path
-        _ID_MAP = _json.loads(_Path(path).read_text(encoding="utf-8"))
-        styled_print(f"Loaded IDs map with {len(_ID_MAP)} entries", "info")
-    except Exception as e:
-        styled_print(f"Could not read ids-file: {e}", "warn")
-        _ID_MAP = {}
-
-def _id_lookup(name: str) -> str | None:
-    if not name:
-        return None
-    key = name.strip()
-    return str(_ID_MAP.get(key)) if key in _ID_MAP else None
-
-def _sanitize_url(url: str, rewrites: list[str] | None = None) -> str:
-    return _sanitize_url2(url, rewrites, disable=False)
-
 # ---- Planning helpers: build full dry-run plan over all endpoints ----
 import json as _json
 
@@ -473,7 +450,7 @@ def _plan_body_from_requestbody(op: dict):
     as_json = ('json' in mt) and isinstance(ex, (dict, list))
     return mt, ex, as_json
 
-def plan_requests(spec, base_url, csv_path='apiscan-plan.csv', rewrites=None, disable_sanitize: bool = False):
+def plan_requests(spec, base_url, csv_path=None, rewrites=None, disable_sanitize: bool = False):
     if rewrites is None:
         rewrites = []
     import csv as _csv
@@ -536,6 +513,7 @@ def main() -> None:
     parser.add_argument("--redirect-uri", help="Redirect URI for OAuth2 Authorization Code flow")
     parser.add_argument("--scope", help="OAuth2 scope(s), space-separated")
     parser.add_argument("--threads", type=int, default=2, help="Number of concurrent threads to use")
+    parser.add_argument("--timeout", type=int, default=10, help="Request timeout in seconds")
     parser.add_argument("--debug", action="store_true", help="Enable debug output (verbose logging)")
     parser.add_argument("--api11", action="store_true", help="Run AI-assisted OWASP Top 10 analysis")
     parser.add_argument("--dummy", action="store_true", help="Use dummy data for request bodies and parameters")
@@ -562,6 +540,9 @@ def main() -> None:
 
     args.url = normalize_url(args.url)
     output_dir = create_output_directory(args.url)
+    
+    global OUT_DIR
+    OUT_DIR = output_dir
     log_dir = output_dir / "log"
     log_dir.mkdir(exist_ok=True)
     logfile = log_dir / f"apiscan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
@@ -577,6 +558,11 @@ def main() -> None:
     logger.propagate = False
 
     sess = configure_authentication(args)
+    # Enforce single source of truth for TLS verification
+    try:
+        sess.verify = not args.insecure
+    except Exception:
+        pass
     # --- Optional proxy wiring (applies to all modules using this session) ---
     if getattr(args, 'proxy', None):
         pr = args.proxy if "://" in args.proxy else f"http://{args.proxy}"
@@ -637,13 +623,13 @@ def main() -> None:
     # ---- Full planning phase (dry run over all endpoints) ----
     base = args.url
     if getattr(args, 'plan_only', False) or getattr(args, 'plan_then_scan', False):
-        plan_requests(spec, base, csv_path='apiscan-plan.csv', rewrites=getattr(args, 'rewrite', []), disable_sanitize=getattr(args, 'no_sanitize', False))
+        plan_requests(spec, base, csv_path=None, rewrites=getattr(args, 'rewrite', []), disable_sanitize=getattr(args, 'no_sanitize', False))
         if getattr(args, 'plan_only', False):
             styled_print('Plan-only mode: done.', 'ok')
             return
     # ----------- Optional verification (send planned requests and expect success)
     if getattr(args, 'verify_plan', False):
-        oks, fails, total = verify_plan(args, sess, spec, base, csv_path='apiscan-verify.csv', rewrites=getattr(args, 'rewrite', []), disable_sanitize=getattr(args, 'no_sanitize', False))
+        oks, fails, total = verify_plan(args, sess, spec, base, csv_path=None, rewrites=getattr(args, 'rewrite', []), disable_sanitize=getattr(args, 'no_sanitize', False))
         if fails > 0 and not getattr(args, 'plan_then_scan', False):
             styled_print(f'Verify found {fails} failures out of {total}', 'warn')
         elif fails == 0:
@@ -663,10 +649,6 @@ def main() -> None:
             styled_print(f"FAIL exporting variables: {e}", "fail")
             sys.exit(1)
 
-    output_dir = create_output_directory(args.url)
-    logger.info(f"Output directory: {output_dir}")
-    print(f"[+] Results saved to: {output_dir}")
-
     # --------------------------- API1: BOLA ---------------------------
     if 1 in selected_apis:
         tqdm.write(f"{Fore.CYAN}[API1] Starting BOLA (threads={args.threads}){Style.RESET_ALL}")
@@ -679,7 +661,7 @@ def main() -> None:
         bola.base_url = args.url
         bola.spec = spec
 
-        endpoints = bola.get_object_endpoints(spec) or []  
+        endpoints = endpoints  # reuse previously discovered endpoints  
 
         max_workers = max(1, min(args.threads, MAX_THREADS))
         if max_workers == 1:
@@ -788,7 +770,7 @@ def main() -> None:
         print(" API6 - Sensitive Business Flows")
         logger.info("Running API6 - Sensitive Business Flows")
         bf = BusinessFlowAuditor(args.url, sess)
-        business_eps = [{"name": ep.get("operation_id", f"{ep['method']} {ep['path']}").replace(" ", "_"), "url": ep["path"], "method": ep["method"], "body": {}} for ep in endpoints if ep["method"] in {"POST", "PUT", "PATCH"}]
+        business_eps = [{"name": (ep.get("operationId") or f"{ep['method']} {ep['path']}").replace(" ", "_"), "url": urljoin(args.url.rstrip("/") + "/", ep["path"].lstrip("/")), "method": ep["method"], "body": {}} for ep in endpoints if ep["method"] in {"POST", "PUT", "PATCH"}]
         biz_issues = bf.test_business_flows(business_eps)
         save_html_report(biz_issues, "BusinessFlows", args.url, output_dir)
         styled_print(f"API6 complete - {len(biz_issues)} issues", "done")

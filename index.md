@@ -173,6 +173,26 @@ python apiscan.py --url https://api.example.com \
 - **400 / 422**  invalid body; ensure `requestBody` `example` exists so APISCAN builds a valid payload.
 - **Rewrite not applied**  single quotes in PowerShell; use pathspecific pattern; enable the trace snippet above.
 
+---
+
+## Prerequisite: You need an OpenAPI/Swagger file
+
+APISCAN works from an **OpenAPI/Swagger** specification to plan and verify calls.  
+If you **already have** a Swagger/OpenAPI file (e.g., `openapi.json` or `swagger.yaml`), you can use it directly with `--swagger`.
+
+If you **only have a Postman collection**, convert it first:
+1. Export your Postman collection (`*.postman_collection.json`).
+2. Convert it to OpenAPI/Swagger using the open-source converter: <https://github.com/perrym/postman-to-swagger>.
+3. Use the converted file with APISCAN via `--swagger`.
+
+**Example conversion flow**
+```bash
+# Convert Postman -> Swagger/OpenAPI (see repo for options)
+python postman-to-swagger.py --input ./MyCollection.postman_collection.json --output ./openapi.json
+
+# Then run APISCAN using the converted spec
+python apiscan.py --url https://api.example.com --swagger ./openapi.json --plan-only --verify-plan
+
 
 ---
 ## Disclaimer

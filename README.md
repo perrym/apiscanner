@@ -1,5 +1,35 @@
 # APISCAN  OWASP API Security Scanner by Perry Mertens pamsniffer@gmail.com 2025 (c)
 <meta content="VvYq2k5BFp5dpIL6JpQhoe90sWEXZTEBbaynlEKCWRE" name="google-site-verification">
+---
+
+## Prerequisite: You need an OpenAPI/Swagger file
+
+APISCAN works from an **OpenAPI/Swagger** specification to plan and verify calls.  
+If you **already have** a Swagger/OpenAPI file (e.g., `openapi.json` or `swagger.yaml`), you can use it directly with `--swagger`.
+
+If you **only have a Postman collection**, convert it first:
+1. Export your Postman collection (`*.postman_collection.json`).
+2. Convert it to OpenAPI/Swagger using the open-source converter: <https://github.com/perrym/postman-to-swagger>.
+3. Use the converted file with APISCAN via `--swagger`.
+
+**Example conversion flow**
+```bash
+# Convert Postman -> Swagger/OpenAPI (see repo for options)
+python postman-to-swagger.py --input ./MyCollection.postman_collection.json --output ./openapi.json
+
+# Then run APISCAN using the converted spec
+python apiscan.py --url https://api.example.com --swagger ./openapi.json --plan-only --verify-plan
+```
+
+**Notes & tips**
+- Good test material improves results: include realistic examples in your Postman requests (headers, bodies, variables).
+- After conversion, quickly open the generated `openapi.json` to verify **paths**, **methods**, and **requestBody examples** exist for key endpoints.
+- If your spec paths differ across environments (e.g., `/v2` vs `/v2.00`), use the sanitizer/rewrites described below to align them.
+- For variable-heavy collections: use `--headers-file` and `--ids-file` to supply runtime values without changing code.
+
+---
+
+<meta content="VvYq2k5BFp5dpIL6JpQhoe90sWEXZTEBbaynlEKCWRE" name="google-site-verification">
 
 **Version:** 1.1 (Release)  
 **Author:** Perry Mertens ([pamsniffer@gmail.com](mailto:pamsniffer@gmail.com))  
@@ -13,6 +43,8 @@ APISCAN is a free, extensible scanner for the **OWASP API Security Top 10 (2023)
 
 ---
 
+
+---
 ## Whats New in v1.1
 - **Generic sanitizer** (no hardcodes): collapse duplicate segments, normalize `/vN  /vN.00`, trim trailing slash. Toggle with `--no-sanitize`; refine with `--rewrite "pat=>rep"`.
 - **Universal header overrides**: `--flow token --token`, `--apikey --apikey-header`, `--extra-header`, `--headers-file headers.json`. Spec `example/default` values are autoapplied.
@@ -135,7 +167,7 @@ python apiscan.py --url http://127.0.0.1:8888 \
 **Spec with dotted versions (sanitizer ON):**
 ```bash
 python apiscan.py --url https://api.acc.example.com \
-  --swagger openai.json \
+  --swagger esfinal.json \
   --flow token --token "<JWT>" \
   --plan-only --verify-plan
 ```

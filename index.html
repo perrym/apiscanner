@@ -65,6 +65,23 @@
       .hero{ grid-template-columns: 1fr; text-align:left }
       .hero-logo{ order:2; margin-top:1rem }
     }
+
+    /* New styles for enhanced content */
+    .feature-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem; margin: 2rem 0; }
+    .feature-card { background: var(--card); padding: 1.5rem; border-radius: 1rem; border: 1px solid color-mix(in oklab, var(--text) 15%, transparent); }
+    .feature-card h3 { color: var(--accent); margin-top: 0; }
+    .code-block { background: #0a162b; padding: 1rem; border-radius: 0.5rem; overflow-x: auto; margin: 1rem 0; }
+    .cli-option { display: flex; justify-content: space-between; align-items: flex-start; padding: 0.75rem 0; border-bottom: 1px solid color-mix(in oklab, var(--text) 10%, transparent); }
+    .cli-option:last-child { border-bottom: none; }
+    .option-name { font-weight: bold; color: var(--accent); }
+    .option-desc { flex: 1; margin-left: 1rem; }
+    .tabs { display: flex; gap: 0.5rem; margin: 1.5rem 0; }
+    .tab { padding: 0.5rem 1rem; background: var(--card); border-radius: 0.5rem; cursor: pointer; border: 1px solid transparent; }
+    .tab.active { background: var(--accent); color: white; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    .flow-diagram { width: 100%; max-width: 800px; margin: 2rem auto; background: var(--card); padding: 1.5rem; border-radius: 1rem; }
+    .corrected { background: #1a472a; padding: 0.2rem 0.4rem; border-radius: 0.25rem; color: #4ade80; }
   </style>
 </head>
 <body>
@@ -101,12 +118,30 @@
     <section id="whatsnew">
       <h2>What's new in v1.1</h2>
       <div class="grid features">
-        <article class="card"><h3>Generic Sanitizer</h3><p>No customer hardcodes. Collapses duplicate path segments, normalizes <code>/vN</code> → <code>/vN.00</code>, trims trailing slashes. Toggle with <code>--no-sanitize</code> and refine with <code>--rewrite "pat=&gt;rep"</code>.</p></article>
-        <article class="card"><h3>Header Overrides</h3><p>Universal header model: <code>--flow token --token</code>, <code>--apikey --apikey-header</code>, <code>--extra-header</code>, <code>--headers-file</code>. Spec <em>examples/defaults</em> are auto‑applied too.</p></article>
-        <article class="card"><h3>IDs &amp; Samples</h3><p><code>--ids-file</code> to control path variables; fallback generator covers <code>*id</code>, <code>code</code>, <code>uuid</code>, <code>email</code>, <code>date</code>.</p></article>
-        <article class="card"><h3>Method Filter</h3><p>Plan/verify only certain methods: <code>--method-filter GET POST</code>.</p></article>
-        <article class="card"><h3>Better Planning</h3><p>Improved requestBody sampling order and accurate JSON detection (<code>application/json; charset=UTF-8</code>).</p></article>
-        <article class="card"><h3>Docs</h3><p>Expanded Quick Start, recipes, and troubleshooting. Medium links preserved.</p></article>
+        <article class="card">
+          <h3>Generic Sanitizer</h3>
+          <p>No customer hardcodes. Collapses duplicate path segments, normalizes <code>/vN</code> → <code>/vN.00</code>, trims trailing slashes. Toggle with <code>--no-sanitize</code> and refine with <code>--rewrite "pat=&gt;rep"</code>.</p>
+        </article>
+        <article class="card">
+          <h3>Header Overrides</h3>
+          <p>Universal header model: <code>--flow token --token</code>, <code>--apikey --apikey-header</code>, <code>--extra-header</code>, <code>--headers-file</code>. Spec <em>examples/defaults</em> are auto‑applied too.</p>
+        </article>
+        <article class="card">
+          <h3>IDs &amp; Samples</h3>
+          <p><code>--ids-file</code> to control path variables; fallback generator covers <code>*id</code>, <code>code</code>, <code>uuid</code>, <code>email</code>, <code>date</code>.</p>
+        </article>
+        <article class="card">
+          <h3>Better Planning</h3>
+          <p>Improved requestBody sampling order and accurate JSON detection (<code>application/json; charset=UTF-8</code>).</p>
+        </article>
+        <article class="card">
+          <h3>Enhanced Verification</h3>
+          <p>New <code>--verify-plan</code> option to test planned requests and <code>--success-codes</code> to define acceptable responses.</p>
+        </article>
+        <article class="card">
+          <h3>Adaptive Retry</h3>
+          <p><code>--retry500</code> option for automatic retries on HTTP 5xx errors with field augmentation from error messages.</p>
+        </article>
       </div>
     </section>
 
@@ -124,97 +159,470 @@ python apiscan.py --url https://api.example.com \
   --swagger openapi.json --export_vars vars_template.yml</code></pre>
     </section>
 
+    <section id="features">
+      <h2>Core Features</h2>
+      <div class="feature-grid">
+        <div class="feature-card">
+          <h3>Comprehensive API Testing</h3>
+          <p>Full OWASP API Security Top 10 (2023) coverage with 11 dedicated audit modules:</p>
+          <ul>
+            <li>BOLA (Broken Object Level Authorization)</li>
+            <li>Broken Authentication</li>
+            <li>Property-level Authorization</li>
+            <li>Resource Consumption</li>
+            <li>Function-level Authorization</li>
+            <li>Business Logic Flows</li>
+            <li>SSRF</li>
+            <li>Security Misconfiguration</li>
+            <li>Inventory Management</li>
+            <li>Unsafe Consumption</li>
+            <li>AI-assisted Analysis</li>
+          </ul>
+        </div>
+        
+        <div class="feature-card">
+          <h3>Authentication Support</h3>
+          <p>Multiple authentication flows with flexible configuration:</p>
+          <ul>
+            <li>Bearer Token (JWT)</li>
+            <li>OAuth2 Client Credentials</li>
+            <li>OAuth2 Authorization Code</li>
+            <li>Basic Authentication</li>
+            <li>NTLM Authentication</li>
+            <li>API Key in Headers</li>
+            <li>Client Certificate (mTLS)</li>
+          </ul>
+        </div>
+        
+        <div class="feature-card">
+          <h3>Smart Request Planning</h3>
+          <p>Advanced request generation from OpenAPI specs:</p>
+          <ul>
+            <li>Automatic path parameter filling</li>
+            <li>Request body generation from schemas</li>
+            <li>Content-Type detection and handling</li>
+            <li>Multipart/form-data support</li>
+            <li>Dummy data generation for testing</li>
+            <li>Adaptive retry on 5xx errors</li>
+          </ul>
+        </div>
+        
+        <div class="feature-card">
+          <h3>Advanced Reporting</h3>
+          <p>Comprehensive reporting capabilities:</p>
+          <ul>
+            <li>Individual HTML reports per vulnerability type</li>
+            <li>Combined master report</li>
+            <li>CSV export for planning and verification</li>
+            <li>Detailed logging with timestamps</li>
+            <li>Vulnerability summary with risk levels</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="cli-options">
+      <h2>Command Line Options</h2>
+      
+      <div class="tabs">
+        <div class="tab active" onclick="showTab('basic-options')">Basic Options</div>
+        <div class="tab" onclick="showTab('auth-options')">Authentication</div>
+        <div class="tab" onclick="showTab('scan-options')">Scan Options</div>
+        <div class="tab" onclick="showTab('advanced-options')">Advanced</div>
+      </div>
+      
+      <div id="basic-options" class="tab-content active">
+        <div class="cli-option">
+          <span class="option-name">--url</span>
+          <span class="option-desc">Base URL of the API to scan (required)</span>
+        </div>
+        <div class="cli-option">
+          <span class="option-name">--swagger</span>
+          <span class="option-desc">Path to Swagger/OpenAPI JSON file (required)</span>
+        </div>
+        <div class="cli-option">
+          <span class="option-name">--threads</span>
+          <span class="option-desc">Number of concurrent threads (default: 2)</span>
+        </div>
+        <div class="cli-option">
+          <span class="option-name">--debug</span>
+          <span class="option-desc">Enable debug output (verbose logging)</span>
+        </div>
+        <div class="cli-option">
+          <span class="option-name">--insecure</span>
+          <span class="option-desc">Disable TLS certificate validation</span>
+        </div>
+      </div>
+      
+      <div id="auth-options" class="tab-content">
+        <div class="cli-option">
+          <span class="option-name">--flow</span>
+          <span class="option-desc">Authentication flow: none, token, client, basic, ntlm, auth</span>
+        </div>
+        <div class="cli-option">
+          <span class="option-name">--token</span>
+          <span class="option-desc">Bearer token value (used with --flow token)</span>
+        </div>
+        <div class="cli-option">
+          <span class="option-name">--apikey</span>
+          <span class="option-desc">API key value (sent in header specified by --apikey-header)</span>
+        </div>
+        <div class="cli-option">
+          <span class="option-name">--apikey-header</span>
+          <span class="option-desc">Header name for API key (default: X-API-Key)</span>
+        </div>
+        <div class="cli-option">
+          <span class="option-name">--client-cert</span>
+          <span class="option-desc">Path to client certificate file (PEM, used for mTLS)</span>
+        </div>
+        <div class="cli-option">
+          <span class="option-name">--client-key</span>
+          <span class="option-desc">Path to private key file (PEM, used for mTLS)</span>
+        </div>
+        <div class="cli-option">
+          <span class="option-name">--basic-auth</span>
+          <span class="option-desc">Basic auth in the form user:password</span>
+        </div>
+        <div class="cli-option">
+          <span class="option-name">--ntlm</span>
+          <span class="option-desc">NTLM credentials in the form DOMAIN\user:password</span>
+        </div>
+      </div>
+      
+      <div id="scan-options" class="tab-content">
+        <div class="cli-option">
+          <span class="option-name">--api1 to --api11</span>
+          <span class="option-desc">Run specific API security tests (default: all)</span>
+        </div>
+        <div class="cli-option">
+          <span class="option-name">--plan-only</span>
+          <span class="option-desc">Build all requests and write apiscan-plan.csv, do not send</span>
+        </div>
+        <div class="cli-option">
+          <span class="option-name">--plan-then-scan</span>
+          <span class="option-desc">First build full plan (CSV), then perform the scan</span>
+        </div>
+        <div class="cli-option">
+          <span class="option-name">--verify-plan</span>
+          <span class="option-desc">After planning, actually send each planned request and expect success</span>
+        </div>
+        <div class="cli-option">
+          <span class="option-name">--success-codes</span>
+          <span class="option-desc">Comma list of codes or ranges, e.g., 200-299,302 (default: 200-299)</span>
+        </div>
+      </div>
+      
+      <div id="advanced-options" class="tab-content">
+        <div class="cli-option">
+          <span class="option-name">--dummy</span>
+          <span class="option-desc">Use dummy data for request bodies and parameters</span>
+        </div>
+        <div class="cli-option">
+          <span class="option-name">--export_vars</span>
+          <span class="option-desc">Export variables template YAML if .yml/.yaml else JSON</span>
+        </div>
+        <div class="cli-option">
+          <span class="option-name">--proxy</span>
+          <span class="option-desc">Optional proxy URL, e.g. http://127.0.0.1:8080</span>
+        </div>
+        <div class="cli-option">
+          <span class="option-name">--ids-file</span>
+          <span class="option-desc">JSON file mapping path parameter names to concrete values</span>
+        </div>
+        <div class="cli-option">
+          <span class="option-name">--rewrite</span>
+          <span class="option-desc">Regex=>replacement rewrite applied to each URL (can be repeated)</span>
+        </div>
+        <div class="cli-option">
+          <span class="option-name">--no-sanitize</span>
+          <span class="option-desc">Disable built-in URL normalization; only apply explicit --rewrite rules</span>
+        </div>
+        <div class="cli-option">
+          <span class="option-name">--retry500</span>
+          <span class="option-desc">Adaptive retries on HTTP 5xx for POST/PUT/PATCH (default: 1)</span>
+        </div>
+        <div class="cli-option">
+          <span class="option-name">--no-retry-500</span>
+          <span class="option-desc">Disable adaptive 5xx retries</span>
+        </div>
+        <div class="cli-option">
+          <span class="option-name">--normalize-version</span>
+          <span class="option-desc">Normalize version segments in URLs like /v2.00/ -> /v2.0/</span>
+        </div>
+      </div>
+    </section>
+
     <section id="recipes" class="grid features">
+      <h2>Usage Examples & Recipes</h2>
+      
       <article class="card">
-        <h3>Bearer token</h3>
+        <h3>Basic Scan with Bearer Token</h3>
+        <pre><code>python apiscan.py --url https://api.example.com \
+  --swagger openapi.json \
+  --flow token --token "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  --threads 5</code></pre>
+      </article>
+      
+      <article class="card">
+        <h3>API Key Authentication</h3>
+        <pre><code>python apiscan.py --url https://api.example.com \
+  --swagger openapi.json \
+  --apikey "your-api-key-here" --apikey-header "X-API-Key" \
+  --api1 --api2 --api5  # Test only specific vulnerabilities</code></pre>
+      </article>
+      
+      <article class="card">
+        <h3>OAuth2 Client Credentials</h3>
+        <pre><code>python apiscan.py --url https://api.example.com \
+  --swagger openapi.json \
+  --flow client \
+  --client-id "your-client-id" \
+  --client-secret "your-client-secret" \
+  --token-url "https://auth.example.com/oauth/token" \
+  --scope "api.read api.write"</code></pre>
+      </article>
+      
+      <article class="card">
+        <h3>Planning Phase Only</h3>
+        <pre><code>python apiscan.py --url https://api.example.com \
+  --swagger openapi.json \
+  --flow token --token "&lt;JWT&gt;" \
+  --plan-only</code></pre>
+        <p>Generates <code>apiscan-plan.csv</code> with all planned requests without executing them.</p>
+      </article>
+      
+      <article class="card">
+        <h3>Verification with Custom Success Codes</h3>
         <pre><code>python apiscan.py --url https://api.example.com \
   --swagger openapi.json \
   --flow token --token "&lt;JWT&gt;" \
   --verify-plan --success-codes "200-299,304"</code></pre>
+        <p>Tests all planned requests and expects success codes in 200-299 range or 304.</p>
       </article>
+      
       <article class="card">
-        <h3>API key header</h3>
-        <pre><code>python apiscan.py --url https://api.example.com \
-  --swagger openapi.json \
-  --apikey "secret" --apikey-header x-api-key \
-  --plan-only</code></pre>
-      </article>
-      <article class="card">
-        <h3>Multiple custom headers</h3>
-        <pre><code>python apiscan.py --url https://api.example.com \
-  --swagger openapi.json \
-  --extra-header "x-jwt-header: secret..." \
-  --extra-header "x-tenant-id: acc" \
-  --verify-plan</code></pre>
-      </article>
-      <article class="card">
-        <h3>Headers from file</h3>
-        <pre><code># headers.json
-{ "x-jwt-header": "secret...", "x-tenant-id":"acc" }
+        <h3>Using ID Mapping File</h3>
+        <pre><code># ids.json content:
+{
+  "userId": "12345",
+  "orderId": "67890", 
+  "vehicleId": "abc123",
+  "postId": "post-001"
+}
 
 python apiscan.py --url https://api.example.com \
-  --swagger openapi.json --headers-file headers.json</code></pre>
+  --swagger openapi.json \
+  --ids-file ids.json \
+  --flow token --token "&lt;JWT&gt;"</code></pre>
       </article>
+      
       <article class="card">
-        <h3>IDs / Path variables</h3>
-        <pre><code># ids.json
-{ "userId": "me", "orderId": 1, "Nunber": "100001" }
-
-python apiscan.py --url https://api.example.com \
-  --swagger openapi.json --ids-file ids.json</code></pre>
-      </article>
-      <article class="card">
-        <h3>crAPI exact paths</h3>
-        <pre><code>python apiscan.py --url http://127.0.0.1:8888 \
-  --swagger .\archive\crapi-openapi-spec.json \
-  --flow token --token "&lt;JWT&gt;" \
-  --no-sanitize --plan-only --verify-plan \
-  --proxy 127.0.0.1:8080</code></pre>
-      </article>
-      <article class="card">
-        <h3>Rewrite fixes</h3>
+        <h3>URL Rewriting for Path Normalization</h3>
         <pre><code>python apiscan.py --url https://api.example.com \
   --swagger openapi.json \
   --rewrite "/v2(?!\.)=&gt;/v2.00" \
   --rewrite "/alpha/beta/alpha=&gt;/alpha/beta" \
-  --verify-plan</code></pre>
+  --no-sanitize \
+  --flow token --token "&lt;JWT&gt;"</code></pre>
       </article>
+      
       <article class="card">
-        <h3>Only GETs</h3>
+        <h3>Through Proxy with Debug Output</h3>
         <pre><code>python apiscan.py --url https://api.example.com \
-  --swagger openapi.json --method-filter GET \
-  --plan-only --verify-plan</code></pre>
+  --swagger openapi.json \
+  --proxy http://127.0.0.1:8080 \
+  --insecure \
+  --debug \
+  --flow token --token "&lt;JWT&gt;"</code></pre>
+      </article>
+      
+      <article class="card">
+        <h3>Dummy Mode for Testing</h3>
+        <pre><code>python apiscan.py --url https://api.example.com \
+  --swagger openapi.json \
+  --dummy \
+  --flow token --token "&lt;JWT&gt;" \
+  --verify-plan</code></pre>
+        <p>Uses generated dummy data for all request bodies and parameters.</p>
+      </article>
+      
+      <article class="card">
+        <h3>Custom Headers from File</h3>
+        <pre><code># headers.json content:
+{
+  "X-Custom-Header": "custom-value",
+  "X-Tenant-ID": "tenant-123",
+  "X-Request-ID": "req-456"
+}
+
+python apiscan.py --url https://api.example.com \
+  --swagger openapi.json \
+  --headers-file headers.json \
+  --flow token --token "&lt;JWT&gt;"</code></pre>
+      </article>
+      
+      <article class="card">
+        <h3>AI-Assisted Analysis</h3>
+        <pre><code># Set environment variables first
+export LLM_PROVIDER=openai_compat
+export LLM_MODEL=gpt-4o-mini
+export LLM_API_KEY=sk-...
+
+python apiscan.py --url https://api.example.com \
+  --swagger openapi.json \
+  --flow token --token "&lt;JWT&gt;" \
+  --api11  # Run AI-assisted analysis</code></pre>
+      </article>
+      
+      <article class="card">
+        <h3>Adaptive Retry on Server Errors</h3>
+        <pre><code>python apiscan.py --url https://api.example.com \
+  --swagger openapi.json \
+  --flow token --token "&lt;JWT&gt;" \
+  --retry500 3  # Retry up to 3 times on 5xx errors</code></pre>
+      </article>
+      
+      <article class="card">
+        <h3>Comprehensive Enterprise Scan</h3>
+        <pre><code>python apiscan.py --url https://api.company.com \
+  --swagger enterprise-api.json \
+  --flow token --token "&lt;JWT&gt;" \
+  --threads 10 \
+  --proxy http://corporate-proxy:8080 \
+  --ids-file prod-ids.json \
+  --headers-file prod-headers.json \
+  --rewrite "/v1/=&gt;/v1.00/" \
+  --retry500 3 \
+  --verify-plan \
+  --success-codes "200-299,302,304"</code></pre>
       </article>
     </section>
 
+    <section id="workflow">
+      <h2>Scan Workflow</h2>
+      <div class="flow-diagram">
+        <h3>APISCAN Execution Flow</h3>
+        <ol>
+          <li><strong>Initialization</strong>: Parse arguments, set up logging, create output directory</li>
+          <li><strong>Authentication</strong>: Configure session with specified auth flow</li>
+          <li><strong>API Reachability</strong>: Check if target API is accessible</li>
+          <li><strong>Swagger Processing</strong>: Load and parse OpenAPI specification</li>
+          <li><strong>Planning Phase</strong>: Generate request plan from endpoints (optional)</li>
+          <li><strong>Verification Phase</strong>: Test planned requests (optional)</li>
+          <li><strong>Security Audits</strong>: Execute selected API security tests (API1-API11)</li>
+          <li><strong>Reporting</strong>: Generate HTML reports and combined summary</li>
+        </ol>
+      </div>
+    </section>
+
     <section class="risks" id="risks">
-      <h2>Supported Risks</h2>
+      <h2>Supported OWASP API Security Risks</h2>
       <div class="risk-grid">
-        <div class="card risk"><h3>API1</h3><p>Broken Object Level Authorization</p></div>
-        <div class="card risk"><h3>API2</h3><p>Broken Authentication</p></div>
-        <div class="card risk"><h3>API3</h3><p>Property Level Authorization</p></div>
-        <div class="card risk"><h3>API4</h3><p>Unrestricted Resource Consumption</p></div>
-        <div class="card risk"><h3>API5</h3><p>Function Level Authorization</p></div>
-        <div class="card risk"><h3>API6</h3><p>Sensitive Business Logic</p></div>
-        <div class="card risk"><h3>API7</h3><p>SSRF</p></div>
-        <div class="card risk"><h3>API8</h3><p>Security Misconfiguration</p></div>
-        <div class="card risk"><h3>API9</h3><p>Improper Inventory Management</p></div>
-        <div class="card risk"><h3>API10</h3><p>Unsafe Consumption of 3rd‑Party APIs</p></div>
-        <div class="card risk"><h3>API11</h3><p>AI‑assisted Security Analysis</p></div>
+        <div class="card risk">
+          <h3>API1: Broken Object Level Authorization</h3>
+          <p>Tests for inadequate access controls on object endpoints using ID manipulation and privilege escalation attempts.</p>
+        </div>
+        <div class="card risk">
+          <h3>API2: Broken Authentication</h3>
+          <p>Assesses authentication mechanisms for weaknesses like credential stuffing, weak tokens, and flawed session management.</p>
+        </div>
+        <div class="card risk">
+          <h3>API3: Broken Object Property Level Authorization</h3>
+          <p>Checks if users can access or modify object properties they shouldn't have permissions for.</p>
+        </div>
+        <div class="card risk">
+          <h3>API4: Unrestricted Resource Consumption</h3>
+          <p>Tests for resource exhaustion attacks through large payloads, deep nesting, or excessive requests.</p>
+        </div>
+        <div class="card risk">
+          <h3>API5: Broken Function Level Authorization</h3>
+          <p>Verifies proper authorization checks for sensitive functions and administrative endpoints.</p>
+        </div>
+        <div class="card risk">
+          <h3>API6: Unrestricted Access to Sensitive Business Flows</h3>
+          <p>Assesses business logic vulnerabilities that could be exploited to manipulate workflows.</p>
+        </div>
+        <div class="card risk">
+          <h3>API7: Server Side Request Forgery (SSRF)</h3>
+          <p>Tests for SSRF vulnerabilities where the API makes requests to internal or external resources.</p>
+        </div>
+        <div class="card risk">
+          <h3>API8: Security Misconfiguration</h3>
+          <p>Checks for security misconfigurations like verbose errors, insecure defaults, or missing security headers.</p>
+        </div>
+        <div class="card risk">
+          <h3>API9: Improper Inventory Management</h3>
+          <p>Assesses API inventory exposure including outdated versions, exposed debug endpoints, and deprecated APIs.</p>
+        </div>
+        <div class="card risk">
+          <h3>API10: Unsafe Consumption of APIs</h3>
+          <p>Tests for vulnerabilities when consuming third-party APIs, including data validation and trust boundaries.</p>
+        </div>
+        <div class="card risk">
+          <h3>API11: AI-Assisted Security Analysis</h3>
+          <p>Uses AI to identify complex security patterns and business logic flaws that traditional scanners might miss.</p>
+        </div>
       </div>
     </section>
 
     <section id="troubleshoot">
       <h2>Troubleshooting</h2>
       <div class="grid features">
-        <article class="card"><h3>404 everywhere</h3><p>Use <code>--no-sanitize</code> to avoid path normalization, or add targeted <code>--rewrite</code> rules. Verify paths in your proxy.</p></article>
-        <article class="card"><h3>401 / 403</h3><p>Expired/insufficient token or missing headers. Re‑authenticate and confirm headers via proxy.</p></article>
-        <article class="card"><h3>400 / 422</h3><p>Body/params invalid. Inspect <code>requestBody</code> in the spec and the actual request in your proxy.</p></article>
-        <article class="card"><h3>Missing headers</h3><p>Prefer <code>--headers-file</code> for environment‑specific values. Spec <em>examples/defaults</em> are also applied.</p></article>
+        <article class="card">
+          <h3>Connection Issues</h3>
+          <p><strong>Symptoms</strong>: Timeouts, connection refused, SSL errors<br>
+          <strong>Solutions</strong>: Check network connectivity, verify URL, use <code>--insecure</code> for self-signed certs, configure proxy with <code>--proxy</code></p>
+        </article>
+        <article class="card">
+          <h3>Authentication Failures</h3>
+          <p><strong>Symptoms</strong>: 401 Unauthorized, 403 Forbidden responses<br>
+          <strong>Solutions</strong>: Verify token validity, check auth flow configuration, ensure proper headers with <code>--headers-file</code> or <code>--extra-header</code></p>
+        </article>
+        <article class="card">
+          <h3>Path/Endpoint Issues</h3>
+          <p><strong>Symptoms</strong>: 404 Not Found, wrong endpoints being called<br>
+          <strong>Solutions</strong>: Use <code>--no-sanitize</code> to disable URL normalization, add <code>--rewrite</code> rules for path corrections, verify Swagger file accuracy</p>
+        </article>
+        <article class="card">
+          <h3>Request Body Problems</h3>
+          <p><strong>Symptoms</strong>: 400 Bad Request, 422 Unprocessable Entity<br>
+          <strong>Solutions</strong>: Use <code>--dummy</code> for generated data, check request body schemas in Swagger, use <code>--export_vars</code> to create template</p>
+        </article>
+        <article class="card">
+          <h3>Performance Issues</h3>
+          <p><strong>Symptoms</strong>: Slow scanning, timeouts<br>
+          <strong>Solutions</strong>: Reduce <code>--threads</code>, use <code>--apiX</code> flags to run specific tests only</p>
+        </article>
+        <article class="card">
+          <h3>AI Analysis Failures</h3>
+          <p><strong>Symptoms</strong>: API11 errors, LLM connection issues<br>
+          <strong>Solutions</strong>: Verify LLM environment variables (LLM_PROVIDER, LLM_MODEL, LLM_API_KEY), check API quotas, ensure network access to LLM provider</p>
+        </article>
       </div>
     </section>
 
-    
+    <section id="output">
+      <h2>Output & Reporting</h2>
+      <div class="grid features">
+        <article class="card">
+          <h3>HTML Reports</h3>
+          <p>Individual vulnerability reports (<code>api_*_report.html</code>) and combined master report with detailed findings, risk levels, and remediation guidance.</p>
+        </article>
+        <article class="card">
+          <h3>CSV Files</h3>
+          <p><code>apiscan-plan.csv</code> (planned requests) and <code>apiscan-verify.csv</code> (verification results) for further analysis or integration with other tools.</p>
+        </article>
+        <article class="card">
+          <h3>Log Files</h3>
+          <p>Detailed execution logs in the <code>log/</code> directory with timestamps, request/response data, and error information for debugging.</p>
+        </article>
+        <article class="card">
+          <h3>Console Output</h3>
+          <p>Real-time progress with colored status indicators, vulnerability counts, and summary statistics upon completion.</p>
+        </article>
+      </div>
+    </section>
+
     <section id="prereq">
       <h2>Prerequisite: You need an OpenAPI/Swagger file</h2>
       <p>APISCAN works from an <strong>OpenAPI/Swagger</strong> specification to plan and verify calls.<br>
@@ -236,7 +644,8 @@ python postman-to-swagger.py --input ./MyCollection.postman_collection.json --ou
 # Then run APISCAN using the converted spec
 python apiscan.py --url https://api.example.com --swagger ./openapi.json --plan-only --verify-plan</code></pre>
     </section>
-<section id="links">
+
+    <section id="links">
       <h2>Links</h2>
       <p>Repository: <a href="https://github.com/perrym/apiscanner" target="_blank" rel="noopener">perrym/apiscanner</a></p>
       <p>Medium: <a href="https://medium.com/@PerryPM/apiscan-a-practical-approach-to-api-security-testing-by-perry-mertens-96b5e676c071" target="_blank" rel="noopener">APISCAN – a practical approach</a></p>
@@ -250,6 +659,22 @@ python apiscan.py --url https://api.example.com --swagger ./openapi.json --plan-
 
   <script>
     document.getElementById('year').textContent = new Date().getFullYear();
+    
+    function showTab(tabId) {
+      // Hide all tab contents
+      document.querySelectorAll('.tab-content').forEach(tab => {
+        tab.classList.remove('active');
+      });
+      
+      // Remove active class from all tabs
+      document.querySelectorAll('.tab').forEach(tab => {
+        tab.classList.remove('active');
+      });
+      
+      // Show selected tab content and mark tab as active
+      document.getElementById(tabId).classList.add('active');
+      event.currentTarget.classList.add('active');
+    }
   </script>
 </body>
 </html>

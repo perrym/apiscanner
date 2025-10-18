@@ -1,5 +1,5 @@
 ---
-title: APISCAN v1.1 AI-Aware OWASP API Security Scanner by Perry Mertens
+title: APISCAN v2.0 AI-Aware OWASP API Security Scanner by Perry Mertens
 description: Free and open-source API security scanner built in Python with AI support, multi-auth, and rich reporting.
 ---
 <meta content="VvYq2k5BFp5dpIL6JpQhoe90sWEXZTEBbaynlEKCWRE" name="google-site-verification">
@@ -21,8 +21,9 @@ Redistribution is not permitted without explicit permission.
 
 ---
 
-## What's New in v1.1
+## What's New in v2.0
 
+- **A version-agnostic OpenAPI helper that loads specs (JSON/YAML) iterates operations, builds concrete HTTP requests (params/bodies), and applies security `.
 - **Generic sanitizer** (no hardcodes): collapse duplicate segments, normalize `/vN  /vN.00`, trim trailing slash. Toggle with `--no-sanitize`; refine with `--rewrite "pat=>rep"`.
 - **Universal header overrides**: `--flow token --token`, `--apikey --apikey-header`, `--extra-header`, `--headers-file headers.json`. Spec `example/default` values are autoapplied.
 - **IDs & path variables**: `--ids-file ids.json` to control `{param}`; robust fallbacks for uuid/id/code/email/date when missing.

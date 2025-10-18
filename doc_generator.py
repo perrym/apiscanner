@@ -210,7 +210,6 @@ def discover_files(pattern: str) -> List[str]:
     return paths
 
 def insert_intro(html_text: str) -> str:
-    """Inject INTRO_HTML right after the first <h1> tag in the document."""
     soup: BeautifulSoup = BeautifulSoup(html_text, "html.parser")
     header: Tag | None = soup.body.find("h1") if soup.body else None
 
@@ -220,9 +219,9 @@ def insert_intro(html_text: str) -> str:
     header.insert_after(BeautifulSoup(INTRO_HTML, "html.parser"))
     return str(soup)
 
-
+#----------Infer risk key from filename ---------------------
 def infer_risk_key(filename: str) -> str:
-    """Infer risk key from filename via numeric ID or regex aliases."""
+    
     lower = filename.lower()
 
     
@@ -244,7 +243,6 @@ def infer_risk_key(filename: str) -> str:
         if n in num_map:
             return num_map[n]
 
-    # Regex aliases
     for regex, key in ALIASES.items():
         if re.search(regex, lower):
             return key
@@ -261,10 +259,6 @@ def extract_styles(soup: BeautifulSoup) -> Tuple[List[Tag], List[Tag]]:
 
 
 def add_back_links(section: Tag):
-    """Place - links after headings that start with 'Finding'.
-
-    BeautifulSoup <Tag> does not always have the method `new_tag` in older bs4 versions. Therefore, we use a separate soup-factory to create the new <a> tags - works in all bs4 versions.
-    """
     factory = BeautifulSoup("", "html.parser")
     for hdr in section.find_all(["h2", "h3", "h4", "h5", "h6"]):
         if hdr.get_text(strip=True).lower().startswith("finding"):
@@ -299,22 +293,22 @@ def build_header(idx: int, risk_key: str) -> Tag:
         "div", **{"class": "rapport-header", "id": f"rapport{idx}"}
     )
 
-    # - Title
+    # ----- Title
     h1 = soup.new_tag("h1")
     h1.string = info["title"]             
     header_div.append(h1)
 
-    # - - Back to index
+    # ---- Back to index
     link_top = soup.new_tag("a", href="#top", **{"class": "back-to-index"})
     link_top.string = "- Back to index"
     header_div.append(link_top)
 
-    # - Description
+    # ----- Description
     p_desc = soup.new_tag("p")
     p_desc.string = info["description"]
     header_div.append(p_desc)
 
-    # - Recommendations
+    # ----- Recommendations
     details = soup.new_tag("details")
     summary = soup.new_tag("summary")
     summary.string = "Recommendations"
@@ -358,20 +352,10 @@ def build_headerold(idx: int, risk_key: str) -> Tag:
     return header_div
 
 # ---------------------- MERGE LOGIC --------------------------------
-from pathlib import Path
-from typing import List
-import re
-from bs4 import BeautifulSoup
-
 def generate_combined_html(output: str, files: List[str]):
-    """
-    Combineert meerdere API HTML-rapporten tot --n overzicht
-    met index, OWASP-koppen, ---links -n gededupliceerde CSS.
-    """
     if not files:
         raise ValueError("No files found matching the pattern.")
 
-    # -- Sorteren op API-nummer ------------------------------------------------
     files_sorted = sorted(
         files,
         key=lambda fp: int(
@@ -385,7 +369,7 @@ def generate_combined_html(output: str, files: List[str]):
     sections_html: list[str] = []
     collected_styles: list[str] = []
 
-    # -- Inhoud en styles verzamelen ------------------------------------------
+# -----------  index ---------------------------
     for idx, path in enumerate(files_sorted, start=1):
         risk_key = infer_risk_key(Path(path).name)
         risk_keys.append(risk_key)
@@ -405,7 +389,7 @@ def generate_combined_html(output: str, files: List[str]):
         add_back_links(wrapper)
         sections_html.append(str(wrapper))
 
-    # -- CSS dedupliceren -----------------------------------------------------
+# ------------- CSS dedupliceed -----------------------------------------------------
     unique_styles: list[str] = []
     seen: set[str] = set()
     for raw in collected_styles:
@@ -414,7 +398,7 @@ def generate_combined_html(output: str, files: List[str]):
             seen.add(css)
             unique_styles.append(css)
 
-    # -- Eind-HTML samenstellen -----------------------------------------------
+    # -- End-HTML ----------------------------------------------
     nav_html = build_index(risk_keys)
 
     final_html = f"""<!DOCTYPE html>

@@ -41,6 +41,16 @@ manual_file_map = {
 
 SEVERITY_ORDER = ["Critical", "High", "Medium", "Low", "Info"]
 
+def _extract_status(issue: dict) -> int | None:
+    for k in ("status_code", "res_status", "status", "http_status"):
+        v = issue.get(k)
+        if v in (None, "", "-"):
+            continue
+        try:
+            return int(v)
+        except (ValueError, TypeError):
+            continue
+    return None
 
 def _iter_headers(hdrs):
     """
@@ -60,6 +70,12 @@ class EnhancedReportGenerator:
         self.scanner = scanner
         self.base_url = base_url or "-"
         self.timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        drop_http0 = kwargs.get("drop_http0", True)
+        _issues = issues or []
+        if drop_http0:
+            _issues = [i for i in _issues if (_extract_status(i) or -1) > 0]
+        self.issues = _issues
 
     def _format_request_html(self, issue: Dict[str, Any]) -> str:
         method = issue.get("method", "GET").upper()
@@ -560,8 +576,7 @@ def combine_html_reports(output_dir: Path):
             </div>
         </section>
         """
-
-    # Add smooth scrolling and finalize
+   
     combined_html += """
     <script>
         document.querySelectorAll('.nav-links a').forEach(anchor => {
@@ -577,7 +592,7 @@ def combine_html_reports(output_dir: Path):
     </html>
     """
     
-    # Save the combined report
+    # -------------- Save the combined report ----------------
     combined_path = output_dir / "combined_report.html"
     try:
         combined_path.write_text(combined_html, encoding='utf-8')

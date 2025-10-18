@@ -1,58 +1,62 @@
-##############################################
-# APISCAN - API Security Scanner             #
-# Licensed under the MIT License             #
-# Author: Perry Mertens (2025)               #
-##############################################
+
+from __future__ import annotations
 
 import json
 import re
-import requests
-import logging
 import time
+import logging
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, List, Optional
-from urllib.parse import urljoin, urlparse
-from requests import Request, exceptions as req_exc
+from typing import Any, Dict, List, Optional, Tuple, Iterable
+from urllib.parse import urljoin, urlparse, parse_qsl
+
+import requests
+from requests import exceptions as req_exc
 from tqdm import tqdm
 
 from report_utils import ReportGenerator
+from openapi_universal import (
+    iter_operations as oas_iter_ops,
+    build_request as oas_build_request,
+    SecurityConfig as OASSecurityConfig,
+)
 
-# Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ---------------- Helpers ------------------
-def _is_real_issue(issue: dict) -> bool:
-    try:
-        return int(issue.get("status_code", 0)) != 0
-    except (ValueError, TypeError):
-        return False
-
-def _headers_to_list(hdrs):
-    if hasattr(hdrs, "getlist"):
-        out = []
-        for k in hdrs:
-            for v in hdrs.getlist(k):
-                out.append((k, v))
-        return out
-    return list(hdrs.items())
 
 def classify_risk(status_code: int, response_body: str = "", sensitive: bool = False, size_alert: bool = False, cross_user: bool = False) -> str:
+    if status_code in (0, 400, 404, 405):
+        return "Ignore"
+    if 500 <= status_code < 600:
+        return "Ignore"
     if status_code == 200 and (sensitive or cross_user or size_alert):
         return "High"
     if status_code == 200:
         return "Medium"
     if status_code == 403:
         return "Low"
-    if 500 <= status_code < 600:
-        return "Low"
-    if status_code == 0:
-        return "Ignore"
     return "Low"
 
-# ---------------- Data Classes -------------
+
+def _is_real_issue(issue: dict) -> bool:
+    try:
+        return int(issue.get("status_code", 0)) != 0
+    except (ValueError, TypeError):
+        return False
+
+
+def _headers_to_list(hdrs) -> List[Tuple[str, str]]:
+    if hasattr(hdrs, "getlist"):
+        out = []
+        for k in hdrs:
+            for v in hdrs.getlist(k):
+                out.append((k, v))
+        return out
+    return list(hdrs.items()) if hdrs else []
+
+
 @dataclass
 class TestResult:
     test_case: str = ""
@@ -71,11 +75,20 @@ class TestResult:
     error: Optional[str] = None
     timestamp: str = ""
     request_body: str = ""
+
     sensitive_hit: bool = False
     size_alert: bool = False
     cross_user: bool = False
 
+    true_positive: bool = False
+    fingerprint: str = ""
+    duplicate_of: Optional[str] = None
+    duplicate_count: int = 1
+
     def to_dict(self):
+        # For risk display only; true_positive is applied in _filter_issues()
+        cross_for_risk = bool(self.cross_user and self.method.upper() in {"GET", "PUT", "DELETE"})
+        sens_for_risk = bool(self.sensitive_hit or self.true_positive)
         return {
             "method": self.method,
             "url": self.url,
@@ -86,9 +99,9 @@ class TestResult:
             "severity": classify_risk(
                 self.status_code,
                 self.response_sample,
-                sensitive=self.sensitive_hit,
+                sensitive=sens_for_risk,
                 size_alert=self.size_alert,
-                cross_user=self.cross_user
+                cross_user=cross_for_risk,
             ),
             "timestamp": self.timestamp or datetime.now().isoformat(),
             "request_parameters": self.params or {},
@@ -97,92 +110,262 @@ class TestResult:
             "request_body": self.request_sample,
             "response_headers": self.response_headers or [],
             "response_cookies": self.response_cookies or {},
-            "response_body": (str(self.response_sample) if self.response_sample else "")
+            "response_body": (str(self.response_sample) if self.response_sample else ""),
+            "true_positive": self.true_positive,
+            "cross_user": self.cross_user,
+            "sensitive_hit": self.sensitive_hit,
+            "fingerprint": self.fingerprint,
+            "duplicate_of": self.duplicate_of,
+            "duplicate_count": self.duplicate_count,
+            "variants": getattr(self, "variants", [self.test_case]),
         }
 
-# ---------------- Auditor ------------------
+
 class BOLAAuditor:
-    def __init__(self, session, test_delay=0.2, max_retries=1, show_subbars=True):
-        self.session = session
+    def __init__(
+        self,
+        *args,
+        session: Optional[requests.Session] = None,
+        base_url: Optional[str] = None,
+        swagger_spec: Optional[Dict[str, Any]] = None,
+        test_delay: float = 0.2,
+        max_retries: int = 1,
+        show_subbars: bool = True,
+        timeout: float = 10.0,
+        ignore_http_statuses: Optional[Iterable[int]] = None,
+        ignore_http_5xx: bool = True,
+    ) -> None:
+        sess_arg: Optional[requests.Session] = session
+        base_arg: Optional[str] = base_url
+
+        if len(args) == 2 and isinstance(args[0], str) and isinstance(args[1], requests.Session):
+            base_arg = args[0]
+            sess_arg = args[1]
+        elif len(args) == 1 and isinstance(args[0], requests.Session):
+            sess_arg = args[0]
+        elif len(args) == 1 and isinstance(args[0], str):
+            base_arg = args[0]
+
+        if base_arg and "://" not in base_arg:
+            base_arg = "http://" + base_arg
+
+        if sess_arg is None:
+            raise ValueError("Session is required")
+        if not base_arg or not isinstance(base_arg, str):
+            raise ValueError("base_url is required")
+
+        self.session = sess_arg
+        self.base_url = base_arg.rstrip("/") + "/"
+        self.timeout = timeout
+
+        self.ignore_statuses = set(ignore_http_statuses or (0, 400, 404, 405))
+        self.ignore_http_5xx = bool(ignore_http_5xx)
+
         self.issues: List[dict] = []
-        self.object_key_patterns = [
-            r'(?:^|_)id$', r'uuid$', r'_id$', r'key$',
-            r'email$', r'token$', r'slug$',
-            r'user', r'account', r'profile'
-        ]
-        self.sensitive_data_patterns = [
-            r'email', r'password', r'token',
-            r'auth', r'admin', r'credit.?card', r'phone',
-            r'secret', r'private', r'personal'
-        ]
         self.test_delay = test_delay
         self.max_retries = max_retries
-        self.base_url = ""
         self.show_subbars = show_subbars
 
-    def load_swagger(self, swagger_path: str) -> Optional[Dict]:
+        self.swagger_spec = swagger_spec or {}
+        self._op_index: Dict[Tuple[str, str], dict] = {}
+        for _op in oas_iter_ops(self.swagger_spec or {}):
+            self._op_index[(_op["method"], _op["path"])] = _op
+        self._op_shape_index: Dict[Tuple[str, str], dict] = {}
+        for (m, p), op in self._op_index.items():
+            self._op_shape_index[(m, self._canonical_path(p))] = op
+
+        self._endpoints_cache: Optional[List[Dict[str, Any]]] = None
+
+    # ---------- utilities
+
+    def _canonical_path(self, p: str) -> str:
+        p = "/" + (p or "").lstrip("/")
+        return re.sub(r"\{[^}]+\}", "{}", p)
+
+    def _abs_url(self, path_or_url: str) -> str:
+        if path_or_url.startswith(("http://", "https://")):
+            return path_or_url
+        return urljoin(self.base_url, path_or_url.lstrip("/"))
+
+    def _canonicalize_url(self, url: str) -> str:
         try:
-            path = Path(swagger_path)
-            if not path.exists():
-                logger.error(f"Swagger file not found: {swagger_path}")
-                return None
-            spec = json.loads(path.read_text(encoding="utf-8"))
-            logger.info(f"Swagger loaded: {len(spec.get('paths', {}))} endpoints found")
+            u = urlparse(url)
+            # Canonicalize query: keep only keys (drop values)
+            keys = sorted({k for k, _ in parse_qsl(u.query, keep_blank_values=True)})
+            qs = "&".join(keys)
+            return f"{u.scheme}://{u.netloc}{u.path}?{qs}" if qs else f"{u.scheme}://{u.netloc}{u.path}"
+        except Exception:
+            return url
+
+    def _json_shape(self, text: str) -> str:
+        if not text:
+            return ""
+        try:
+            data = json.loads(text)
+        except Exception:
+            return re.sub(r"\s+", " ", text).strip()[:4096]
+
+        def normalize(val):
+            if isinstance(val, dict):
+                return {k: normalize(v) for k, v in sorted(val.items(), key=lambda x: x[0]) if k not in {"timestamp","time","date","requestId","request_id"}}
+            if isinstance(val, list):
+                return [normalize(val[0])] if val else []
+            if isinstance(val, str):
+                return "S"
+            if isinstance(val, (int, float)):
+                return "N"
+            if val is None:
+                return "null"
+            if isinstance(val, bool):
+                return "B"
+            return "X"
+        try:
+            shaped = normalize(data)
+            return json.dumps(shaped, separators=(",", ":"), ensure_ascii=False)[:8192]
+        except Exception:
+            return re.sub(r"\s+", " ", text).strip()[:4096]
+
+    def _fingerprint(self, method: str, url: str, status: int, body_text: str) -> str:
+        canon = self._canonicalize_url(url)
+        shape = self._json_shape(body_text or "")
+        h = hashlib.sha1(f"{method}|{canon}|{status}|{shape}".encode("utf-8", "ignore")).hexdigest()
+        return f"{method}|{canon}|{status}|{h}"
+
+    def _detect_sensitive(self, body_text: str) -> bool:
+        if not body_text:
+            return False
+        text = (body_text or "").strip()
+        try:
+            data = json.loads(text)
+            seen_keys = set()
+            def walk(obj):
+                if isinstance(obj, dict):
+                    for k, v in obj.items():
+                        kl = str(k).lower()
+                        if kl in {"email", "access_token", "refresh_token", "token"}:
+                            if isinstance(v, str) and v.strip():
+                                seen_keys.add(kl)
+                        if kl in {"message", "status", "detail", "error"}:
+                            continue
+                        walk(v)
+                elif isinstance(obj, list):
+                    for it in obj:
+                        walk(it)
+            walk(data)
+            if seen_keys:
+                return True
+        except Exception:
+            pass
+        if re.search(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", text, flags=re.I):
+            return True
+        if re.search(r"\beyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\b", text):
+            return True
+        return False
+
+    def _is_true_positive(self, method: str, status_code: int, cross_user: bool, contains_sensitive: bool) -> bool:
+        if status_code != 200:
+            return False
+        if method.upper() in {"GET", "PUT", "DELETE"} and cross_user:
+            return True
+        if contains_sensitive:
+            return True
+        return False
+
+    def _is_generic_success(self, body_text: str) -> bool:
+        if not body_text:
+            return True
+        try:
+            data = json.loads(body_text)
+            if isinstance(data, dict):
+                allowed = {"message", "status", "detail", "error"}
+                keys = set(map(lambda k: str(k).lower(), data.keys()))
+                if keys and keys.issubset(allowed):
+                    return all(not isinstance(v, (dict, list)) for v in data.values())
+        except Exception:
+            pass
+        trimmed = body_text.strip().lower()
+        if len(trimmed) <= 64 and trimmed in {"ok", "success", "done", "created", "updated", "deleted"}:
+            return True
+        return False
+
+    # ---------- OpenAPI plumbing
+
+    def load_swagger(self, swagger_path: str) -> Optional[Dict[str, Any]]:
+        try:
+            with open(swagger_path, "r", encoding="utf-8") as f:
+                spec = json.loads(f.read())
+            self.swagger_spec = spec
+            self._op_index.clear()
+            for _op in oas_iter_ops(self.swagger_spec or {}):
+                self._op_index[(_op["method"], _op["path"])] = _op
+            self._op_shape_index.clear()
+            for (m, p), op in self._op_index.items():
+                self._op_shape_index[(m, self._canonical_path(p))] = op
+            self._endpoints_cache = None
             return spec
         except Exception as e:
             logger.error(f"Error loading Swagger: {e}", exc_info=True)
             return None
 
-    def get_object_endpoints(self, swagger_spec: Dict) -> List[Dict]:
-        endpoints: List[Dict] = []
-        paths = swagger_spec.get("paths", {})
-        for path, path_item in paths.items():
-            if not isinstance(path_item, dict):
-                continue
-            path_params = path_item.get("parameters", [])
-            for method, operation in path_item.items():
-                if method.lower() not in ["get", "post", "put", "delete", "patch"] or not isinstance(operation, dict):
-                    continue
-                all_params = path_params + operation.get("parameters", [])
-                object_params = self._find_object_params(all_params)
-                rb = operation.get("requestBody", {})
-                content = rb.get("content", {})
-                if "application/json" in content:
-                    schema = content["application/json"].get("schema", {}) or {}
-                    for prop, prop_schema in (schema.get("properties", {}) or {}).items():
-                        if any(re.search(pat, prop.lower()) for pat in self.object_key_patterns):
-                            object_params.append({
-                                "name": prop,
-                                "in": "body",
-                                "required": prop in (schema.get("required", []) or []),
-                                "type": prop_schema.get("type", "string"),
-                                "format": prop_schema.get("format", ""),
-                                "description": prop_schema.get("description", "")
-                            })
-                if object_params:
-                    endpoints.append({
-                        "path": path,
-                        "method": method.upper(),
-                        "parameters": object_params,
-                        "operation_id": operation.get("operationId", ""),
-                        "summary": operation.get("summary", ""),
-                        "description": operation.get("description", ""),
-                        "security": operation.get("security", [])
-                    })
+    def get_object_endpoints(self, swagger_spec: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        spec = swagger_spec or self.swagger_spec or {}
+        if self._endpoints_cache is not None:
+            return self._endpoints_cache
+
+        endpoints: List[Dict[str, Any]] = []
+        for op in oas_iter_ops(spec or {}):
+            path = op["path"]
+            method = op["method"]
+            meta = op.get("raw", {})
+
+            path_params = (meta.get("parameters") or []) if isinstance(meta, dict) else []
+            op_params = op.get("parameters") or []
+            all_params = list(path_params) + list(op_params)
+
+            object_params = self._find_object_params(all_params)
+
+            rb = (op.get("requestBody") or meta.get("requestBody")) if isinstance(meta, dict) else op.get("requestBody")
+            content = (rb or {}).get("content", {})
+            if "application/json" in content:
+                schema = content["application/json"].get("schema", {}) or {}
+                for prop, prop_schema in (schema.get("properties", {}) or {}).items():
+                    if any(re.search(pat, str(prop).lower()) for pat in [r'(?:^|_)id$', r'uuid$', r'_id$', r'key$', r'email$', r'token$', r'slug$', r'user', r'account', r'profile']):
+                        object_params.append({
+                            "name": prop,
+                            "in": "body",
+                            "required": prop in (schema.get("required", []) or []),
+                            "type": prop_schema.get("type", "string"),
+                            "format": prop_schema.get("format", ""),
+                            "description": prop_schema.get("description", "")
+                        })
+
+            if object_params:
+                endpoints.append({
+                    "path": path,
+                    "method": method,
+                    "parameters": object_params,
+                    "operation_id": op.get("operationId", ""),
+                    "summary": op.get("summary", ""),
+                    "description": op.get("description", ""),
+                    "security": op.get("security", []),
+                    "request_body": rb or None,
+                })
+
         logger.info(f"Object endpoints detected: {len(endpoints)}")
+        self._endpoints_cache = endpoints
         return endpoints
 
-    def _find_object_params(self, parameters: List[Dict]) -> List[Dict]:
+    def _find_object_params(self, parameters: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         obj = []
         for param in parameters or []:
             if not isinstance(param, dict):
                 continue
             name = (param.get("name") or "").lower()
-            if any(re.search(pat, name) for pat in self.object_key_patterns):
+            if any(re.search(pat, name) for pat in [r'(?:^|_)id$', r'uuid$', r'_id$', r'key$', r'email$', r'token$', r'slug$', r'user', r'account', r'profile']):
                 schema = param.get("schema", {}) or {}
                 obj.append({
                     "name": param.get("name", ""),
-                    "in": param.get("in", ""),
+                    "in": param.get("in", "query"),
                     "required": param.get("required", False),
                     "type": schema.get("type", "string"),
                     "format": schema.get("format", ""),
@@ -190,7 +373,7 @@ class BOLAAuditor:
                 })
         return obj
 
-    def _generate_test_values(self, parameters: List[Dict]) -> Dict[str, Dict]:
+    def _generate_test_values(self, parameters: List[Dict[str, Any]]) -> Dict[str, Dict[str, str]]:
         base_values = {
             "valid": "1",
             "other_user": "2",
@@ -199,7 +382,7 @@ class BOLAAuditor:
             "null": "null",
             "urlenc_null": "%00",
             "urlenc_dotdot": "%2e%2e%2f",
-            "unicode_homoglyph": "\u13B0\u13B1",
+            "unicode_homoglyph": "\\u13B0\\u13B1",
             "sqlish": '" OR "1"="1"--',
             "non_existent": "99999",
             "random_uuid": "550e8400-e29b-41d4-a716-446655440000",
@@ -210,7 +393,7 @@ class BOLAAuditor:
             "integer": {"negative": "-1", "zero": "0", "large": "2147483647"},
             "string": {"long": "A" * 1000, "special_chars": "!@#$%^&*()"}
         }
-        cases: Dict[str, Dict] = {}
+        cases: Dict[str, Dict[str, str]] = {}
         for n, v in base_values.items():
             cases[n] = {p["name"]: v for p in parameters}
         for p in parameters:
@@ -218,39 +401,58 @@ class BOLAAuditor:
             if ptype in type_vals:
                 for n, v in type_vals[ptype].items():
                     cname = f"{ptype}_{n}"
-                    cases[cname] = {
-                        q["name"]: (v if q.get("type") == ptype else base_values["valid"])
-                        for q in parameters
-                    }
+                    cases[cname] = {q["name"]: (v if q.get("type") == ptype else base_values["valid"]) for q in parameters}
         return cases
 
-    def test_endpoint(self, base_url: str, endpoint: Dict, *, progress_position: int | None = None) -> List[TestResult]:
-        results: List[TestResult] = []
-        if not endpoint.get("parameters"):
-            return results
-        cases = self._generate_test_values(endpoint["parameters"])
-        desc = f"{endpoint['method']} {endpoint['path']}"
-        it = cases.items()
-        if self.show_subbars:
-            it = tqdm(
-                it,
-                desc=desc,
-                unit="case",
-                leave=False,
-                position=(progress_position if progress_position is not None else 1),
-                dynamic_ncols=True,
-            )
-        for name, vals in it:
-            time.sleep(self.test_delay)
-            results.append(self._test_object_access(base_url, endpoint, name, vals))
-        return results
+    def _build_req_from_op(self, method: str, path_template: str) -> Dict[str, Any]:
+        key = (method.upper(), path_template)
+        op = self._op_index.get(key) or self._op_shape_index.get((method.upper(), self._canonical_path(path_template)))
+        if not op:
+            raise KeyError(f"Operation not found: {method} {path_template}")
+        try:
+            return oas_build_request(self.swagger_spec, self.base_url, op, None)
+        except TypeError:
+            try:
+                return oas_build_request(self.base_url, op, OASSecurityConfig())
+            except Exception:
+                return {"method": method.upper(), "url": self._abs_url(path_template), "headers": {"User-Agent": "APISecurityScanner/2.1"}}
 
-    def _send_with_retry(self, prepared: requests.PreparedRequest) -> tuple[Optional[requests.Response], float, Optional[str]]:
+    def _apply_param_values(self, req: Dict[str, Any], endpoint: Dict[str, Any], values: Dict[str, str]) -> Dict[str, Any]:
+        out = dict(req)
+        out.setdefault("headers", {})
+        out.setdefault("params", {})
+        url = out.get("url") or self._abs_url(endpoint["path"])
+
+        for prm in endpoint.get("parameters", []):
+            pname = prm.get("name")
+            loc = prm.get("in", "query")
+            val = values.get(pname, "1")
+            if loc == "path":
+                url = url.replace(f"{{{pname}}}", str(val))
+
+        out["url"] = url
+
+        for prm in endpoint.get("parameters", []):
+            pname = prm.get("name")
+            loc = prm.get("in", "query")
+            val = values.get(pname, "1")
+            if loc == "query":
+                out["params"][pname] = val
+            elif loc == "header":
+                out["headers"][pname] = val
+            elif loc not in ("query", "header", "path"):
+                base = dict(out.get("json") or {})
+                base[pname] = val
+                out["json"] = base
+
+        return out
+
+    def _send_with_retry(self, req: Dict[str, Any]) -> tuple[Optional[requests.Response], float, Optional[str]]:
         attempts = 0
         start = time.time()
         while True:
             try:
-                resp = self.session.send(prepared, timeout=10, allow_redirects=False)
+                resp = self.session.request(**req, timeout=self.timeout, allow_redirects=False)
                 return resp, (time.time() - start), None
             except (req_exc.Timeout, req_exc.ConnectionError) as exc:
                 attempts += 1
@@ -260,57 +462,74 @@ class BOLAAuditor:
             except Exception as exc:
                 return None, (time.time() - start), str(exc)
 
-    def _test_object_access(self, base_url: str, endpoint: dict, name: str, vals: dict) -> TestResult:
-        url = urljoin(base_url, endpoint["path"])
-        query_params: dict[str, str] = {}
-        json_body: dict[str, str] = {}
-        headers: dict[str, str] = {"User-Agent": "APISecurityScanner/1.0"}
+    def test_endpoint(self, base_url: str, endpoint: Dict[str, Any], *, progress_position: int | None = None) -> List[TestResult]:
+        results: List[TestResult] = []
+        if not endpoint.get("parameters"):
+            return results
+        cases = self._generate_test_values(endpoint["parameters"])
+        desc = f"{endpoint['method']} {endpoint['path']}"
+        it = cases.items()
+        if self.show_subbars:
+            it = tqdm(it, desc=desc, unit="case", leave=False, position=(progress_position if progress_position is not None else 1), dynamic_ncols=True)
+        for name, vals in it:
+            time.sleep(self.test_delay)
+            results.append(self._test_object_access(endpoint, name, vals))
+        return results
 
-        for prm in endpoint.get("parameters", []):
-            pname = prm["name"]
-            loc = prm.get("in", "query")
-            value = vals.get(pname, "1")
-            if loc == "path":
-                url = url.replace(f"{{{pname}}}", str(value))
-            elif loc == "query":
-                query_params[pname] = value
-            elif loc == "header":
-                headers[pname] = value
-            else:
-                json_body[pname] = value
+    def _test_object_access(self, endpoint: dict, name: str, vals: dict) -> TestResult:
+        method = endpoint["method"]
+        try:
+            req = self._build_req_from_op(method, endpoint["path"])
+        except KeyError:
+            req = {"method": method, "url": self._abs_url(endpoint["path"]), "headers": {"User-Agent": "APISecurityScanner/2.1"}}
 
-        req = Request(method=endpoint["method"], url=url, headers=headers, params=query_params, json=json_body or None)
-        prepared = self.session.prepare_request(req)
-        resp, resp_time, error_msg = self._send_with_retry(prepared)
-        status_code = resp.status_code if resp else 0
-        body_text = resp.text if resp else ""
+        req = self._apply_param_values(req, endpoint, vals)
+
+        resp, resp_time, error_msg = self._send_with_retry(req)
+        status_code = int(getattr(resp, "status_code", 0) or 0)
+        body_text = resp.text if resp is not None else ""
         sample = self._sanitize_response(body_text)
-        contains_sensitive = any(re.search(pat, body_text or "", re.I) for pat in self.sensitive_data_patterns)
+
+        contains_sensitive = self._detect_sensitive(body_text)
         large_body = len(body_text or "") > 10000
         cross_user = ("other_user" in name)
-        is_vuln = status_code == 200 and (contains_sensitive or large_body or cross_user) if status_code != 0 else False
 
-        return TestResult(
+        true_pos = self._is_true_positive(method, status_code, cross_user, contains_sensitive)
+        is_vuln = status_code == 200 and (true_pos or large_body) if status_code != 0 else False
+
+        effective_url = getattr(getattr(resp, "request", None), "url", req.get("url"))
+        req_headers = dict(getattr(getattr(resp, "request", None), "headers", req.get("headers", {}))) if resp else dict(req.get("headers", {}))
+        req_body = getattr(getattr(resp, "request", None), "body", None) if resp else (req.get("json") or req.get("data"))
+        if isinstance(req_body, (bytes, bytearray)):
+            try:
+                req_body = req_body.decode("utf-8", errors="replace")
+            except Exception:
+                pass
+
+        tr = TestResult(
             test_case=name,
-            method=prepared.method or "",
-            url=prepared.url or url,
+            method=req.get("method", method),
+            url=effective_url or req.get("url", ""),
             status_code=status_code,
             response_time=resp_time,
             is_vulnerable=is_vuln,
-            response_sample=sample,
-            request_sample=(prepared.body.decode() if isinstance(prepared.body, (bytes, bytearray)) else (prepared.body or "")),
-            params=query_params,
-            headers=_headers_to_list(prepared.headers),
-            response_headers=_headers_to_list(resp.headers) if resp else [],
+            response_sample=(sample or ""),
+            request_sample=(req_body if isinstance(req_body, str) else json.dumps(req_body) if req_body is not None else ""),
+            params=dict(req.get("params") or {}),
+            headers=_headers_to_list(req_headers),
+            response_headers=_headers_to_list(getattr(resp, "headers", {})) if resp else [],
             request_cookies=self.session.cookies.get_dict(),
-            response_cookies=resp.cookies.get_dict() if resp else {},
+            response_cookies=(resp.cookies.get_dict() if resp else {}),
             error=error_msg,
             timestamp=datetime.now().isoformat(),
-            request_body=(prepared.body.decode() if isinstance(prepared.body, (bytes, bytearray)) else prepared.body or ""),
+            request_body=(req_body if isinstance(req_body, str) else json.dumps(req_body) if req_body is not None else ""),
             sensitive_hit=contains_sensitive,
             size_alert=large_body,
-            cross_user=cross_user
+            cross_user=cross_user,
+            true_positive=true_pos,
         )
+        tr.fingerprint = self._fingerprint(tr.method, tr.url, tr.status_code, body_text or tr.response_sample)
+        return tr
 
     def _sanitize_response(self, text: str, max_length: int = 200) -> str:
         if not text:
@@ -318,16 +537,108 @@ class BOLAAuditor:
         sanitized = re.sub(r'(password|token|secret|authorization)"?\s*:\s*"[^"]+"', r'\1":"*****"', text, flags=re.I)
         return (sanitized[:max_length] + "...") if len(sanitized) > max_length else sanitized
 
-    def generate_report(self, fmt: str = "markdown") -> str:
-        clean_issues = [i for i in self.issues if _is_real_issue(i)]
-        return ReportGenerator(clean_issues, scanner="Bola", base_url=self.base_url).generate_html()
+    # ---------- FILTERING ----------
+    def _filter_issues(self) -> None:
+        """
+        Keep only True Positive BOLA findings and deduplicate by stable fingerprint.
+        - TP definition: HTTP 200 AND ( (GET/PUT/DELETE AND cross_user) OR sensitive content )
+        - Ignore 0/400/404/405 and all 5xx (configurable via init).
+        - Canonicalize URL (drop query values) and normalize JSON body during dedup.
+        """
+        if not isinstance(self.issues, list) or not self.issues:
+            self.issues = []
+            return
 
-    def _get_base_url(self, results: List[TestResult]):
-        if not results:
-            return "N/A"
-        parsed = urlparse(results[0].url)
-        return f"{parsed.scheme}://{parsed.netloc}"
+        filtered: List[dict] = []
+        for it in self.issues:
+            try:
+                code = int(it.get("status_code", 0) or 0)
+            except Exception:
+                continue
+            if code in self.ignore_statuses:
+                continue
+            if self.ignore_http_5xx and (500 <= code < 600):
+                continue
 
-    def save_report(self, path: str, fmt: str = "markdown"):
-        clean_issues = [i for i in self.issues if _is_real_issue(i)]
-        ReportGenerator(clean_issues, scanner="Bola", base_url=self.base_url).save(path, fmt="html")
+            method = str(it.get("method", "") or "").upper()
+            cross_user = bool(it.get("cross_user")) or ("other_user" in str(it.get("description") or "").lower())
+            body = it.get("response_body") or ""
+            contains_sensitive = bool(it.get("sensitive_hit")) or self._detect_sensitive(body)
+
+            tp = bool(it.get("true_positive"))
+            if not tp:
+                tp = self._is_true_positive(method, code, cross_user, contains_sensitive)
+
+            if not tp:
+                continue
+
+            # ensure fingerprint
+            fp = it.get("fingerprint")
+            if not fp:
+                fp = self._fingerprint(method, it.get("url", it.get("endpoint", "")), code, body)
+                it["fingerprint"] = fp
+
+            # ensure severity reflects TP
+            it["severity"] = classify_risk(code, body, sensitive=True, size_alert=bool(it.get("size_alert")), cross_user=cross_user)
+            it["true_positive"] = True
+            it["cross_user"] = cross_user
+            it["sensitive_hit"] = contains_sensitive
+            it.setdefault("variants", [it.get("description", "")])
+            it.setdefault("duplicate_count", 1)
+
+            filtered.append(it)
+
+        # Deduplicate by fingerprint
+        dedup: Dict[str, dict] = {}
+        for it in filtered:
+            fp = it.get("fingerprint")
+            if not fp:
+                continue
+            if fp in dedup:
+                dedup[fp]["duplicate_count"] = dedup[fp].get("duplicate_count", 1) + 1
+                variants = dedup[fp].setdefault("variants", [])
+                desc = it.get("description", "")
+                if desc and desc not in variants:
+                    variants.append(desc)
+            else:
+                dedup[fp] = it
+
+        self.issues = list(dedup.values())
+
+    # ---------- PIPELINE ----------
+    def run(self, swagger_spec: Optional[Dict[str, Any]] = None) -> List[TestResult]:
+        spec = swagger_spec or self.swagger_spec or {}
+        endpoints = self.get_object_endpoints(spec)
+        bar = tqdm(endpoints, desc="BOLA", unit="endpoint", dynamic_ncols=True) if self.show_subbars else endpoints
+
+        unique_results: List[TestResult] = []
+        seen: Dict[str, TestResult] = {}
+
+        iterator = enumerate(bar)
+        for i, ep in iterator:
+            results = self.test_endpoint(self.base_url, ep, progress_position=(i + 1 if self.show_subbars else None))
+            for tr in results:
+                # Run-time filter is intentionally permissive; final filter happens in _filter_issues()
+                fp = tr.fingerprint or self._fingerprint(tr.method, tr.url, tr.status_code, tr.response_sample)
+                if fp in seen:
+                    seen_tr = seen[fp]
+                    seen_tr.duplicate_count += 1
+                    if tr.test_case not in (getattr(seen_tr, "variants", []) or []):
+                        setattr(seen_tr, "variants", (getattr(seen_tr, "variants", []) or []) + [tr.test_case])
+                    continue
+                setattr(tr, "variants", [tr.test_case])
+                seen[fp] = tr
+                unique_results.append(tr)
+
+        # Pre-fill issues with raw results; report generation will filter
+        self.issues = [tr.to_dict() for tr in unique_results if _is_real_issue(tr.to_dict())]
+        return unique_results
+
+    def generate_report(self, fmt: str = "html") -> str:
+        self._filter_issues()
+        gen = ReportGenerator(issues=self.issues, scanner="Bola Api1", base_url=self.base_url)
+        return gen.generate_html() if fmt == "html" else gen.generate_markdown()
+
+    def save_report(self, path: str, fmt: str = "html"):
+        self._filter_issues()
+        ReportGenerator(self.issues, scanner="Bola Api1", base_url=self.base_url).save(path, fmt=fmt)

@@ -1,8 +1,9 @@
 ##############################################
 # APISCAN - API Security Scanner             #
 # Licensed under the MIT License             #
-# Author: Perry Mertens pamsniffer@gmail.com #
-##############################################
+# Author: Perry Mertens (C)                  #
+##############################################                                              
+                                              
 import os
 import json
 import time
@@ -10,6 +11,8 @@ import ssl
 from typing import Any, Dict, List, Tuple, Optional
 from urllib.parse import urljoin, urlencode, urlparse
 import requests
+from pathlib import Path
+import argparse
 
 """
 # Using a local model on port 1123
@@ -39,7 +42,7 @@ export LLM_API_PORT=11434
 export LLM_MODEL=llama2
 """
 
-# OWASP API Security Top 10 labels
+                                  
 OWASP_TOP_10 = [
     "API1: Broken Object Level Authorization",
     "API2: Broken Authentication",
@@ -79,7 +82,7 @@ Provide your answer ONLY as valid JSON with these fields:
 }}
 """.strip()
 
-# Environment
+             
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai_compat").strip().lower()
 MODEL_NAME = os.getenv("LLM_MODEL", "gpt-4o-mini")
 API_KEY = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or os.getenv("AZURE_OPENAI_API_KEY") or os.getenv("DEEPSEEK_API_KEY") or os.getenv("MISTRAL_API_KEY")
@@ -96,7 +99,7 @@ DEFAULT_TOP_P = float(os.getenv("LLM_TOP_P", "0.95"))
 DEFAULT_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "1024"))
 USER_AGENT = os.getenv("LLM_USER_AGENT", "apiscan-ai-client/1.0")
 
-# Provider configurations
+                         
 PROVIDER_CONFIGS = {
     "openai": {
         "base_url": "https://api.openai.com/v1",
@@ -153,7 +156,7 @@ def _requests_session() -> requests.Session:
     s = requests.Session()
     if not VERIFY_SSL:
         s.verify = False
-        # Disable SSL warnings
+                              
         import urllib3
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     return s
@@ -175,11 +178,12 @@ def _normalize_anthropic_messages(messages: List[Dict[str, str]], system: Option
 def _is_ollama_base(url: str) -> bool:
     return ":11434" in url or url.endswith(":11434")
 
+# ----------------------- Funtion _build_base_url ----------------------------#
 def _build_base_url() -> str:
     if LLM_PROVIDER == "azure_openai":
         return AZURE_OPENAI_ENDPOINT
     
-    # Get provider config
+                         
     provider_config = PROVIDER_CONFIGS.get(LLM_PROVIDER, PROVIDER_CONFIGS["openai_compat"])
     base_url = provider_config.get("base_url", API_BASE)
     
@@ -202,11 +206,12 @@ def _build_base_url() -> str:
     
     return base_url.rstrip("/")
 
+# ----------------------- Funtion _openai_compat_chat ----------------------------#
 def _openai_compat_chat(messages: List[Dict[str, str]], system: Optional[str], model: str, temperature: float, top_p: float, max_tokens: int) -> str:
     base = _build_base_url()
     endpoint = "chat/completions"
     
-    # Handle different API structures
+                                     
     if LLM_PROVIDER in ["deepseek", "mistral"]:
         endpoint = "chat/completions"
     elif LLM_PROVIDER == "ollama":
@@ -214,7 +219,7 @@ def _openai_compat_chat(messages: List[Dict[str, str]], system: Optional[str], m
     
     url = urljoin(base + "/", endpoint)
     
-    # Prepare payload based on provider
+                                       
     if LLM_PROVIDER == "ollama":
         payload = {
             "model": model,
@@ -234,7 +239,7 @@ def _openai_compat_chat(messages: List[Dict[str, str]], system: Optional[str], m
             "max_tokens": max_tokens
         }
     
-    # Prepare headers based on provider
+                                       
     headers = _headers_json()
     if LLM_PROVIDER in ["openai", "openai_compat", "deepseek", "mistral"]:
         headers["Authorization"] = f"Bearer {API_KEY}"
@@ -262,6 +267,7 @@ def _openai_compat_chat(messages: List[Dict[str, str]], system: Optional[str], m
     else:
         return data.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
 
+# ----------------------- Funtion _azure_openai_chat ----------------------------#
 def _azure_openai_chat(messages: List[Dict[str, str]], system: Optional[str], model: str, temperature: float, top_p: float, max_tokens: int) -> str:
     if not AZURE_OPENAI_ENDPOINT:
         raise RuntimeError("AZURE_OPENAI_ENDPOINT not set")
@@ -286,6 +292,7 @@ def _azure_openai_chat(messages: List[Dict[str, str]], system: Optional[str], mo
     
     return data.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
 
+# ----------------------- Funtion _anthropic_chat ----------------------------#
 def _anthropic_chat(messages: List[Dict[str, str]], system: Optional[str], model: str, temperature: float, top_p: float, max_tokens: int) -> str:
     base = _build_base_url()
     url = urljoin(base + "/", "v1/messages")
@@ -317,9 +324,11 @@ def _anthropic_chat(messages: List[Dict[str, str]], system: Optional[str], model
                 return part["text"]
     return ""
 
+# ----------------------- Funtion _ollama_chat ----------------------------#
 def _ollama_chat(messages: List[Dict[str, str]], system: Optional[str], model: str, temperature: float, top_p: float, max_tokens: int) -> str:
     return _openai_compat_chat(messages, system, model, temperature, top_p, max_tokens)
 
+# ----------------------- Funtion _extract_json ----------------------------#
 def _extract_json(text: str) -> Any:
     if not text:
         return None
@@ -358,6 +367,7 @@ def _extract_json(text: str) -> Any:
     
     return None
 
+# ----------------------- Funtion chat_json ----------------------------#
 def chat_json(messages: List[Dict[str, str]], system: Optional[str] = None, model: Optional[str] = None, temperature: Optional[float] = None, top_p: Optional[float] = None, max_tokens: Optional[int] = None) -> Any:
     m = model or MODEL_NAME
     temp = DEFAULT_TEMPERATURE if temperature is None else float(temperature)
@@ -376,6 +386,7 @@ def chat_json(messages: List[Dict[str, str]], system: Optional[str] = None, mode
     obj = _extract_json(text)
     return obj if obj is not None else {"raw": text}
 
+# ----------------------- Funtion live_probe ----------------------------#
 def live_probe() -> Dict[str, Any]:
     base = _build_base_url()
     info = {
@@ -440,12 +451,8 @@ def live_probe() -> Dict[str, Any]:
     except Exception as ex:
         return {"ok": False, "error": str(ex), "info": info}
 
+# ----------------------- Funtion analyze_endpoints_with_llm ----------------------------#
 def analyze_endpoints_with_llm(endpoints, live_base_url: str = "", print_results: bool = False, model: str = None):
-    """
-    Analyze a list of endpoints using the configured LLM.
-    endpoints: iterable of {"path": str, "method": str}
-    Returns: list of {"path","method","analysis": <json or {"raw": text}>} or {"error": "..."}.
-    """
     results = []
     for ep in endpoints:
         path = ep.get("path", "")
@@ -468,17 +475,14 @@ def analyze_endpoints_with_llm(endpoints, live_base_url: str = "", print_results
             results.append({"path": path, "method": method, "error": str(ex)})
     return results
 
+# ----------------------- Funtion save_ai_summary ----------------------------#
 def save_ai_summary(results, out_path):
-    """Write results to JSON file and return the file path."""
-    import json
-    from pathlib import Path
     p = Path(out_path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
     return str(p)
 
 if __name__ == "__main__":
-    import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--system", default="", help="System prompt")
     parser.add_argument("--message", default="Return a JSON object: {\"hello\":\"world\"}", help="User message")
@@ -490,4 +494,3 @@ if __name__ == "__main__":
     msgs.append({"role": "user", "content": args.message})
     result = chat_json(msgs, system=args.system, model=args.model)
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    

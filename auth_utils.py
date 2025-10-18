@@ -1,10 +1,10 @@
-
 #########################################################
 # APISCAN - Authentication Utilities                    #
 # Compatible with apiscan.py CLI flags (2025-09-09)     #
 # Flows: none | token | client | basic | ntlm | auth    #
 # Author: Perry Mertens                                 #
 #########################################################
+                                                         
 from __future__ import annotations
 
 import logging
@@ -21,46 +21,45 @@ from requests.auth import HTTPBasicAuth
 
 logger = logging.getLogger("auth_utils")
 
-# Optional dependencies
-try:  # NTLM (optional)
-    from requests_ntlm import HttpNtlmAuth  # type: ignore
-except Exception:  # pragma: no cover
-    HttpNtlmAuth = None  # type: ignore
+                       
+try:                   
+    from requests_ntlm import HttpNtlmAuth                
+except Exception:                    
+    HttpNtlmAuth = None                
 
-try:  # OAuth2 (optional)
-    from requests_oauthlib import OAuth2Session  # type: ignore
-    from oauthlib.oauth2 import BackendApplicationClient, WebApplicationClient  # type: ignore
-except Exception:  # pragma: no cover
-    OAuth2Session = None  # type: ignore
-    BackendApplicationClient = None  # type: ignore
-    WebApplicationClient = None  # type: ignore
+try:                     
+    from requests_oauthlib import OAuth2Session                
+    from oauthlib.oauth2 import BackendApplicationClient, WebApplicationClient                
+except Exception:                    
+    OAuth2Session = None                
+    BackendApplicationClient = None                
+    WebApplicationClient = None                
 
 
 class AuthConfigError(Exception):
-    """Raised when authentication configuration is invalid."""
     pass
 
-
-# ----------------------- Local callback server (Authorization Code) -----------------------
 class _CallbackHandler(BaseHTTPRequestHandler):
     _path_with_query: Optional[str] = None
 
-    def do_GET(self):  # noqa: N802
+    def do_GET(self):              
         type(self)._path_with_query = self.requestline.split(" ")[1]
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
         self.wfile.write(b"<html><body><h3>Authentication complete. You may close this window.</h3></body></html>")
 
-    def log_message(self, format, *args):  # silence default logging
+    def log_message(self, format, *args):                           
         return
 
+# ----------------------- Funtion _start_callback_server ----------------------------#
 def _start_callback_server(host: str, port: int) -> Tuple[HTTPServer, threading.Thread]:
     server = HTTPServer((host, port), _CallbackHandler)
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
     return server, t
 
+# ----------------------- Funtion _wait_for_callback ----------------------------#
 def _wait_for_callback(server: HTTPServer, timeout: int = 300) -> str:
     for _ in range(timeout * 10):
         if _CallbackHandler._path_with_query:
@@ -70,7 +69,8 @@ def _wait_for_callback(server: HTTPServer, timeout: int = 300) -> str:
     raise AuthConfigError("Timed out waiting for OAuth2 redirect callback")
 
 
-# ----------------------- Helpers applied regardless of flow -----------------------
+                                                                                    
+# ----------------------- Funtion _apply_api_key ----------------------------#
 def _apply_api_key(sess: requests.Session, args) -> None:
     api_key = getattr(args, "apikey", None)
     if api_key:
@@ -78,6 +78,7 @@ def _apply_api_key(sess: requests.Session, args) -> None:
         sess.headers[header] = api_key.strip()
         logger.debug("API key header applied: %s", header)
 
+# ----------------------- Funtion _apply_mtls ----------------------------#
 def _apply_mtls(sess: requests.Session, args) -> None:
     cert = getattr(args, "client_cert", None)
     key = getattr(args, "client_key", None)
@@ -87,11 +88,12 @@ def _apply_mtls(sess: requests.Session, args) -> None:
         sess.cert = (cert, key)
         logger.debug("mTLS client cert configured")
 
+# ----------------------- Funtion _format_bearer ----------------------------#
 def _format_bearer(token: str) -> str:
     return token if token.startswith("Bearer ") else f"Bearer {token}"
 
-
-# ----------------------- OAuth2 helpers -----------------------
+                                                               
+# ----------------------- Funtion _oauth_client_credentials ----------------------------#
 def _oauth_client_credentials(args) -> str:
     if OAuth2Session is None or BackendApplicationClient is None:
         raise AuthConfigError("OAuth2 dependencies missing. Install: pip install requests-oauthlib oauthlib")
@@ -107,6 +109,7 @@ def _oauth_client_credentials(args) -> str:
     token = oauth.fetch_token(token_url=token_url, client_id=cid, client_secret=csec, scope=scope)
     return token["access_token"]
 
+# ----------------------- Funtion _oauth_authorization_code ----------------------------#
 def _oauth_authorization_code(args) -> str:
     if OAuth2Session is None or WebApplicationClient is None:
         raise AuthConfigError("OAuth2 dependencies missing. Install: pip install requests-oauthlib oauthlib")
@@ -120,7 +123,7 @@ def _oauth_authorization_code(args) -> str:
     if missing:
         raise AuthConfigError(f"--flow auth requires: {', '.join(missing)}")
 
-    # Derive host/port from redirect_uri (e.g., http://127.0.0.1:8765/callback)
+                                                                               
     parsed = urlparse(redirect_uri)
     host = parsed.hostname or "127.0.0.1"
     port = parsed.port or 8765
@@ -147,7 +150,8 @@ def _oauth_authorization_code(args) -> str:
             pass
 
 
-# ----------------------- Public entry point -----------------------
+                                                                    
+# ----------------------- Funtion configure_authentication ----------------------------#
 def configure_authentication(args) -> requests.Session:
     sess = requests.Session()
     insecure = bool(getattr(args, "insecure", False))
@@ -193,15 +197,15 @@ def configure_authentication(args) -> requests.Session:
         ntlm_str = getattr(args, "ntlm", None)
         if not ntlm_str:
             raise AuthConfigError("--flow ntlm requires --ntlm DOMAIN\\user:password (or user:password)")
-        # Accept DOMAIN\user:pass or user:pass
-        m = re.match(r"(.+)\\(.+):(.+)", ntlm_str)  # DOMAIN\user:pass
+                                              
+        m = re.match(r"(.+)\\(.+):(.+)", ntlm_str)                    
         if m:
             domain, user, pwd = m.groups()
             if HttpNtlmAuth is None:
                 raise AuthConfigError("requests-ntlm not installed. Install: pip install requests-ntlm")
             sess.auth = HttpNtlmAuth(f"{domain}\\\\{user}", pwd)
             return sess
-        m = re.match(r"([^\\:]+):(.+)", ntlm_str)  # user:pass (no domain)
+        m = re.match(r"([^\\:]+):(.+)", ntlm_str)                         
         if m:
             user, pwd = m.groups()
             if HttpNtlmAuth is None:

@@ -1,0 +1,1091 @@
+#########################################
+# APISCAN - API Security Scanner        #
+# Licensed under the MIT License        #
+# Author: Perry Mertens  2025           #
+#########################################
+import argparse
+import json
+import re
+import sys
+import urllib3
+import pickle
+import time
+import random
+from typing import Dict, List, Set, Any, Optional, Tuple
+from urllib.parse import urljoin, urlparse, parse_qs
+import requests
+import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from bs4 import BeautifulSoup
+from requests.auth import HTTPBasicAuth
+from requests_ntlm import HttpNtlmAuth
+from requests_oauthlib import OAuth2Session
+from oauthlib.oauth2 import BackendApplicationClient
+
+logging.getLogger("urllib3").setLevel(logging.ERROR)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+JSON_CT_HINTS = (
+    "application/json",
+    "application/problem+json",
+    "application/vnd.api+json",
+    "application/x-ndjson",
+    "text/json",
+)
+
+API_CT_HINTS = JSON_CT_HINTS + (
+    "application/xml",
+    "text/xml",
+)
+
+
+# ---------------- OpenAPI universal helpers (embedded) ----------------
+
+# openapi_universal.py
+# Minimal, standalone helpers for iterating OpenAPI ops and building safe requests.
+# Keep dependencies standard library only.
+from dataclasses import dataclass, field
+from typing import Dict, Iterator, List, Optional, Tuple, Any
+import json
+import base64
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+HTTP_METHODS = {"get","put","post","delete","options","head","patch","trace"}
+DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/140.0"
+DEFAULT_ACCEPT = "application/json, text/html, application/xml;q=0.9, */*;q=0.8"
+
+@dataclass
+class SecurityConfig:
+    api_key_value: Optional[str] = None
+    api_key_header_name: Optional[str] = None
+    api_key_query_name: Optional[str] = None
+    bearer_token: Optional[str] = None
+    basic_user: Optional[str] = None
+    basic_pass: Optional[str] = None
+    cookie_name: Optional[str] = None
+    cookie_value: Optional[str] = None
+    extra_headers: Dict[str, str] = field(default_factory=dict)
+    extra_cookies: Dict[str, str] = field(default_factory=dict)
+
+def canonical_mime(ct: Optional[str]) -> str:
+    if not ct:
+        return "application/json"
+    return ct.split(";", 1)[0].strip().lower() or "application/json"
+
+def _first_server_url(spec: Dict[str, Any], base_url: Optional[str]) -> str:
+    if base_url:
+        return base_url
+    servers = spec.get("servers") or []
+    if servers and isinstance(servers, list):
+        url = (servers[0] or {}).get("url")
+        if url:
+            return str(url)
+    return ""
+
+def _combine_parameters(path_item: Dict[str, Any], op_obj: Dict[str, Any]) -> List[Dict[str, Any]]:
+    combined = []
+    seen = set()
+    for src in (path_item.get("parameters") or [], op_obj.get("parameters") or []):
+        for p in src:
+            key = (p.get("name"), p.get("in"))
+            if key in seen:
+                continue
+            seen.add(key)
+            combined.append(p)
+    return combined
+
+def iter_operations(spec: Dict[str, Any]) -> Iterator[Dict[str, Any]]:
+    paths = spec.get("paths") or {}
+    for raw_path, path_item in paths.items():
+        if not isinstance(path_item, dict):
+            continue
+        for m, op_obj in path_item.items():
+            if m.lower() not in HTTP_METHODS or not isinstance(op_obj, dict):
+                continue
+            params = _combine_parameters(path_item, op_obj)
+            path_params = [p.get("name") for p in params if (p.get("in") == "path")]
+            query_params = [p.get("name") for p in params if (p.get("in") == "query")]
+            cookie_params = [p.get("name") for p in params if (p.get("in") == "cookie")]
+            yield {
+                "path": raw_path,
+                "method": m.upper(),
+                "operationId": op_obj.get("operationId"),
+                "parameters": params,
+                "path_params": path_params,
+                "query_params": query_params,
+                "cookie_params": cookie_params,
+            }
+
+def _fill_path(path_template: str, values: Dict[str, Any]) -> str:
+    result = path_template
+    # naive but safe: replace {name} with provided value or "0"
+    for part in _extract_brace_params(path_template):
+        v = values.get(part, "0")
+        result = result.replace("{" + part + "}", urllib.parse.quote(str(v), safe=""))
+    return result
+
+def _extract_brace_params(path_template: str) -> List[str]:
+    out, buf, in_brace = [], [], False
+    for ch in path_template:
+        if ch == "{":
+            in_brace, buf = True, []
+        elif ch == "}":
+            if in_brace and buf:
+                out.append("".join(buf))
+            in_brace, buf = False, []
+        elif in_brace:
+            buf.append(ch)
+    return out
+
+def apply_security(req: Dict[str, Any], cfg: Optional[SecurityConfig]) -> Dict[str, Any]:
+    if cfg is None:
+        return req
+    headers = dict(req.get("headers") or {})
+    params = dict(req.get("params") or {})
+    cookies = dict(req.get("cookies") or {})
+
+    if cfg.api_key_value:
+        if cfg.api_key_header_name:
+            headers[cfg.api_key_header_name] = cfg.api_key_value
+        if cfg.api_key_query_name:
+            params[cfg.api_key_query_name] = cfg.api_key_value
+    if cfg.bearer_token:
+        headers["Authorization"] = f"Bearer {cfg.bearer_token}"
+    if cfg.basic_user is not None and cfg.basic_pass is not None:
+        token = base64.b64encode(f"{cfg.basic_user}:{cfg.basic_pass}".encode()).decode()
+        headers["Authorization"] = f"Basic {token}"
+    if cfg.cookie_name and cfg.cookie_value:
+        cookies[cfg.cookie_name] = cfg.cookie_value
+    if cfg.extra_headers:
+        headers.update(cfg.extra_headers)
+    if cfg.extra_cookies:
+        cookies.update(cfg.extra_cookies)
+
+    req["headers"] = headers
+    req["params"] = params
+    req["cookies"] = cookies
+    return req
+
+def build_request(
+    spec: Dict[str, Any],
+    base_url: Optional[str],
+    op: Dict[str, Any],
+    cfg: Optional[SecurityConfig] = None,
+    param_values: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    param_values = param_values or {}
+    server = _first_server_url(spec, base_url)
+    raw_path = op["path"]
+    path_filled = _fill_path(raw_path, param_values)
+    if server:
+        url = urllib.parse.urljoin(server if server.endswith("/") else server + "/", path_filled.lstrip("/"))
+    else:
+        url = path_filled  # allow absolute paths
+
+    headers = {"Accept": DEFAULT_ACCEPT, "User-Agent": DEFAULT_UA}
+    params = {}
+    cookies = {}
+
+    # pre-fill query params only when provided
+    for name in (op.get("query_params") or []):
+        if name in param_values:
+            params[name] = param_values[name]
+
+    req = {"method": op["method"], "url": url, "headers": headers, "params": params, "cookies": cookies}
+    req = apply_security(req, cfg)
+    return req
+
+def load_spec(source: Any) -> Dict[str, Any]:
+    if isinstance(source, dict):
+        return source
+    if isinstance(source, Path) or (isinstance(source, str) and Path(source).exists()):
+        p = Path(source)
+        data = p.read_text(encoding="utf-8")
+        return json.loads(data)
+    if isinstance(source, str) and source.lower().startswith(("http://", "https://")):
+        with urllib.request.urlopen(source) as resp:
+            data = resp.read().decode("utf-8", errors="replace")
+            return json.loads(data)
+    raise ValueError("Unsupported source type for load_spec")
+
+__all__ = [
+    "SecurityConfig",
+    "canonical_mime",
+    "iter_operations",
+    "build_request",
+    "load_spec",
+    "apply_security",
+]
+
+# -------------- End OpenAPI universal helpers ----------------
+
+
+class UltimateSwaggerGenerator:
+    def __init__(self, base_url: str, delay: float = 0.0, aggressive: bool = False):
+        self.base_url = base_url.rstrip('/')
+        self.session = requests.Session()
+        self.delay = delay
+        self.aggressive = aggressive
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/140.0',
+            'Accept': 'application/json, text/html, application/xml;q=0.9, */*;q=0.8',
+            'Accept-Encoding': 'gzip, deflate'
+        })
+        self.swagger = {
+            "openapi": "3.0.0",
+            "info": {
+                "title": f"API Documentation for {base_url}",
+                "version": "1.0.0"
+            },
+            "servers": [{"url": base_url}],
+            "paths": {},
+            "components": {
+                "schemas": {},
+                "securitySchemes": {
+                    "bearerAuth": {
+                        "type": "http",
+                        "scheme": "bearer",
+                        "bearerFormat": "JWT"
+                    }
+                }
+            }
+        }
+        self.visited: Set[str] = set()
+        self.lock = threading.Lock()
+        self.api_patterns = [
+            r'(?i)/api/',
+            r'(?i)/v[0-9]+/',
+            r'(?i)\.(json|xml)$',
+            r'(?i)/graphql',
+            r'(?i)/rest/',
+            r'(?i)/restapi/',
+            r'(?i)/service(s)?/',
+            r'(?i)/data/',
+            r'(?i)/swagger',
+            r'(?i)/openapi',
+            r'(?i)/endpoints?',
+            r'(?i)/rpc/',
+            r'(?i)/jsonrpc',
+            r'(?i)/soap/',
+            r'(?i)/ws/',
+            r'(?i)/wss/',
+            r'(?i)/socket\.io',
+            r'(?i)/sockjs',
+            r'(?i)/_ah/api',
+            r'(?i)/_api',
+            r'(?i)/ajax/',
+            r'(?i)/async/',
+            r'(?i)/backend/',
+            r'(?i)/v2/',
+            r'(?i)/v3/',
+        ]
+        self.auth_tokens = {}
+        self.login_url = None
+        self.login_data = None
+        self.custom_headers = {}
+        self.log_path = "scan_log.ndjson"
+
+    # ------------------------ helpers ------------------------
+    def _mark_visited(self, url: str) -> bool:
+        with self.lock:
+            if url in self.visited:
+                return False
+            self.visited.add(url)
+            return True
+
+    def _same_host(self, url: str) -> bool:
+        return urlparse(url).netloc == urlparse(self.base_url).netloc
+
+    def _is_api_response(self, response: requests.Response) -> bool:
+        ct = response.headers.get("Content-Type", "").lower()
+        return any(vt in ct for vt in API_CT_HINTS)
+
+    def _is_json_like(self, response: requests.Response) -> bool:
+        ct = response.headers.get("Content-Type", "").lower()
+        if any(vt in ct for vt in JSON_CT_HINTS):
+            return True
+        # Some APIs serve JSON as text/plain or text/html (bad practice)
+        try:
+            _ = response.json()
+            return True
+        except Exception:
+            return False
+
+    def _normalise_path(self, url: str) -> str:
+        parsed = urlparse(url)
+        path = parsed.path or "/"
+        if "#" in path:
+            path = path.split("#", 1)[0]
+        # Replace numeric ids
+        path = re.sub(r"/\d+", "/{id}", path)
+        # Replace 24-hex mongo ids
+        path = re.sub(r"/[a-f0-9]{24}", "/{objectId}", path, flags=re.I)
+        # Replace things like /userId or /_id
+        path = re.sub(r"/([^/]*_?[iI][dD])", r"/{\1}", path)
+        return path
+
+    def _make_request(self, method: str, url: str, **kwargs) -> requests.Response:
+        # simple retry + rate limit handling
+        retries = 0
+        while True:
+            if self.delay:
+                time.sleep(self.delay)
+            try:
+                _timeout = kwargs.pop("timeout", 10)
+                resp = self.session.request(method, url, timeout=_timeout, **kwargs)
+            except requests.RequestException as e:
+                if retries < 2:
+                    retries += 1
+                    time.sleep(min(2**retries, 5))
+                    continue
+                raise
+            if self._handle_rate_limiting(resp):
+                retries += 1
+                if retries > 5:
+                    return resp
+                # exponential backoff with jitter
+                sleep_for = min(2**retries + random.random(), 60)
+                time.sleep(sleep_for)
+                continue
+            return resp
+
+    def _update_swagger_security_schemes(self):
+        if isinstance(self.session.auth, HTTPBasicAuth):
+            self.swagger["components"]["securitySchemes"]["basicAuth"] = {
+                "type": "http",
+                "scheme": "basic"
+            }
+        for header in self.session.headers:
+            if header.lower() in ['x-api-key', 'api-key']:
+                self.swagger["components"]["securitySchemes"]["apiKeyAuth"] = {
+                    "type": "apiKey",
+                    "in": "header",
+                    "name": header
+                }
+
+    def save_session(self, filename: str):
+        with open(filename, 'wb') as f:
+            pickle.dump(self.session.cookies, f)
+
+    def load_session(self, filename: str):
+        with open(filename, 'rb') as f:
+            self.session.cookies.update(pickle.load(f))
+
+    def set_basic_auth(self, username: str, password: str):
+        self.session.auth = HTTPBasicAuth(username, password)
+        self._update_swagger_security_schemes()
+
+    def set_token_auth(self, token: str, header_name: str = "Authorization"):
+        self.session.headers.update({header_name: f"Bearer {token}"})
+        self.auth_tokens[header_name] = f"Bearer {token}"
+        self._update_swagger_security_schemes()
+
+    def set_custom_header(self, header_name: str, header_value: str):
+        self.session.headers.update({header_name: header_value})
+        self.custom_headers[header_name] = header_value
+        self._update_swagger_security_schemes()
+
+    def set_login_form(self, url: str, data: Dict[str, str]):
+        self.login_url = url
+        self.login_data = data
+
+    def authenticate(self):
+        if self.login_url and self.login_data:
+            try:
+                response = self._make_request('POST', self.login_url, data=self.login_data, timeout=10)
+                if response.status_code == 200:
+                    print("[+] Successfully logged in via form")
+                    try:
+                        json_data = response.json()
+                        token = json_data.get('token') or json_data.get('access_token') or json_data.get('jwt')
+                        if token:
+                            self.set_token_auth(token)
+                    except Exception:
+                        token = response.headers.get('Authorization', '').replace('Bearer ', '')
+                        if token:
+                            self.set_token_auth(token)
+            except Exception as e:
+                print(f"[-] Login failed: {str(e)}")
+
+    def _handle_rate_limiting(self, response: requests.Response) -> bool:
+        if response.status_code == 429:
+            retry_after = response.headers.get('Retry-After')
+            if retry_after:
+                try:
+                    time.sleep(int(retry_after))
+                except Exception:
+                    time.sleep(5)
+            return True
+        return False
+
+    # ------------------------ crawling ------------------------
+    def crawl(self, max_depth: int = 3, aggressive: bool = False):
+        self.aggressive = aggressive or self.aggressive
+        self.authenticate()
+        self._crawl_page(self.base_url, max_depth)
+
+        if self.aggressive:
+            self._bruteforce_common_endpoints()
+            self._check_common_headers()
+
+    def _should_crawl(self, url: str) -> bool:
+        if not self._same_host(url):
+            return False
+        if url.startswith(('mailto:', 'tel:', 'javascript:')):
+            return False
+        skip_exts = ['.jpg', '.png', '.css', '.pdf', '.ico', '.svg']
+        # In aggressive mode, allow JS for static inspection
+        if not self.aggressive:
+            skip_exts.append('.js')
+        if any(url.lower().endswith(ext) for ext in skip_exts):
+            return False
+        with self.lock:
+            return url not in self.visited
+
+    def _crawl_page(self, url: str, depth: int):
+        if depth < 0:
+            return
+        if not self._mark_visited(url):
+            return
+
+        try:
+            print(f"[*] Crawling ({depth}): {url}")
+            response = self._make_request('GET', url, timeout=10)
+            content_type = response.headers.get('Content-Type', '')
+
+            if 'text/html' in content_type or (self.aggressive and 'text/' in content_type):
+                soup = BeautifulSoup(response.text, 'html.parser')
+
+                # Links
+                links = []
+                for link in soup.find_all(['a', 'link'], href=True):
+                    new_url = urljoin(url, link['href'])
+                    if self._should_crawl(new_url):
+                        links.append(new_url)
+
+                # Crawl parallel
+                with ThreadPoolExecutor(max_workers=10) as executor:
+                    futures = [executor.submit(self._crawl_page, link, depth - 1) for link in links]
+                    for _ in as_completed(futures):
+                        pass
+
+                # Forms
+                for form in soup.find_all('form'):
+                    self._process_form(url, form)
+
+                # Inline JS
+                for script in soup.find_all('script'):
+                    if script.string:
+                        self._find_js_apis(script.string, url)
+                        self._find_websockets(script.string, url)
+                        self._find_graphql(script.string, url)
+
+                # External JS
+                if self.aggressive:
+                    for script in soup.find_all('script', src=True):
+                        script_url = urljoin(url, script['src'])
+                        if not self._same_host(script_url):
+                            continue
+                        try:
+                            script_response = self._make_request('GET', script_url, timeout=5)
+                            if script_response.status_code == 200:
+                                self._find_js_apis(script_response.text, script_url)
+                                self._find_websockets(script_response.text, script_url)
+                                self._find_graphql(script_response.text, script_url)
+                        except Exception as e:
+                            print(f"[!] Error fetching JS: {script_url} - {str(e)}")
+
+                # Data-* attributes with full URLs
+                for tag in soup.find_all():
+                    for attr, val in tag.attrs.items():
+                        if attr.startswith("data-") and isinstance(val, str) and "http" in val:
+                            self._process_possible_api(val)
+
+            # Swagger autodetect
+            if url.lower().endswith((".json", ".yaml", ".yml")):
+                try:
+                    resp = self._make_request('GET', url, timeout=5)
+                    if resp.status_code == 200 and ("swagger" in resp.text or "openapi" in resp.text):
+                        print(f"[+] Swagger/OpenAPI file: {url}")
+                        self.swagger['externalDocs'] = {"url": url, "description": "External Swagger/OpenAPI spec"}
+                except Exception as e:
+                    print(f"[!] Swagger detection error on {url}: {str(e)}")
+
+            if self._is_api_endpoint(url) or (self.aggressive and self._is_json_like(response)):
+                self._process_api_response(url, response)
+
+        except Exception as e:
+            print(f"[!] Error at {url}: {str(e)}")
+
+    # ---------------------- aggressive helpers ----------------------
+    def _check_common_headers(self):
+        headers_to_check = [
+            ('Accept', 'application/json'),
+            ('X-Requested-With', 'XMLHttpRequest'),
+            ('Content-Type', 'application/json')
+        ]
+        print("[*] Aggressive: checking headers...")
+        for url in list(self.visited):
+            for header, value in headers_to_check:
+                try:
+                    headers = {header: value}
+                    resp = self._make_request('GET', url, headers=headers, timeout=5 )
+                    if resp.status_code == 200 and self._is_json_like(resp):
+                        print(f"[+] API found with header {header}: {value} - {url}")
+                        self._process_api_response(url, resp)
+                except Exception as e:
+                    print(f"[!] Header check error {url} {header}: {str(e)}")
+
+    def _bruteforce_common_endpoints(self):
+        common_endpoints = [
+            '/api/v1/users', '/api/users', '/users',
+            '/api/v1/products', '/api/products', '/products',
+            '/api/v1/data', '/api/data', '/data',
+            '/graphql', '/graphql/v1', '/api/graphql', '/api/v1/graphql',
+            '/rest', '/rest/v1', '/api/rest', '/api/v1/rest',
+            '/rpc', '/jsonrpc', '/api/soap', '/api/v1/soap',
+            '/ws', '/health', '/status', '/metrics',
+            '/v1', '/v2', '/v3',
+            '/oauth2/token', '/.well-known/openid-configuration',
+            '/swagger-ui', '/openapi.json', '/api-docs',
+        ]
+        print("[*] Aggressive: brute forcing common endpoints...")
+        with ThreadPoolExecutor(max_workers=12) as executor:
+            futures = []
+            for endpoint in common_endpoints:
+                url = urljoin(self.base_url, endpoint)
+                if self._same_host(url) and url not in self.visited:
+                    futures.append(executor.submit(self._process_possible_api, url))
+            for _ in as_completed(futures):
+                pass
+
+    # ---------------------- detectors ----------------------
+    def _classify_endpoint(self, url: str) -> str:
+        lower = url.lower()
+        if any(x in lower for x in ["login", "logout", "auth", "token", "session", "wachtwoord"]):
+            return "auth"
+        elif any(x in lower for x in ["health", "status", "ping", "info"]):
+            return "public"
+        else:
+            return "data"
+
+    def _looks_like_api(self, response: requests.Response) -> bool:
+        if self._is_api_response(response) or self._is_json_like(response):
+            return True
+        headers = {k.lower(): v for k, v in response.headers.items()}
+        signal_headers = ["x-api-version", "x-request-id", "x-total-count"]
+        return any(h in headers for h in signal_headers)
+
+    def _is_api_endpoint(self, url: str) -> bool:
+        path = urlparse(url).path.lower()
+        query = urlparse(url).query.lower()
+        if any(re.search(pattern, path) for pattern in self.api_patterns):
+            return True
+        return (
+            'api' in path or
+            path.endswith('.json') or
+            'json' in path or
+            'xml' in path or
+            'data' in path or
+            'v1' in path or
+            'v2' in path or
+            'graphql' in path or
+            'token=' in query or
+            'auth=' in query or
+            'bearer' in self.session.headers.get("Authorization", "").lower() or
+            any(param in query for param in ['format=json', 'type=api', 'output=json'])
+        )
+
+    def _discover_methods(self, url: str) -> List[str]:
+        methods = set()
+        # HEAD/OPTIONS to discover Allow
+        try:
+            r = self._make_request("OPTIONS", url, timeout=5)
+            allow = r.headers.get("Allow", "")
+            for m in allow.split(","):
+                m = m.strip().lower()
+                if m:
+                    methods.add(m)
+        except Exception:
+            pass
+        # Always include GET as safe probe
+        methods.add("get")
+        # Some APIs only on POST
+        if self.aggressive:
+            methods.update(["post", "put", "patch", "delete"])
+        return sorted(methods)
+
+    def _process_possible_api(self, url: str):
+        if not url:
+            return
+        if not self._same_host(url):
+            return
+        if not self._mark_visited(url):
+            return
+
+        # Skip static swagger files
+        if url.lower().endswith(("swagger", "swagger.json", "swagger.yaml",
+                                 "openapi", "openapi.json", "openapi.yaml")):
+            self.swagger.setdefault("externalDocs", {})["url"] = url
+            self.swagger["externalDocs"]["description"] = "External Swagger/OpenAPI file"
+            print(f"[~] Skipped static Swagger file: {url}")
+            return
+
+        try:
+            # Try HEAD first (cheap), then GET
+            head = None
+            try:
+                head = self._make_request("HEAD", url, timeout=5)
+            except Exception:
+                pass
+            resp = self._make_request("GET", url, timeout=10)
+
+            if not self._looks_like_api(resp):
+                print(f"[~] Ignored (non-API): {url}")
+                return
+
+            clean_path = self._normalise_path(url)
+            classification = self._classify_endpoint(url)
+            self.swagger["paths"].setdefault(clean_path, {})["x-classification"] = classification
+            print(f"[+] API endpoint ({classification}): {clean_path}")
+
+            # Log as NDJSON
+            with open(self.log_path, "a", encoding="utf-8") as log:
+                log.write(json.dumps({
+                    "url": url,
+                    "path": clean_path,
+                    "status": resp.status_code,
+                    "ct": resp.headers.get("Content-Type", ""),
+                    "classification": classification
+                }) + "\n")
+
+            # Store operation for discovered methods (based on Allow)
+            methods = self._discover_methods(url)
+            # Always process the GET response we already have
+            self._process_api_response(url, resp, method="get")
+            for m in methods:
+                if m == "get":
+                    continue
+                # probe only metadata for non-GET unless aggressive
+                if self.aggressive:
+                    try:
+                        probe = self._make_request(m.upper(), url, timeout=5)
+                        self._process_api_response(url, probe, method=m)
+                    except Exception:
+                        # If it fails (405/401), still note the method
+                        self._ensure_operation_exists(url, m, status="default")
+                else:
+                    self._ensure_operation_exists(url, m, status="default")
+
+        except Exception as e:
+            print(f"[!] Error processing API {url}: {str(e)}")
+
+    # ---------------------- building swagger ----------------------
+    def _ensure_operation_exists(self, url: str, method: str, status: str = "default"):
+        swagger_path = self._normalise_path(url)
+        op = self.swagger["paths"].setdefault(swagger_path, {}).setdefault(method, {})
+        if "responses" not in op:
+            op["responses"] = {}
+        op["responses"].setdefault(status, {"description": "Auto-discovered (no sample response)"})
+
+    def _process_api_response(self, url: str, response: requests.Response, method: str = "get"):
+        if not self._looks_like_api(response):
+            return
+        parsed = urlparse(url)
+        path = parsed.path
+
+        # query params
+        query_params = []
+        for name, values in parse_qs(parsed.query).items():
+            query_params.append({
+                "name": name,
+                "in": "query",
+                "schema": {"type": "string"},
+                "example": values[0]
+            })
+
+        swagger_path = self._normalise_path(url)
+
+        # response schema
+        ct = response.headers.get('Content-Type', 'application/json')
+        schema: Dict[str, Any] = {"type": "string"}
+        if self._is_json_like(response):
+            try:
+                data = response.json()
+                schema = self._generate_schema(data)
+                # follow HATEOAS-ish links
+                if isinstance(data, dict):
+                    for link_key in ['_links', 'links', 'related', 'href']:
+                        if link_key in data:
+                            links = data[link_key]
+                            if isinstance(links, dict):
+                                for _, link in links.items():
+                                    if isinstance(link, str):
+                                        self._process_possible_api(urljoin(url, link))
+                                    elif isinstance(link, dict) and 'href' in link:
+                                        self._process_possible_api(urljoin(url, link['href']))
+            except Exception:
+                pass
+
+        security = []
+        if self.session.auth:
+            security.append({"basicAuth": []})
+        if self.auth_tokens:
+            security.append({"bearerAuth": []})
+
+        if swagger_path not in self.swagger['paths']:
+            self.swagger['paths'][swagger_path] = {}
+
+        operation = self.swagger['paths'][swagger_path].setdefault(method, {})
+        operation.setdefault('summary', f'Auto-discovered {method.upper()} endpoint')
+        # Merge params
+        existing_params = operation.setdefault('parameters', [])
+        names = {p.get("name") for p in existing_params}
+        for p in query_params:
+            if p["name"] not in names:
+                existing_params.append(p)
+        if security:
+            operation['security'] = security
+
+        operation.setdefault('responses', {})
+        operation['responses'][str(response.status_code)] = {
+            'description': 'Auto-discovered response',
+            'content': {
+                ct: {'schema': schema}
+            }
+        }
+
+    def _generate_schema(self, data: Any) -> Dict[str, Any]:
+        # Primitives
+        if data is None:
+            return {'type': 'null'}
+        if isinstance(data, bool):
+            return {'type': 'boolean'}
+        if isinstance(data, int):
+            return {'type': 'integer'}
+        if isinstance(data, float):
+            return {'type': 'number'}
+        if isinstance(data, str):
+            # Guess common formats
+            if re.match(r'^\d{4}-\d{2}-\d{2}(T.*)?$', data):
+                return {'type': 'string', 'format': 'date-time'}
+            if re.match(r'^[0-9a-fA-F-]{36}$', data):
+                return {'type': 'string', 'format': 'uuid'}
+            return {'type': 'string'}
+
+        # Arrays
+        if isinstance(data, list):
+            if not data:
+                return {'type': 'array', 'items': {'type': 'string'}}
+            return {'type': 'array', 'items': self._generate_schema(data[0])}
+
+        # Objects
+        if isinstance(data, dict):
+            properties: Dict[str, Any] = {}
+            required: List[str] = []
+            for k, v in list(data.items())[:200]:  # cap to keep specs small
+                properties[k] = self._generate_schema(v)
+                if k in ['id', 'name', 'email', 'username', 'title', 'description']:
+                    required.append(k)
+            schema: Dict[str, Any] = {'type': 'object', 'properties': properties}
+            if required:
+                schema['required'] = required
+            return schema
+
+        # Fallback
+        return {'type': 'string'}
+
+    # -------------------- HTML/JS analysis --------------------
+    def _process_form(self, base_url: str, form):
+        action = form.get("action", "")
+        method = form.get("method", "get").lower()
+        url = urljoin(base_url, action)
+
+        if not self._is_api_endpoint(url) and not any(x in url.lower() for x in ("login", "auth")):
+            return
+
+        # Verify it looks JSON-ish or form post
+        try:
+            head_resp = self._make_request("HEAD", url, timeout=5)
+        except Exception:
+            head_resp = None
+
+        clean_path = self._normalise_path(url)
+        # Gather inputs
+        fields = {}
+        for inp in form.find_all(["input", "textarea", "select"]):
+            name = inp.get("name")
+            if not name:
+                continue
+            if inp.name == "select":
+                fields[name] = inp.get("value") or "string"
+            else:
+                fields[name] = inp.get("value") or "string"
+
+        # Build operation (OpenAPI 3 requestBody)
+        if clean_path not in self.swagger["paths"]:
+            self.swagger["paths"][clean_path] = {}
+        op = self.swagger["paths"][clean_path].setdefault(method, {})
+        op["summary"] = op.get("summary") or "Auto-discovered form endpoint"
+        op["responses"] = op.get("responses") or {"200": {"description": "Successful form submission"}}
+
+        # Prefer urlencoded for forms
+        op["requestBody"] = {
+            "required": True,
+            "content": {
+                "application/x-www-form-urlencoded": {
+                    "schema": {
+                        "type": "object",
+                        "properties": {k: {"type": "string", "example": v} for k, v in fields.items()}
+                    }
+                }
+            }
+        }
+
+    def _find_js_apis(self, js_code: str, base_url: str):
+        # Each pattern maps to the group index that contains the URL
+        patterns = [
+            (r'fetch\(["\'](.*?)["\']', 1),
+            (r'axios\.(get|post|put|delete|patch)\(["\'](.*?)["\']', 2),
+            (r'\.(get|post|put|delete|patch)\(["\'](.*?)["\']', 2),
+            (r'api(?:Url|Base|Endpoint)\s*[:=]\s*["\'](.*?)["\']', 1),
+            (r'new\s+XMLHttpRequest\(\)[^;]+\.open\(["\'](?:GET|POST|PUT|DELETE|PATCH)["\'],\s*["\']([^"\']+)["\']', 1),
+            (r'endpoint\s*[:=]\s*["\'](.*?)["\']', 1),
+            (r'url\s*[:=]\s*["\'](.*?)["\']', 1),
+        ]
+        for pat, group_idx in patterns:
+            for m in re.finditer(pat, js_code, re.DOTALL | re.IGNORECASE):
+                path = (m.group(group_idx) or "").strip()
+                if not path or '%s' in path or '{' in path or '}' in path:
+                    continue
+                api_url = urljoin(base_url, path)
+                if self._should_inspect(api_url):
+                    print(f"[+] JS API found: {api_url}")
+                    self._process_possible_api(api_url)
+
+    def _find_websockets(self, text: str, base_url: str):
+        patterns = [
+            r'new\s+WebSocket\(["\'](wss?://[^"\']+)["\']',
+            r'\.connect\(["\'](wss?://[^"\']+)["\']',
+            r'socket\.io\(["\']([^"\']+)["\']'
+        ]
+        for pat in patterns:
+            for m in re.finditer(pat, text, re.DOTALL | re.IGNORECASE):
+                ws_url = urljoin(base_url, m.group(1))
+                if 'wsServers' not in self.swagger:
+                    self.swagger['wsServers'] = []
+                if {"url": ws_url} not in self.swagger['wsServers']:
+                    self.swagger['wsServers'].append({"url": ws_url})
+                    print(f"[+] WebSocket found: {ws_url}")
+
+    def _find_graphql(self, text: str, base_url: str):
+        patterns = [
+            r'graphqlUrl:\s*["\']([^"\']+)["\']',
+            r'uri:\s*["\']([^"\']+/graphql)["\']',
+            r'fetch\(["\']([^"\']+/graphql)["\']',
+        ]
+        for pat in patterns:
+            for m in re.finditer(pat, text, re.DOTALL | re.IGNORECASE):
+                gql_url = urljoin(base_url, m.group(1))
+                if self._should_inspect(gql_url):
+                    print(f"[+] GraphQL endpoint found: {gql_url}")
+                    self._process_possible_api(gql_url)
+
+    def _should_inspect(self, url: str) -> bool:
+        if not self._same_host(url):
+            return False
+        if any(x in url for x in ['google-analytics', 'facebook', 'twitter', 'linkedin', 'youtube']):
+            return False
+        if any(url.lower().endswith(ext) for ext in ['.css', '.js', '.png', '.jpg', '.gif']):
+            return False
+        with self.lock:
+            return url not in self.visited
+
+    # -------------------- pruning & save --------------------
+
+    def _prune_non_json_paths(self):
+        bad = []
+        for path, ops in self.swagger["paths"].items():
+            any_jsonish = False
+            # Only consider HTTP methods; skip extensions like x-classification
+            for key, op in ops.items():
+                if not isinstance(op, dict):
+                    continue
+                if key.lower() not in {"get","post","put","delete","patch","options","head"}:
+                    continue
+                for resp in (op.get("responses") or {}).values():
+                    if not isinstance(resp, dict):
+                        continue
+                    content = resp.get("content") or {}
+                    if any(ct for ct in content.keys() if any(h in ct for h in JSON_CT_HINTS)):
+                        any_jsonish = True
+                        break
+                if any_jsonish:
+                    break
+            if not any_jsonish:
+                bad.append(path)
+        for p in bad:
+            del self.swagger["paths"][p]
+
+    def save_swagger(self, filename: str):
+        with open(filename, 'w', encoding="utf-8") as f:
+            json.dump(self.swagger, f, indent=2, ensure_ascii=False)
+        print(f"[+] Swagger saved as {filename}")
+        print(f"[+] Total endpoints found: {len(self.swagger['paths'])}")
+        print(f"[+] Security schemes: {list(self.swagger['components']['securitySchemes'].keys())}")
+        if 'wsServers' in self.swagger:
+            print(f"[+] WebSocket servers found: {len(self.swagger['wsServers'])}")
+
+# ---------------------- auth config ----------------------
+def configure_authentication(args) -> requests.Session:
+    sess = requests.Session()
+    sess.verify = not getattr(args, 'insecure', False)
+    if not sess.verify:
+        print("[!] SSL verification disabled")
+    if args.token:
+        sess.headers['Authorization'] = f"Bearer {args.token}"
+        print("[+] Bearer token set")
+    if args.basic_auth:
+        try:
+            user, pwd = args.basic_auth.split(':', 1)
+            sess.auth = HTTPBasicAuth(user, pwd)
+            print("[+] Basic auth set")
+        except ValueError:
+            print("[-] Invalid basic auth format. Use 'username:password'")
+            sys.exit(1)
+    if args.ntlm:
+        try:
+            match = re.match(r"(.+)\\(.+):(.+)", args.ntlm)
+            if match:
+                domain, user, pwd = match.groups()
+                sess.auth = HttpNtlmAuth(f"{domain}\\{user}", pwd)
+                print("[+] NTLM auth set")
+            else:
+                raise ValueError("Invalid NTLM format")
+        except Exception as e:
+            print(f"[-] NTLM auth error: {str(e)}")
+            sys.exit(1)
+    if args.apikey:
+        header = args.apikey_header or "X-API-Key"
+        sess.headers[header] = args.apikey
+        print(f"[+] API Key set in header '{header}'")
+    # OAuth2 Client Credentials
+    if getattr(args, "flow", None) == "client" and args.client_id and args.client_secret and args.token_url:
+        try:
+            client = BackendApplicationClient(client_id=args.client_id)
+            oauth = OAuth2Session(client=client)
+            token = oauth.fetch_token(
+                token_url=args.token_url,
+                client_id=args.client_id,
+                client_secret=args.client_secret
+            )
+            sess = oauth
+            print("[+] OAuth2 Client Credentials set")
+        except Exception as e:
+            print(f"[-] OAuth2 error: {str(e)}")
+            sys.exit(1)
+    return sess
+
+# ---------------------- CLI ----------------------
+def main():
+    parser = argparse.ArgumentParser(description="Ultimate Swagger Generator (Improved v2)")
+    parser.add_argument("--url", required=True, help="Base URL to scan")
+    parser.add_argument("--output", default="swagger.json", help="Output file path")
+    parser.add_argument("--depth", type=int, default=3, help="Crawl depth")
+    parser.add_argument("--aggressive", action='store_true', help="Enable aggressive scanning")
+    parser.add_argument("--delay", type=float, default=0.0, help="Delay (in seconds) between requests)")
+    parser.add_argument("--validate", action="store_true", help="Validate generated spec with safe requests")
+
+    # Auth
+    auth = parser.add_argument_group('Authentication')
+    auth.add_argument("--header", action='append', help="Custom header (format: 'Header-Name: value')", default=[])
+    auth.add_argument("--token", help="Bearer token for authentication")
+    auth.add_argument("--basic-auth", help="Basic auth in format user:password")
+    auth.add_argument("--ntlm", help="NTLM auth in format domain\\user:password")
+    auth.add_argument("--apikey", help="API key value")
+    auth.add_argument("--apikey-header", help="Header name for API key")
+    auth.add_argument("--flow", choices=["client"], help="OAuth2 flow type")
+    auth.add_argument("--client-id", help="OAuth2 client ID")
+    auth.add_argument("--client-secret", help="OAuth2 client secret")
+    auth.add_argument("--token-url", help="OAuth2 token URL")
+
+    # Session
+    session = parser.add_argument_group('Session')
+    session.add_argument("--save-session", help="File to save session cookies")
+    session.add_argument("--load-session", help="File to load session cookies from")
+
+    # SSL
+    parser.add_argument("--insecure", action="store_true", help="Disable SSL certificate verification")
+
+    args = parser.parse_args()
+
+    try:
+        generator = UltimateSwaggerGenerator(args.url, delay=args.delay, aggressive=args.aggressive)
+        generator.session = configure_authentication(args)
+
+        if args.load_session:
+            generator.load_session(args.load_session)
+
+        for header in args.header:
+            try:
+                name, value = header.split(':', 1)
+                generator.set_custom_header(name.strip(), value.strip())
+            except ValueError:
+                print(f"[-] Invalid header format: {header}")
+                sys.exit(1)
+
+        generator.crawl(args.depth, args.aggressive)
+        generator._prune_non_json_paths()
+
+        if args.save_session:
+            generator.save_session(args.save_session)
+
+
+        # Optional validation step using embedded helpers
+        if args.validate:
+            cfg = None
+            try:
+                cfg = SecurityConfig(
+                    api_key_value=args.apikey,
+                    api_key_header_name=(args.apikey_header or "X-API-Key") if args.apikey else None,
+                    bearer_token=args.token
+                )
+            except Exception:
+                cfg = None
+
+            for op in iter_operations(generator.swagger):
+                if op["method"] not in ("GET", "HEAD") and not args.aggressive:
+                    continue
+                try:
+                    req = build_request(generator.swagger, args.url, op, cfg)
+                    r = generator.session.request(
+                        method=req["method"],
+                        url=req["url"],
+                        headers=req.get("headers"),
+                        params=req.get("params"),
+                        cookies=req.get("cookies"),
+                        timeout=10,
+                        verify=not args.insecure
+                    )
+                    ct = canonical_mime(r.headers.get("Content-Type"))
+                    path = op["path"]
+                    method = op["method"].lower()
+                    generator.swagger["paths"].setdefault(path, {}).setdefault(method, {}).setdefault("responses", {})
+                    generator.swagger["paths"][path][method]["responses"][str(r.status_code)] = {
+                        "description": "Validated response",
+                        "content": { ct: { "schema": {"type": "string"} } }
+                    }
+                except Exception:
+                    pass
+
+        generator.save_swagger(args.output)
+
+    except Exception as e:
+        print(f"[-] Error: {str(e)}", file=sys.stderr)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

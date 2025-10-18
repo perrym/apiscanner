@@ -3,8 +3,11 @@
 # Licensed under the MIT License #
 # Author: Perry Mertens, 2025    #
 ##################################
+                                
 from __future__ import annotations
+
 import json
+import logging
 import random
 import re
 import threading
@@ -13,15 +16,28 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
-from urllib.parse import urljoin, quote_plus, urlparse
+from urllib.parse import urljoin, urlparse, urlencode, parse_qsl
 
 import requests
 from tqdm import tqdm
 
 from report_utils import ReportGenerator
 
+try:
+    from openapi_universal import (
+        iter_operations as oas_iter_ops,
+        build_request as oas_build_request,
+        SecurityConfig as OASSecurityConfig,
+    )
+except Exception:
+    oas_iter_ops = None
+    oas_build_request = None
+    OASSecurityConfig = None
+
+
 Endpoint = Dict[str, Any]
 Finding  = Dict[str, Any]
+
 
 def _headers_to_list(hdrs):
     if hasattr(hdrs, "getlist"):
@@ -30,6 +46,7 @@ def _headers_to_list(hdrs):
         return list(hdrs.items())
     except Exception:
         return []
+
 
 class MisconfigurationAuditorPro:
     DEFAULT_CONCURRENCY = 12
@@ -40,17 +57,30 @@ class MisconfigurationAuditorPro:
 
     def __init__(
         self,
-        base_url: str,
+        *args,
+        base_url: Optional[str] = None,
         session: Optional[requests.Session] = None,
-        *,
         concurrency: int = DEFAULT_CONCURRENCY,
         timeout: int = DEFAULT_TIMEOUT,
         requests_per_second: int = DEFAULT_REQUESTS_PER_SECOND,
         debug: bool = False,
         show_progress: bool = True,
+        swagger_spec: Optional[Dict[str, Any]] = None,
+        **kwargs,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.session = session or requests.Session()
+        if (session is None or base_url is None) and len(args) >= 2:
+            if isinstance(args[1], requests.Session):
+                base_url, session = args[0], args[1]
+            elif isinstance(args[0], requests.Session):
+                session, base_url = args[0], args[1]
+
+        if not session or not base_url:
+            raise ValueError("session and base_url are required")
+        if "://" not in str(base_url):
+            base_url = "http://" + str(base_url)
+
+        self.base_url = str(base_url).rstrip("/")
+        self.session = session
         self.concurrency = concurrency
         self.timeout = timeout
         self.requests_per_second = requests_per_second
@@ -65,30 +95,40 @@ class MisconfigurationAuditorPro:
         self._tested_payloads = set()
         self._finding_count: Dict[Tuple[str, str], int] = {}
 
-        # Dedup sets
-        self._reported_header_issues = set()   # per endpoint
-        self._reported_header_hosts  = set()   # per host
+        self._reported_header_hosts  = set()
 
         self._response_analyzers = [
-            self._too_permissive_analyzer,
             self._security_header_analyzer,
             self._cors_analyzer,
-            self._reflected_ssrf_analyzer,
-            self._blind_ssrf_analyzer,
             self._server_error_analyzer,
             self._verbose_error_analyzer,
             self._http_method_analyzer,
         ]
 
-    # -------------------------- helpers / logging -------------------------- #
-    def _tw(self, msg: str, level: str = "info"):
-        if self.show_progress:
-            if self.debug or level in ("error", "warn"):
-                tqdm.write(msg)
-        else:
-            if self.debug or level in ("error", "warn"):
-                print(msg)
+        self.spec: Dict[str, Any] = swagger_spec or kwargs.get("spec") or {}
 
+                                                                               
+    # ----------------------- Funtion endpoints_from_spec_universal ----------------------------#
+    def endpoints_from_spec_universal(self) -> List[Endpoint]:
+        if not self.spec or not (oas_iter_ops and oas_build_request):
+            return []
+        endpoints: List[Endpoint] = []
+        sec = OASSecurityConfig() if OASSecurityConfig else None
+        try:
+            for op in oas_iter_ops(self.spec):
+                req = oas_build_request(self.spec, self.base_url + "/", op, sec)
+                endpoints.append({
+                    "base": self.base_url,
+                    "path": op.get("path", ""),
+                    "method": (req.get("method") or "GET").upper(),
+                    "operationId": op.get("operationId", ""),
+                    "parameters": op.get("parameters", []),
+                })
+        except Exception:
+            return []
+        return endpoints
+
+    # ----------------------- Funtion endpoints_from_swagger ----------------------------#
     @classmethod
     def endpoints_from_swagger(cls, swagger_path: str) -> List[Endpoint]:
         try:
@@ -149,6 +189,7 @@ class MisconfigurationAuditorPro:
         random.shuffle(all_payloads)
         return all_payloads
 
+    # ----------------------- Funtion _build_finding ----------------------------#
     def _build_finding(
         self,
         endpoint: Endpoint,
@@ -185,223 +226,184 @@ class MisconfigurationAuditorPro:
             time.sleep(gap - elapsed)
         self._last_request_time = time.time()
 
-    # ------------------------------ single endpoint ------------------------ #
-    def _test_single_endpoint(self, ep: Endpoint, pbar: Optional[tqdm] = None):
-        """
-        Performs misconfiguration/SSRF-related checks on a single endpoint.
-        - Quiet UI: nested tqdm bars only with --debug
-        - Rate limiting per request
-        - Deduplicate 'missing security headers' per host (once per host)
-        """
-        # Reset tested payloads for each endpoint
-        tested_payloads = set()
-        
+                                                                               
+    # ----------------------- Funtion _test_single_endpoint ----------------------------#
+    def _test_single_endpoint(self, ep: Endpoint, pbar: Optional[tqdm] = None) -> None:
         try:
             method = ep["method"]
             path   = ep["path"]
             base   = ep.get("base") or self.base_url
             full_url = urljoin(base, path.lstrip("/"))
+            if "{" in path and "}" in path:
+                path = re.sub(r"\{[^}]+\}", "123", path)
+                full_url = urljoin(base, path.lstrip("/"))
             host_key = urlparse(full_url).netloc.lower()
+            if self.debug:
+                self._tw(f"Testing {method} {path}", level="debug")
+            seq = []
+            if method != "HEAD":
+                seq.append("HEAD")
+            if method not in ("HEAD", "OPTIONS"):
+                seq.append("OPTIONS")
+            seq.append(method)
+            seen = set()
+            seq = [m for m in seq if not (m in seen or seen.add(m))]
 
-            # --- rustige logging ---
-            self._tw(f"Testing {method} {path}", level="debug")
-
-            # --- baseline request ---
-            try:
-                self._enforce_rate_limit()
-                start = time.time()
-                baseline_resp = self.session.request(method, full_url, timeout=self.timeout, allow_redirects=True)
-                dur = time.time() - start
-                self._request_counter += 1
-            except requests.RequestException as e:
-                self._error_count += 1
-                self._tw(f"[ERROR] Baseline failed for {method} {path}: {e}", "error")
-                if pbar:
-                    pbar.update(1)
-                return
-
-            # --- 1x per host: security-header analyse ---
             with self._lock:
-                # Check if we've already reported header issues for this host
                 host_already_reported = (host_key in self._reported_header_hosts)
-                
-            if not host_already_reported:
-                finding = self._security_header_analyzer(ep, "<baseline>", baseline_resp, dur)
-                if finding:
-                    self._record_finding(finding)
+
+            for m in seq:
+                try:
+                    self._enforce_rate_limit()
+                    start = time.time()
+                    headers = dict(getattr(self.session, "headers", {}) or {})
+                    if m in ("HEAD", "OPTIONS"):
+                        headers.pop("Authorization", None)
+                    resp = self.session.request(m, full_url, headers=headers, timeout=self.timeout, allow_redirects=True)
+                    dur = time.time() - start
+                    self._request_counter += 1
+                except requests.RequestException as e:
+                    self._error_count += 1
+                    self._tw(f"[ERROR] {m} failed for {method} {path}: {e}", "error")
+                    continue
+
+                if not host_already_reported:
+                    f = self._security_header_analyzer(ep, f"<{m}>", resp, dur)
+                    if f:
+                        self._record_finding(f)
                     with self._lock:
-                        # Mark this host as reported so we don't check headers again
                         self._reported_header_hosts.add(host_key)
-                        # Skip header checks for all future requests to this host
                         host_already_reported = True
 
-            # --- payloads / params (nested tqdm alleen met --debug) ---
-            show_inner = (self.show_progress and self.debug)
-
-            payloads = list(self._default_payloads())
-            pbar_payload = tqdm(
-                payloads, desc="payloads", unit="payload",
-                leave=False, disable=not show_inner, position=1, dynamic_ncols=True
-            ) if show_inner else payloads
-
-            for payload in pbar_payload:
-                # local deduplication of payloads
-                if payload in tested_payloads:
-                    continue
-                tested_payloads.add(payload)
-
-                # write methods: JSON body with url/target
-                if method in ("POST", "PUT", "PATCH"):
-                    json_payload = {"url": payload, "target": payload}
+                for analyzer in self._response_analyzers:
+                    if host_already_reported and analyzer == self._security_header_analyzer:
+                        continue
                     try:
-                        self._enforce_rate_limit()
-                        start = time.time()
-                        resp = self.session.request(method, full_url, json=json_payload, timeout=self.timeout, allow_redirects=True)
-                        dur = time.time() - start
-                        self._request_counter += 1
+                        f = analyzer(ep, f"<{m}>", resp, dur)
+                        if f:
+                            self._record_finding(f)
+                    except Exception as ex:
+                        self._tw(f"[ERROR] Analyzer {analyzer.__name__} on {m} {path}: {ex}", "error")
 
-                        # run analyzers (skip security header analyzer if host already reported)
-                        for analyzer in self._response_analyzers:
-                            # Skip security header checks if we've already reported issues for this host
-                            if host_already_reported and analyzer == self._security_header_analyzer:
-                                continue
-                            f = analyzer(ep, str(json_payload), resp, dur)
-                            if f:
-                                self._record_finding(f)
-                    except requests.RequestException as e:
-                        self._error_count += 1
-                        self._tw(f"[ERROR] JSON request failed: {e}", "error")
+            if method not in ("HEAD", "OPTIONS"):
+                probe_names = getattr(self, "PARAM_PROBE_NAMES", [
+                    "probe", "debug", "verbose", "pretty", "format", "fields",
+                    "sort", "expand", "include", "lang", "locale", "cache",
+                    "nocache", "trace", "test"
+                ])
+                probe_vals = getattr(self, "PARAM_PROBE_VALUES", ["1", "true", "*"])
 
-                # query-param variants (typical SSRF/misconfig keywords)
-                ssrf_params = ["q", "url", "uri", "path", "next", "redirect", "return", "returnUrl"]
-                pbar_params = tqdm(
-                    ssrf_params, desc="params", unit="param",
-                    leave=False, disable=not show_inner, position=2, dynamic_ncols=True
-                ) if show_inner else ssrf_params
+                for name in probe_names:
+                    for val in probe_vals:
+                        try:
+                            self._enforce_rate_limit()
+                            u = urlparse(full_url)
+                            q = dict(parse_qsl(u.query, keep_blank_values=True))
+                            q[name] = val
+                            crafted = u._replace(query=urlencode(q, doseq=True)).geturl()
+                            start = time.time()
+                            resp = self.session.request(method, crafted, timeout=self.timeout, allow_redirects=True)
+                            dur = time.time() - start
+                            self._request_counter += 1
 
-                for param in pbar_params:
-                    crafted = f"{full_url}?{param}={quote_plus(payload)}"
-                    try:
-                        self._enforce_rate_limit()
-                        start = time.time()
-                        resp = self.session.request(method, crafted, timeout=self.timeout, allow_redirects=True)
-                        dur = time.time() - start
-                        self._request_counter += 1
+                            for analyzer in self._response_analyzers:
+                                if host_already_reported and analyzer == self._security_header_analyzer:
+                                    continue
+                                f = analyzer(ep, f"{name}={val}", resp, dur)
+                                if f:
+                                    self._record_finding(f)
 
-                        # run analyzers (skip security header analyzer if host already reported)
-                        for analyzer in self._response_analyzers:
-                            # Skip security header checks if we've already reported issues for this host
-                            if host_already_reported and analyzer == self._security_header_analyzer:
-                                continue
-                            f = analyzer(ep, payload, resp, dur)
-                            if f:
-                                self._record_finding(f)
+                            if self._request_counter % self.RANDOM_SLEEP_AFTER_REQUESTS == 0:
+                                time.sleep(random.uniform(0.1, 0.3))
 
-                        # simple jitter to keep output/ratelimit stable
-                        if self._request_counter % self.RANDOM_SLEEP_AFTER_REQUESTS == 0:
-                            time.sleep(random.uniform(0.1, 0.3))
-
-                    except requests.RequestException as e:
-                        self._error_count += 1
-                        self._tw(f"[ERROR] Query request failed: {e}", "error")
-                        if self._error_count >= self.RATE_LIMIT_AFTER_ERRORS:
-                            self._tw("[WARN] Many errors, cooling down 1s", "warn")
-                            time.sleep(1.0)
-                            self._error_count = 0
+                        except requests.RequestException as e:
+                            self._error_count += 1
+                            self._tw(f"[ERROR] Param probe failed ({name}={val}) on {method} {path}: {e}", "error")
+                            if self._error_count >= self.RATE_LIMIT_AFTER_ERRORS:
+                                self._tw("[WARN] Many errors, cooling down 1s", "warn")
+                                time.sleep(1.0)
+                                self._error_count = 0
 
         except Exception as e:
             self._tw(f"[ERROR] Unexpected test error at {ep.get('method')} {ep.get('path')}: {e}", "error")
         finally:
             if pbar:
                 pbar.update(1)
-        # ------------------------------ analyzers ------------------------------ #
-    def _too_permissive_analyzer(self, ep, payload, resp, dur):
-        if resp.status_code == 200 and any(lp in (payload or "").lower() for lp in ("127.0.0.1", "localhost")):
-            return self._build_finding(ep, payload, resp, dur, "Probable SSRF - Local network behavior detected", "High")
 
-    def _reflected_ssrf_analyzer(self, ep, payload, resp, dur):
-        body_lower = (resp.text or "").lower()
-        sensitive_patterns = {
-            r"aws-metadata": "AWS metadata exposure",
-            r"gcp-metadata": "GCP metadata exposure",
-            r"azure-metadata": "Azure metadata exposure",
-            r"local(file|host|net)": "Local system access",
-        }
-        for pattern, description in sensitive_patterns.items():
-            if re.search(pattern, body_lower) and not re.search(r"(invalid|illegal|not allowed).*" + pattern, body_lower):
-                return self._build_finding(ep, payload, resp, dur, f"Reflected SSRF pattern: {description}", "High")
-
-    def _blind_ssrf_analyzer(self, ep, payload, resp, dur):
-        if resp.status_code == 504 or "timeout" in (resp.text or "").lower():
-            if dur > 5.0:
-                return self._build_finding(ep, payload, resp, dur, "Possible blind SSRF (timeout detected)", "Medium")
-
+                                                                               
+    # ----------------------- Funtion _security_header_analyzer ----------------------------#
     def _security_header_analyzer(self, ep, payload, resp, dur):
-        headers = resp.headers
-        findings = []
-        required_headers = {
-            "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
-            "X-Content-Type-Options": "nosniff",
-            "X-Frame-Options": "DENY",
-            "Content-Security-Policy": None,
-            "Referrer-Policy": "no-referrer",
-        }
-        for header, expected_value in required_headers.items():
-            if header not in headers:
-                findings.append(f"Missing security header: {header}")
-            elif expected_value and headers[header].lower() != expected_value.lower():
-                findings.append(f"Insecure {header} value: {headers[header]}")
-        insecure_headers = {
-            "Server": "Server header exposes technology",
-            "X-Powered-By": "Exposes technology stack",
-            "X-AspNet-Version": "Exposes ASP.NET version",
-            "X-Runtime": "Exposes backend runtime",
-        }
-        for header, description in insecure_headers.items():
-            if header in headers:
-                findings.append(f"{description}: {headers[header]}")
-        if findings:
-            return self._build_finding(ep, payload, resp, dur, " | ".join(findings), "Medium")
+                                                                
+        if self._is_api_json(resp):
+            return None
 
+                                                   
+        path = (ep.get("path") if isinstance(ep, dict) else str(ep) or "").lower()
+        if re.search(r"/auth|/login|/signup|check-otp|verify-email-token", path):
+            return None
+
+                                                     
+        if str(self.base_url).lower().startswith("http://"):
+            return None
+
+        hdrs = resp.headers or {}
+        missing = []
+        low_keys = {k.lower(): v for k, v in hdrs.items()}
+
+        if "strict-transport-security" not in low_keys:
+            missing.append("HSTS")
+        if str(hdrs.get("X-Content-Type-Options", "")).lower() != "nosniff":
+            missing.append("X-Content-Type-Options")
+        if "X-Frame-Options" not in hdrs:
+            missing.append("X-Frame-Options")
+        if "Content-Security-Policy" not in hdrs:
+            missing.append("CSP")
+
+        if not missing:
+            return None
+
+        return self._build_finding(
+            ep, payload, resp, dur,
+            "Missing: " + ", ".join(missing),
+            "Low",
+        )
+
+    # ----------------------- Funtion _cors_analyzer ----------------------------#
     def _cors_analyzer(self, ep, payload, resp, dur):
-        headers = resp.headers
-        if "Access-Control-Allow-Origin" in headers:
-            if headers["Access-Control-Allow-Origin"] == "*":
-                return self._build_finding(ep, payload, resp, dur, "Overly permissive CORS policy (Allow-Origin: *)", "High")
-            if (headers.get("Access-Control-Allow-Credentials", "").lower() == "true"
-                and headers["Access-Control-Allow-Origin"] == "*"):
-                return self._build_finding(ep, payload, resp, dur, "Insecure CORS: Credentials allowed with wildcard origin", "Critical")
+        hdrs = resp.headers or {}
+        acao = (hdrs.get("Access-Control-Allow-Origin", "") or "").strip()
+        acac = (hdrs.get("Access-Control-Allow-Credentials", "") or "").strip().lower()
+        if not acao:
+            return None
+        method = getattr(getattr(resp, "request", None), "method", "GET").upper()
 
+        if acao == "*" and acac == "true":
+            sev = "High"
+        elif acao == "*" and acac != "true":
+            sev = "Info" if method == "OPTIONS" else "Low"
+        else:
+            sev = "Info"
+
+        desc = f"ACAO={acao}, ACAC={acac or 'false'}"
+        return self._build_finding(ep, payload, resp, dur, desc, sev)
+
+    # ----------------------- Funtion _server_error_analyzer ----------------------------#
     def _server_error_analyzer(self, ep, payload, resp, dur):
-        if str(resp.status_code).startswith("5"):
-            return self._build_finding(ep, payload, resp, dur, f"Unexpected server error ({resp.status_code})", "Medium")
+        if 500 <= resp.status_code < 600:
+            return self._build_finding(ep, payload, resp, dur, f"{resp.status_code} on baseline/probe", "Medium")
 
+    # ----------------------- Funtion _verbose_error_analyzer ----------------------------#
     def _verbose_error_analyzer(self, ep, payload, resp, dur):
-        error_patterns = [
-            r"<b>.*error</b>",
-            r"stack trace:",
-            r"at \w+\.\w+",
-            r"line \d+",
-            r"exception:",
-            r"sql.*error",
-            r"syntax error",
-            r"database error",
-        ]
-        body = (resp.text or "").lower()
-        for pattern in error_patterns:
-            if re.search(pattern, body, re.IGNORECASE):
-                return self._build_finding(ep, payload, resp, dur, "Verbose error message detected", "Medium")
+        body = (resp.text or "")
+        low = body.lower()
+        markers = ("exception", "stack trace", "traceback", "sqlstate", "nullreferenceexception")
+        if any(m in low for m in markers):
+            return self._build_finding(ep, payload, resp, dur, "Response body contains implementation stack/error markers", "High")
 
     def _http_method_analyzer(self, ep, payload, resp, dur):
-        risky = {"TRACE": "Cross-Site Tracing vulnerability", "OPTIONS": "Overly revealing options", "PUT": "Possible file upload", "DELETE": "Data deletion risk"}
-        if ep["method"] in risky and resp.status_code == 200:
-            # Check if there is an Authorization header param in swagger
-            header_names = { (p.get("name") or "").lower()
-                             for p in ep.get("parameters", []) if (p.get("in") == "header") }
-            if "authorization" not in header_names:
-                return self._build_finding(ep, payload, resp, dur, f"Potentially dangerous HTTP method {ep['method']} enabled without auth header", "Medium")
+        return None
 
-    # ------------------------------ record/report -------------------------- #
+                                                                               
     def _record_finding(self, finding: Finding) -> None:
         with self._lock:
             key = (finding["endpoint"], finding["description"])
@@ -419,10 +421,91 @@ class MisconfigurationAuditorPro:
                 if self.show_progress:
                     tqdm.write(f"[ISSUE] {finding['severity']}: {finding['description']} @ {finding['endpoint']}")
 
-    def test_endpoints(self, endpoints: List[Endpoint]) -> List[Finding]:
-        self._tw(f"[INFO] Auditing {len(endpoints)} endpoints", "info")
-        if not endpoints:
+    
+    def _title_for(self, ep: Dict[str, Any], resp: requests.Response) -> str:
+        ep_method = str(ep.get("method", "GET")).upper()
+        path = ep.get("path") or ""
+        return f"{ep_method} {path}"
+
+            
+    # ----------------------- Funtion _filter_issues ----------------------------#
+    def _filter_issues(self) -> list[dict]:
+        cleaned, seen = ([], set())
+
+        NOISE_4XX = {404, 405}
+        NOISE_4XX_BODY_MARKERS = (
+            "not found", "no static resource", "method not allowed",
+            "bad request", "invalid request", "unexpected end of json input",
+            "missing", "invalid parameter", "validation failed"
+        )
+
+        NOISE_5XX_BODY_MARKERS = (
+            "current request is not a multipart request",
+            "missingservletrequestpartexception",
+            "no multipart boundary",
+            "unsupported media type",
+            "required request part",
+            "illegalargumentexception: content-type",
+            "whitelabel error page",
+        )
+
+        VERBOSE_5XX_KEEP = (
+            "exception", "stack trace", "traceback", "sqlstate",
+            "nullreferenceexception", "at com.", "internal server error"
+        )
+
+        items = getattr(self, "_findings", []) or getattr(self, "issues", [])
+        for i in items:
+            body = (i.get("response_body") or "")
+            body_low = body.lower()
+            payload = str(i.get("payload") or "").lower()
+            try:
+                status = int(i.get("status_code") or 0)
+            except Exception:
+                status = 0
+
+                                                
+            if status in NOISE_4XX and not any(m in body_low for m in NOISE_4XX_BODY_MARKERS):
+                continue
+
+                                    
+            if status == 400 and any(m in body_low for m in NOISE_4XX_BODY_MARKERS):
+                continue
+
+                                                                                 
+            if status >= 500:
+                if payload in ("<head>", "<options>"):
+                    continue
+                if any(m in body_low for m in NOISE_5XX_BODY_MARKERS):
+                    continue
+                if not any(m in body_low for m in VERBOSE_5XX_KEEP):
+                    i["severity"] = "Info"
+
+            key = (
+                i.get("endpoint"),
+                i.get("issue"),
+                str(status),
+                str(i.get("description") or "")[:120],
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            cleaned.append(i)
+
+                                                              
+        if hasattr(self, "_findings"):
+            self._findings = cleaned
             return self._findings
+        self.issues = cleaned
+        return self.issues
+     
+   
+    # ----------------------- Funtion test_endpoints ----------------------------#
+    def test_endpoints(self, endpoints: List[Endpoint]) -> List[Finding]:
+        if not endpoints and getattr(self, "spec", None):
+            endpoints = self.endpoints_from_spec_universal()
+        if not endpoints:
+            return []
 
         with ThreadPoolExecutor(max_workers=self.concurrency) as pool:
             futures = [pool.submit(self._test_single_endpoint, ep) for ep in endpoints]
@@ -433,14 +516,17 @@ class MisconfigurationAuditorPro:
                 for _ in as_completed(futures):
                     pass
 
-        self._tw(f"[INFO] Audit complete, findings: {len(self._findings)}", "info")
-        return self._findings
+        return self._filter_issues()
 
+    # ----------------------- Funtion generate_report ----------------------------#
     def generate_report(self, fmt: str = "markdown") -> str:
         scanner = "Enhanced Misconfiguration Auditor (API08)"
-        gen = ReportGenerator(self._findings, scanner=scanner, base_url=self.base_url)
+        filtered = self._filter_findings()
+        gen = ReportGenerator(filtered, scanner=scanner, base_url=self.base_url)
         return gen.generate_markdown() if fmt == "markdown" else gen.generate_json()
 
+    # ----------------------- Funtion save_report ----------------------------#
     def save_report(self, path: str, fmt: str = "markdown"):
         scanner = "Enhanced Misconfiguration Auditor (API08)"
-        ReportGenerator(self._findings, scanner=scanner, base_url=self.base_url).save(path, fmt=fmt)
+        filtered = self._filter_findings()
+        ReportGenerator(filtered, scanner=scanner, base_url=self.base_url).save(path, fmt=fmt)

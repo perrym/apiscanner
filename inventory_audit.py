@@ -1,9 +1,10 @@
-##################################
-# APISCAN - API Security Scanner #
-# Licensed under the MIT License #
-# Author: Perry Mertens, 2025    #
-##################################
+#########################################
+# APISCAN - API Security Scanner        #
+# MIT License - Perry Mertens  2025 (c) #
+#########################################                                  
+                                  
 from __future__ import annotations
+
 import json
 import re
 import threading
@@ -17,14 +18,19 @@ import requests
 from tqdm import tqdm
 from report_utils import ReportGenerator
 
+                                    
+try:
+    from openapi_universal import iter_operations as oas_iter_ops
+except Exception:
+    oas_iter_ops = None                
+
 Issue = Dict[str, Any]
 
-_MAX_BODY_LEN = 2048  # trim bodies to 2 kB
-_MAX_WORKERS = 10  # maximum number of threads
+_MAX_BODY_LEN = 2048
+_MAX_WORKERS = 10
+
 
 class InventoryAuditor:
-    """OWASP API-Security 2023 - API-9 Improper Inventory Management."""
-
     _DEBUG_PATHS = [
         "/swagger",
         "/swagger-ui",
@@ -43,40 +49,63 @@ class InventoryAuditor:
         "/.git",
     ]
 
+    # ----------------------- Funtion __init__ ----------------------------#
     def __init__(
         self,
-        base_url: str,
+        *args,
+        base_url: Optional[str] = None,
         session: Optional[requests.Session] = None,
-        *,
         timeout: int = 5,
+        swagger_spec: Optional[Dict[str, Any]] = None,
+        **kwargs,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.session = session or requests.Session()
-        self.timeout = timeout
+        if (session is None or base_url is None) and len(args) >= 2:
+            if isinstance(args[1], requests.Session):
+                base_url, session = args[0], args[1]
+            elif isinstance(args[0], requests.Session):
+                session, base_url = args[0], args[1]
+
+        if not session or not base_url:
+            raise ValueError("session and base_url are required")
+        if "://" not in str(base_url):
+            base_url = "http://" + str(base_url)
+
+        self.base_url = str(base_url).rstrip("/")
+        self.session = session
+        self.timeout = int(timeout)
         self._lock = threading.Lock()
         self._issues: List[Issue] = []
         self._security_headers_checked = False
+        self.spec: Dict[str, Any] = swagger_spec or kwargs.get("spec") or {}
 
-    # ------------------------------------------------------------------ #
-    # Helpers
-    # ------------------------------------------------------------------ #
+    # ----------------------- Funtion endpoints_from_swagger ----------------------------#
     @staticmethod
     def endpoints_from_swagger(swagger_path: str) -> List[str]:
-        """Return the list of paths that exist in the OpenAPI spec."""
         spec = json.loads(Path(swagger_path).read_text(encoding="utf-8"))
-        return list(spec.get("paths", {}).keys())
+        return list((spec.get("paths") or {}).keys())
 
+    # ----------------------- Funtion endpoints_from_universal ----------------------------#
+    @staticmethod
+    def endpoints_from_universal(spec: Dict[str, Any]) -> List[str]:
+        if not spec or not oas_iter_ops:
+            return []
+        paths: set[str] = set()
+        try:
+            for op in oas_iter_ops(spec):
+                p = (op.get("path") or "/").strip()
+                if p:
+                    paths.add(p)
+        except Exception:
+            return []
+        return sorted(paths)
+
+    # ----------------------- Funtion _filtered_issues ----------------------------#
     def _filtered_issues(self) -> List[Issue]:
-        """Remove empty or malformed issues."""
         return [i for i in self._issues if i.get("issue") and i.get("endpoint")]
 
+    # ----------------------- Funtion _is_api_response ----------------------------#
     def _is_api_response(self, resp: requests.Response) -> bool:
-        """
-        Heuristiek: retourneer True als de response waarschijnlijk een
-        API-payload is, niet een HTML/JS frontend.
-        """
         content_type = resp.headers.get("Content-Type", "").split(";", 1)[0].lower()
-       
         api_types = {
             "application/json",
             "application/x-yaml",
@@ -85,68 +114,48 @@ class InventoryAuditor:
         }
         if content_type in api_types:
             return True
-
-        # 2) Fallback: probeer te parsen als JSON - echte OpenAPI heeft 'openapi' of 'swagger' key
         try:
             parsed = resp.json()
             if isinstance(parsed, dict) and {"openapi", "swagger"} & parsed.keys():
                 return True
         except (ValueError, json.JSONDecodeError):
             pass
-
         return False
 
-    # ------------------------------------------------------------------ #
-    # Public API
-    # ------------------------------------------------------------------ #
-    def test_inventory(self, documented_paths: List[Any]) -> List[Issue]:
-        """Test alle paden en retourneer gevonden issues."""
+    # ----------------------- Funtion test_inventory ----------------------------#
+    def test_inventory(self, documented_paths: Optional[List[Any]] = None) -> List[Issue]:
+        if documented_paths is None and self.spec:
+            documented_paths = self.endpoints_from_universal(self.spec)
+
         doc_set: set[str] = {
-            (p["path"] if isinstance(p, dict) else p).rstrip("/")
-            for p in documented_paths
+            (p["path"] if isinstance(p, dict) else str(p)).rstrip("/")
+            for p in (documented_paths or [])
         }
 
-        # Genereer alle te controleren paden
-        paths_to_check = []
-        
-        # Static debug paths
+        paths_to_check: List[str] = []
         paths_to_check.extend(self._DEBUG_PATHS)
-        
-        # Simple version guessing
+
         for v in range(1, 8):
             for prefix in ["", "/api", "/rest", "/services", "/orders", "/products", "/apis"]:
                 paths_to_check.append(f"{prefix}/v{v}")
 
-        # Controleer paden met threading en tqdm voor voortgang
         with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
-            # Submit alle taken
-            future_to_path = {
-                executor.submit(self._check_path, path, doc_set): path 
+            fut_map = {
+                executor.submit(self._check_path, path, doc_set): path
                 for path in paths_to_check
             }
-            
-            # Verwerk resultaten met tqdm voor voortgangsvisualisatie
-            for future in tqdm(
-                as_completed(future_to_path), 
-                total=len(paths_to_check),
-                desc="Testing paths",
-                unit="path"
-            ):
-                path = future_to_path[future]
+            for fut in tqdm(as_completed(fut_map), total=len(fut_map), desc="Testing paths", unit="path"):
+                path = fut_map[fut]
                 try:
-                    future.result()  # Haal resultaat op (of verwerk excepties)
+                    fut.result()
                 except Exception as e:
-                    self._log(f"Error testing path {path}", path, f"Exception: {str(e)}")
+                    self._log("Error testing path", path, f"Exception: {str(e)}")
 
         return self._issues
 
-    
-    # ------------------------------------------------------------------ #
-    # Internal checks
-    # ------------------------------------------------------------------ #
+    # ----------------------- Funtion _check_path ----------------------------#
     def _check_path(self, path: str, documented: set[str]) -> None:
-        url = urljoin(self.base_url, path.lstrip("/"))
-        full_url = url
+        url = urljoin(self.base_url + "/", path.lstrip("/"))
         clean_path = path.rstrip("/")
 
         try:
@@ -154,7 +163,7 @@ class InventoryAuditor:
             if resp.status_code == 405:
                 resp = self.session.get(url, timeout=self.timeout)
         except requests.RequestException as e:
-            self._log(f"Request error for path {path}", path, f"Exception: {str(e)}")
+            self._log("Request error", path, f"Exception: {str(e)}")
             return
 
         if resp.request.method == "HEAD" and resp.status_code < 400:
@@ -166,63 +175,36 @@ class InventoryAuditor:
         if resp.status_code >= 400:
             return
 
-        # Only check security headers once during entire scan
         if not getattr(self, "_security_headers_checked", False):
-            self._check_security_headers(resp, full_url)
+            self._check_security_headers(resp, url)
             self._security_headers_checked = True
 
-        # Stop further checks if not API-like
         if not self._is_api_response(resp):
             return
 
-        # Undocumented endpoint
         base_matches = [doc.rstrip("/").split("{", 1)[0] for doc in documented]
-        if not any(
-            clean_path == doc or clean_path.startswith(f"{doc}/")
-            for doc in base_matches
-        ):
-            self._log(
-                "Undocumented endpoint",
-                full_url,
-                f"Server returned {resp.status_code}",
-                resp,
-            )
+        if not any(clean_path == doc or clean_path.startswith(f"{doc}/") for doc in base_matches):
+            self._log("Undocumented endpoint", url, f"Server returned {resp.status_code}", resp)
 
-        # Debug endpoints
         for debug in self._DEBUG_PATHS:
             if clean_path.startswith(debug.rstrip("/")):
-                self._log(
-                    "Debug endpoint exposed",
-                    full_url,
-                    f"Matched pattern '{debug}'",
-                    resp,
-                )
+                self._log("Debug endpoint exposed", url, f"Matched pattern '{debug}'", resp)
                 self._check_debug_exposure(resp)
 
-        # Deprecated API version
         ver = re.search(r"(?:^|/)v(\d+)(?=/|$)", clean_path, re.I)
         if ver:
             try:
                 v_num = int(ver.group(1))
                 max_v = self._max_version(documented)
                 if v_num < max_v:
-                    self._log(
-                        "Deprecated API version",
-                        full_url,
-                        f"Version v{v_num} but latest is v{max_v}",
-                        resp,
-                    )
+                    self._log("Deprecated API version", url, f"Version v{v_num} but latest is v{max_v}", resp)
             except ValueError:
                 pass
 
-        # Extract external hosts in response
         self._extract_hosts(resp.text)
 
-    # ------------------------------------------------------------------ #
-    # Detail helpers
-    # ------------------------------------------------------------------ #
     def _check_debug_exposure(self, response: requests.Response) -> None:
-        text_lower = response.text.lower()
+        text_lower = (response.text or "").lower()
         if "swagger-ui" in text_lower:
             self._log("Debug exposure", "Swagger UI", "", response)
         if "h2-console" in text_lower:
@@ -230,10 +212,10 @@ class InventoryAuditor:
         if "<heap>" in response.text:
             self._log("Debug exposure", "Memory dump tag", "", response)
 
+    # ----------------------- Funtion _check_security_headers ----------------------------#
     def _check_security_headers(self, response: requests.Response, path: str) -> None:
         missing = []
         hdrs = response.headers
-
         if "strict-transport-security" not in hdrs:
             missing.append("HSTS")
         if hdrs.get("x-content-type-options", "").lower() != "nosniff":
@@ -242,14 +224,8 @@ class InventoryAuditor:
             missing.append("X-Frame-Options")
         if "content-security-policy" not in hdrs:
             missing.append("CSP")
-
         if missing:
-            self._log(
-                "Missing security headers",
-                path,
-                "Missing: " + ", ".join(missing),
-                response,                
-            )                            
+            self._log("Missing security headers", path, "Missing: " + ", ".join(missing), response)
 
     def _max_version(self, paths: set[str]) -> int:
         max_v = 0
@@ -263,17 +239,11 @@ class InventoryAuditor:
 
     def _extract_hosts(self, body: str) -> None:
         base_hostname = urlparse(self.base_url).hostname
-        for host in re.findall(r"https?://([\w.-]+)/", body):
-            if host != base_hostname:
-                self._log(
-                    "Reference to external host",
-                    host,
-                    "Found in response body",
-                )
+        for host in re.findall(r"https?://([\w.-]+)/", body or ""):
+            if host and host != base_hostname:
+                self._log("Reference to external host", host, "Found in response body")
 
-    # ------------------------------------------------------------------ #
-    # Logging helper
-    # ------------------------------------------------------------------ #
+    # ----------------------- Funtion _log ----------------------------#
     def _log(
         self,
         issue: str,
@@ -283,49 +253,36 @@ class InventoryAuditor:
     ) -> None:
         entry: Issue = {
             "issue": issue,
-            "endpoint": endpoint, 
+            "endpoint": endpoint,
             "description": description,
             "timestamp": datetime.utcnow().isoformat(timespec="seconds"),
         }
-
         if response is not None:
             req = response.request
             entry.update(
                 {
-                    "method": req.method,
+                    "method": getattr(req, "method", ""),
                     "status_code": response.status_code,
-                    "request_headers": dict(req.headers),
-                    "response_headers": dict(response.headers),
-                    "request_cookies": (
-                        req._cookies.get_dict()
-                        if hasattr(req, "_cookies")
-                        else {}
-                    ),
+                    "request_headers": dict(getattr(req, "headers", {}) or {}),
+                    "response_headers": dict(response.headers or {}),
+                    "request_cookies": getattr(getattr(req, "_cookies", None), "get_dict", lambda: {})(),
                     "response_cookies": response.cookies.get_dict(),
                     "request_body": (
                         req.body.decode()
-                        if isinstance(req.body, (bytes, bytearray))
-                        else str(req.body or "")
+                        if hasattr(req, "body") and isinstance(req.body, (bytes, bytearray))
+                        else str(getattr(req, "body", "") or "")
                     )[:_MAX_BODY_LEN],
-                    "response_body": response.text[:_MAX_BODY_LEN],
+                    "response_body": (response.text or "")[:_MAX_BODY_LEN],
                 }
             )
-
         with self._lock:
             self._issues.append(entry)
 
-
+    # ----------------------- Funtion generate_report ----------------------------#
     def generate_report(self, fmt: str = "html") -> str:
-        gen = ReportGenerator(
-            self._filtered_issues(),
-            scanner="Inventory (API-09)",
-            base_url=self.base_url,
-        )
+        gen = ReportGenerator(self._filtered_issues(), scanner="Inventory (API-09)", base_url=self.base_url)
         return gen.generate_html() if fmt == "html" else gen.generate_markdown()
 
+    # ----------------------- Funtion save_report ----------------------------#
     def save_report(self, path: str, fmt: str = "html") -> None:
-        ReportGenerator(
-            self._filtered_issues(),
-            scanner="Inventory (API-09)",
-            base_url=self.base_url,
-        ).save(path, fmt=fmt)
+        ReportGenerator(self._filtered_issues(), scanner="Inventory (API-09)", base_url=self.base_url).save(path, fmt=fmt)

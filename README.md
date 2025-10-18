@@ -3,7 +3,7 @@
 
 ---
 
-**Version:** 1.1 (Release)  
+**Version:** 2.0 (Release)  
 **Author:** Perry Mertens ([pamsniffer@gmail.com](mailto:pamsniffer@gmail.com))  
 **License:** MIT
 
@@ -24,8 +24,9 @@ Redistribution is not permitted without explicit permission.
 
 ---
 
-## What's New in v1.1
+## What's New in v2.0
 
+- **A version-agnostic OpenAPI helper that loads specs (JSON/YAML) iterates operations, builds concrete HTTP requests (params/bodies), and applies security `.
 - **Generic sanitizer** (no hardcodes): collapse duplicate segments, normalize `/vN  /vN.00`, trim trailing slash. Toggle with `--no-sanitize`; refine with `--rewrite "pat=>rep"`.
 - **Universal header overrides**: `--flow token --token`, `--apikey --apikey-header`, `--extra-header`, `--headers-file headers.json`. Spec `example/default` values are autoapplied.
 - **IDs & path variables**: `--ids-file ids.json` to control `{param}`; robust fallbacks for uuid/id/code/email/date when missing.

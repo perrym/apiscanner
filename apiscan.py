@@ -1,10 +1,10 @@
-
 ########################################################
 # APISCAN - API Security Scanner                       #
 # Licensed under the MIT License                       #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-########################################################
-
+# version 2.0 18-10-2025                                                     #
+########################################################                                                        
+ 
 """APISCAN is a private and proprietary API security tool, developed independently for internal use and research purposes.
 It supports OWASP API Security Top 10 (2023) testing, OpenAPI-based analysis, active scanning, and multi-format reporting.
 Redistribution is not permitted without explicit permission.
@@ -55,8 +55,25 @@ from doc_generator import generate_combined_html
 from swagger_utils import enable_dummy_mode, extract_variables, write_variables_file
 import re as _re_ver
 
+                                 
+from openapi_universal import (
+    iter_operations as oas_iter_ops,
+    build_request as oas_build_request,
+    SecurityConfig as OASSecurityConfig,
+    load_spec as oas_load_spec,
+)
 
-MISSING_RE = _re.compile(r"(missing|require[sd])\s+['\"]?([A-Za-z0-9_]+)['\"]?", _re.I)
+
+try:
+    import colorama
+                                                                            
+    colorama.just_fix_windows_console()
+    colorama.init(autoreset=True, strip=False, convert=True)
+except Exception:
+    pass
+
+
+MISSING_RE = _re.compile(r"(missing|require[sd])\\s+['\\\"]?([A-Za-z0-9_]+)['\\\"]?", _re.I)
 def _guess_fill_for_key(k):
     kl = (k or "").lower()
     if kl.endswith("id") or kl in ("id","user_id","order_id","vehicle_id","post_id"):
@@ -76,7 +93,7 @@ def _augment_body_missing_field_from_error(body, rtext):
         return body
     added = False
     txt = rtext or ""
-    for m in _MISSING_RE.finditer(txt):
+    for m in MISSING_RE.finditer(txt):
         fld = m.group(2)
         if fld and fld not in body:
             body[fld] = _guess_fill_for_key(fld)
@@ -90,7 +107,7 @@ def _normalize_version_in_url(u: str) -> str:
             minor = m.group(2) or "0"
             minor_norm = str(int(minor))
             return f"/v{major}.{minor_norm}/"
-        return _re_ver.sub(r"/v(\d+)\.(\d+)/", repl, u)
+        return _re_ver.sub(r"/v(\\d+)\\.(\\d+)/", repl, u)
     except Exception:
         return u
 DUMMY_MODE = False
@@ -111,6 +128,29 @@ manual_file_map = {
 logger = logging.getLogger("apiscan")
 MAX_THREADS = 20
 
+# ----------------------- Funtion _sec_from_args ----------------------------#
+def _sec_from_args(args) -> OASSecurityConfig:
+    api_key_val = getattr(args, 'apikey', None)
+    api_key_name = getattr(args, 'apikey_header', 'X-API-Key')
+    return OASSecurityConfig(
+        api_key_header_name=api_key_name,
+        api_key_value=api_key_val,
+        api_key_query_name=None,
+        bearer_token=getattr(args, 'token', None),
+    )
+
+
+def _endpoints_from_universal(spec: dict) -> list[dict]:
+    eps = []
+    try:
+        for op in oas_iter_ops(spec):
+            eps.append({"path": op["path"], "method": op["method"], "operationId": op.get("operation",{}).get("operationId") or f"{op['method']}_{op['path'].strip('/').replace('/','_')}", "tags": op.get("operation",{}).get("tags", [])})
+    except Exception:
+        pass
+    return eps
+
+
+# ----------------------- Funtion extract_endpoints_from_paths ----------------------------#
 def extract_endpoints_from_paths(spec):
     endpoints = []
     paths = (spec or {}).get("paths", {})
@@ -128,15 +168,25 @@ def extract_endpoints_from_paths(spec):
                 })
     return endpoints
 
+# ----------------------- Funtion styled_print ----------------------------#
 def styled_print(message: str, status: str = "info") -> None:
     symbols = {"info": "Info:", "ok": "OK:", "warn": "WARNING:", "fail": "FAIL:", "run": "->", "done": "Done"}
-    colors = {"info": "\033[94m", "ok": "\033[92m", "warn": "\033[93m", "fail": "\033[91m", "run": "\033[96m", "done": "\033[92m"}
-    reset = "\033[0m"
+    colors = {
+        "info": "\x1b[94m",
+        "ok": "\x1b[92m",
+        "warn": "\x1b[93m",
+        "fail": "\x1b[91m",
+        "run": "\x1b[96m",
+        "done": "\x1b[92m",
+    }
+    reset = "\x1b[0m"
     print(f"{colors.get(status, '')}{symbols.get(status, '')} {message}{reset}")
 
+# ----------------------- Funtion normalize_url ----------------------------#
 def normalize_url(url: str) -> str:
     return url if url.startswith(("http://", "https://")) else "http://" + url
 
+# ----------------------- Funtion create_output_directory ----------------------------#
 def create_output_directory(base_url: str) -> Path:
     clean = base_url.replace("https://", "").replace("http://", "").replace("/", "_").replace(":", "_")
     timestamp = datetime.now().strftime("%d-%m-%Y_%H%M%S")
@@ -144,10 +194,118 @@ def create_output_directory(base_url: str) -> Path:
     out_dir.mkdir(exist_ok=True)
     return out_dir
 
+# ----------------------- Funtion save_html_report ----------------------------#
 def save_html_report(issues, risk_key: str, url: str, output_dir: Path) -> None:
     html_report = HTMLReportGenerator(issues=issues, scanner=RISK_INFO[risk_key]["title"], base_url=url)
     filename = f"api_{manual_file_map[risk_key]}_report.html"
     html_report.save(output_dir / filename)
+
+# ----------------------- Funtion check_api_reachable ----------------------------#
+def _canonical_path_min(p: str) -> str:
+    import re as _re
+    p = "/" + (p or "").lstrip("/")
+    return _re.sub(r"\{[^}]+\}", "{}", p)
+
+def _json_shape_min(text: str) -> str:
+    if not text:
+        return ""
+    try:
+        import json as _json
+        data = _json.loads(text)
+    except Exception:
+        import re as _re
+        return _re.sub(r"\s+", " ", text).strip()[:4096]
+    def _n(v):
+        if isinstance(v, dict):
+            return {k: _n(val) for k,val in sorted(v.items(), key=lambda x: x[0]) if k not in {"timestamp","time","date","requestId","request_id"}}
+        if isinstance(v, list):
+            return [_n(v[0])] if v else []
+        if isinstance(v, str):
+            return "S"
+        if isinstance(v, (int,float)):
+            return "N"
+        if isinstance(v, bool):
+            return "B"
+        if v is None:
+            return "null"
+        return "X"
+    try:
+        shaped = _n(data)
+        import json as _json
+        return _json.dumps(shaped, separators=(",", ":"), ensure_ascii=False)[:8192]
+    except Exception:
+        import re as _re
+        return _re.sub(r"\s+", " ", text).strip()[:4096]
+
+def _is_sensitive_body_min(body: str) -> bool:
+    if not body:
+        return False
+    import re as _re
+    if _re.search(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", body, flags=_re.I):
+        return True
+    if _re.search(r"\beyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\b", body):
+        return True
+    if _re.search(r'"(access_)?token"\s*:\s*"', body, flags=_re.I):
+        return True
+    return False
+
+def _filter_auth_issues_min(issues):
+    if not issues:
+        return []
+    out = []
+    for it in issues:
+        try:
+            code = int(it.get("status_code", 0) or 0)
+        except Exception:
+            continue
+        if code in {0, 400, 404, 405}:
+            continue
+        if 500 <= code < 600:
+            continue
+        body = it.get("response_body") or ""
+        path = str(it.get("endpoint") or "")
+        if code == 200 and not (_is_sensitive_body_min(body) or ".env" in path or "/.env" in path):
+            generic = False
+            try:
+                import json as _json
+                data = _json.loads(body)
+                if isinstance(data, dict):
+                    keys = set(map(lambda k: str(k).lower(), data.keys()))
+                    if keys and keys.issubset({"message","status","detail","error"}):
+                        generic = all(not isinstance(v, (dict, list)) for v in data.values())
+            except Exception:
+                txt = (body or "").strip().lower()
+                if len(txt) <= 64 and txt in {"ok","success","done","created","updated","deleted"}:
+                    generic = True
+            if generic:
+                continue
+        try:
+            from hashlib import sha1 as _sha1
+            method = it.get("method","")
+            canon = _canonical_path_min(path)
+            shape = _json_shape_min(body)
+            fp = f"{method}|{canon}|{code}|{_sha1(shape.encode('utf-8','ignore')).hexdigest()}"
+        except Exception:
+            fp = None
+        it["fingerprint"] = fp
+        out.append(it)
+    dedup = {}
+    for it in out:
+        fp = it.get("fingerprint")
+        if not fp:
+            continue
+        if fp in dedup:
+            d = dedup[fp]
+            d["duplicate_count"] = d.get("duplicate_count", 1) + 1
+            v = d.setdefault("variants", [])
+            desc = it.get("description","")
+            if desc and desc not in v:
+                v.append(desc)
+        else:
+            it.setdefault("duplicate_count", 1)
+            it.setdefault("variants", [it.get("description","")])
+            dedup[fp] = it
+    return list(dedup.values())
 
 def check_api_reachable(url: str, session: requests.Session, retries: int = 3, delay: int = 3) -> None:
     for attempt in range(1, retries + 1):
@@ -173,11 +331,12 @@ def check_api_reachable(url: str, session: requests.Session, retries: int = 3, d
             print(f"ERROR: Cannot connect to {url} after {retries} attempts.")
             sys.exit(1)
 
-# --------------------- URL sanitizer & ID mapping ----------
+                                                             
 import re as _re_sub
 
 _ID_MAP = {}
 
+# ----------------------- Funtion load_id_map ----------------------------#
 def load_id_map(path: str | None):
     global _ID_MAP
     _ID_MAP = {}
@@ -233,7 +392,8 @@ def _normalize_path_generic(path: str) -> str:
         path = path[:-1]
     return path
 
-# --------------------- Generic URL-normalisatie + optional rewrites ----------
+                                                                               
+# ----------------------- Funtion _sanitize_url ----------------------------#
 def _sanitize_url(url: str, rewrites: list[str] | None = None) -> str:
     if not isinstance(url, str) or not url:
         return url
@@ -243,6 +403,7 @@ def _sanitize_url(url: str, rewrites: list[str] | None = None) -> str:
     out = _apply_rewrites(out, rewrites)
     return out
 
+# ----------------------- Funtion _sanitize_url2 ----------------------------#
 def _sanitize_url2(url: str, rewrites: list[str] | None = None, disable: bool = False) -> str:
     if not isinstance(url, str) or not url:
         return url
@@ -254,7 +415,7 @@ def _sanitize_url2(url: str, rewrites: list[str] | None = None, disable: bool = 
     out   = _apply_rewrites(out, rewrites)
     return out
 
-# --------------------- Generic header overrides helper ----------
+                                                                  
 def _merge_header_overrides(args) -> dict:
     overrides = {}
     def put(name, value):
@@ -270,7 +431,7 @@ def _merge_header_overrides(args) -> dict:
     if getattr(args, "apikey", None) and getattr(args, "apikey_header", None):
         put(getattr(args, "apikey_header"), getattr(args, "apikey"))
 
-# --------------------- Extra headers ----------
+                                                
     for raw in (getattr(args, "extra_header", None) or []):
         if not raw or ":" not in raw:
             continue
@@ -290,7 +451,8 @@ def _merge_header_overrides(args) -> dict:
 
     return overrides
 
-# --------------------- Verify helpers ----------
+                                                 
+# ----------------------- Funtion _parse_success_codes ----------------------------#
 def _parse_success_codes(spec_str: str):
     parts = [p.strip() for p in (spec_str or "").split(",") if p.strip()]
     ranges = []
@@ -316,7 +478,10 @@ def _parse_success_codes(spec_str: str):
         return False
     return ok
 
+
+# ----------------------- Funtion verify_plan ----------------------------#
 def verify_plan(args, session, spec: dict, base_url: str, csv_path: str = None, rewrites=None, disable_sanitize: bool = False):
+                                                                                     
     if csv_path is None:
         try:
             csv_path = str(OUT_DIR / "apiscan-verify.csv")
@@ -326,171 +491,111 @@ def verify_plan(args, session, spec: dict, base_url: str, csv_path: str = None, 
         rewrites = []
 
     ok_code = _parse_success_codes(getattr(args, 'success_codes', '200-299'))
-    paths = (spec or {}).get('paths', {}) or {}
     results = []
     total = oks = fails = 0
 
-    for pth, item in paths.items():
-        if not isinstance(item, dict):
-            continue
-        for m in ('GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS'):
-            op = item.get(m.lower())
-            if not isinstance(op, dict):
-                continue
-
-            url = (base_url.rstrip('/') + '/' + pth.lstrip('/'))
-            try:
-                url = _plan_fill_path_params(url)
-            except Exception:
-                pass
-            url = _sanitize_url2(url, rewrites, disable=disable_sanitize)
-            if getattr(args, "normalize_version", False):
-                url = _normalize_version_in_url(url)
-
-            ct, body, as_json = (None, None, False)
-            if m in ('POST', 'PUT', 'PATCH'):
-                try:
-                    ct, body, as_json = _plan_body_from_requestbody(op)
-                except Exception:
-                    ct, body, as_json = (None, None, False)
-
-                if body is None and getattr(args, "dummy", False):
-                    if not ct or 'json' in (ct or '').lower():
-                        ct, body, as_json = ('application/json; charset=UTF-8', {}, True)
-                    elif 'xml' in (ct or '').lower():
-                        ct, body, as_json = ('application/xml', "<root/>", False)
-
-                if ct and isinstance(ct, str) and 'json' in ct.lower():
-                    ct = 'application/json; charset=UTF-8'
-
-                if ct and 'xml' in str(ct).lower() and isinstance(body, (dict, list)):
-                    body, as_json = "<root/>", False
-
-            if m in ('GET', 'DELETE', 'HEAD'):
-                body, as_json = None, False
-
-            headers = {}
-            if ct and 'multipart/form-data' not in (ct or '').lower():
-                headers['Content-Type'] = ct
-
-            overrides = _merge_header_overrides(args)
-            for _, (orig, val) in overrides.items():
-                headers[orig] = val
-
-            for p in (op.get('parameters') or []):
-                try:
-                    if p.get('in') != 'header' or not p.get('name'):
-                        continue
-                    name = str(p['name'])
-                    lname = name.lower()
-                    if lname == 'content-length':
-                        continue
-                    if name in headers or lname in {k.lower() for k in headers.keys()}:
-                        continue
-                    if p.get('example') not in (None, ''):
-                        headers[name] = str(p['example']); continue
-                    schema = p.get('schema') or {}
-                    if schema.get('example') not in (None, ''):
-                        headers[name] = str(schema['example']); continue
-                    if schema.get('default') not in (None, ''):
-                        headers[name] = str(schema['default']); continue
-                except Exception:
-                    pass
-
+                              
+    used_universal = False
+    try:
+        sec = _sec_from_args(args)
+        for op in oas_iter_ops(spec):
+            req = oas_build_request(spec, base_url, op, sec)
+            method = req["method"]; url = req["url"]
             t0 = time.time()
             try:
-                if m in ('POST','PUT','PATCH'):
-                    if isinstance(ct, str) and 'multipart/form-data' in ct.lower() and isinstance(body, dict):
-                        files, data = {}, {}
-                        for k, v in body.items():
-                            if isinstance(v, (bytes, bytearray)):
-                                files[k] = ('apiscan.bin', v)
-                            else:
-                                data[k] = v
-                        headers.pop('Content-Type', None)
-                        r = session.request(m, url, headers=headers, files=files, data=data,
-                                            timeout=getattr(args,'timeout',10),
-                                            verify=not getattr(args,'insecure',False))
-                    elif as_json and isinstance(body, (dict, list)):
-                        r = session.request(m, url, headers=headers, json=body,
-                                            timeout=getattr(args,'timeout',10),
-                                            verify=not getattr(args,'insecure',False))
-                    elif body is not None:
-                        r = session.request(m, url, headers=headers, data=body,
-                                            timeout=getattr(args,'timeout',10),
-                                            verify=not getattr(args,'insecure',False))
-                    else:
-                        r = session.request(m, url, headers=headers,
-                                            timeout=getattr(args,'timeout',10),
-                                            verify=not getattr(args,'insecure',False))
-                else:
-                    r = session.request(m, url, headers=headers,
-                                        timeout=getattr(args,'timeout',10),
-                                        verify=not getattr(args,'insecure',False))
-
+                r = session.request(**req, timeout=getattr(args,'timeout',10), verify=not getattr(args,'insecure',False))
                 status = r.status_code
-                try:
-                    max_retry = int(getattr(args, "retry500", 1) or 0)
-                except Exception:
-                    max_retry = 0
-                if m in ('POST','PUT','PATCH') and max_retry > 0 and isinstance(body, dict):
-                    if status >= 400:
-                        try:
-                            txt = ''
-                            try:
-                                txt = r.text or ''
-                            except Exception:
-                                txt = ''
-                            new_body = _augment_body_missing_field_from_error(dict(body), txt)
-                            if new_body != body:
-                                body = new_body
-                                if isinstance(ct, str) and 'multipart/form-data' in ct.lower() and isinstance(body, dict):
-                                    files, data = {}, {}
-                                    for k, v in body.items():
-                                        if isinstance(v, (bytes, bytearray)):
-                                            files[k] = ('apiscan.bin', v)
-                                        else:
-                                            data[k] = v
-                                    headers.pop('Content-Type', None)
-                                    r = session.request(m, url, headers=headers, files=files, data=data,
-                                                        timeout=getattr(args,'timeout',10),
-                                                        verify=not getattr(args,'insecure',False))
-                                elif as_json and isinstance(body, (dict, list)):
-                                    r = session.request(m, url, headers=headers, json=body,
-                                                        timeout=getattr(args,'timeout',10),
-                                                        verify=not getattr(args,'insecure',False))
-                                else:
-                                    r = session.request(m, url, headers=headers, data=(body if body is not None else ''),
-                                                        timeout=getattr(args,'timeout',10),
-                                                        verify=not getattr(args,'insecure',False))
-                                status = r.status_code
-                        except Exception:
-                            pass
-
             except Exception:
                 status = 0
-
             ms = int((time.time()-t0)*1000)
             ok = ok_code(status)
-            total += 1
-            oks += 1 if ok else 0
-            fails += 1 if not ok else 0
-            print(f"[VERIFY] {m} {url} -> {status} ({ms} ms){' OK' if ok else ' FAIL'}")
-            results.append([m, url, status, ms, 'OK' if ok else 'FAIL'])
+            total += 1; oks += 1 if ok else 0; fails += 1 if not ok else 0
+            print(f"[VERIFY] {method} {url} -> {status} ({ms} ms){' OK' if ok else ' FAIL'}")
+            results.append([method, url, status, ms, 'OK' if ok else 'FAIL'])
+        used_universal = True
+    except Exception:
+        used_universal = False
+
+    if not used_universal:
+                                      
+        paths = (spec or {}).get('paths', {}) or {}
+        for pth, item in paths.items():
+            if not isinstance(item, dict):
+                continue
+            for m in ('GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS'):
+                op = item.get(m.lower())
+                if not isinstance(op, dict):
+                    continue
+                url = (base_url.rstrip('/') + '/' + pth.lstrip('/'))
+                try:
+                    url = _plan_fill_path_params(url)
+                except Exception:
+                    pass
+                url = _sanitize_url2(url, rewrites, disable=disable_sanitize)
+                if getattr(args, "normalize_version", False):
+                    url = _normalize_version_in_url(url)
+
+                ct, body, as_json = (None, None, False)
+                if m in ('POST', 'PUT', 'PATCH'):
+                    try:
+                        ct, body, as_json = _plan_body_from_requestbody(op)
+                    except Exception:
+                        ct, body, as_json = (None, None, False)
+                headers = {}
+                if ct and 'multipart/form-data' not in (ct or '').lower():
+                    headers['Content-Type'] = ct
+                overrides = _merge_header_overrides(args)
+                for _, (orig, val) in overrides.items():
+                    headers[orig] = val
+
+                t0 = time.time()
+                try:
+                    if m in ('POST','PUT','PATCH'):
+                        if isinstance(ct, str) and 'multipart/form-data' in ct.lower() and isinstance(body, dict):
+                            files, data = {}, {}
+                            for k, v in body.items():
+                                if isinstance(v, (bytes, bytearray)):
+                                    files[k] = ('apiscan.bin', v)
+                                else:
+                                    data[k] = v
+                            headers.pop('Content-Type', None)
+                            r = session.request(m, url, headers=headers, files=files, data=data,
+                                                timeout=getattr(args,'timeout',10), verify=not getattr(args,'insecure',False))
+                        elif as_json and isinstance(body, (dict, list)):
+                            r = session.request(m, url, headers=headers, json=body,
+                                                timeout=getattr(args,'timeout',10), verify=not getattr(args,'insecure',False))
+                        elif body is not None:
+                            r = session.request(m, url, headers=headers, data=body,
+                                                timeout=getattr(args,'timeout',10), verify=not getattr(args,'insecure',False))
+                        else:
+                            r = session.request(m, url, headers=headers,
+                                                timeout=getattr(args,'timeout',10), verify=not getattr(args,'insecure',False))
+                    else:
+                        r = session.request(m, url, headers=headers,
+                                            timeout=getattr(args,'timeout',10), verify=not getattr(args,'insecure',False))
+                    status = r.status_code
+                except Exception:
+                    status = 0
+
+                ms = int((time.time()-t0)*1000)
+                ok = ok_code(status)
+                total += 1; oks += 1 if ok else 0; fails += 1 if not ok else 0
+                print(f"[VERIFY] {m} {url} -> {status} ({ms} ms){' OK' if ok else ' FAIL'}")
+                results.append([m, url, status, ms, 'OK' if ok else 'FAIL'])
 
     try:
         with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-            w = _csv.writer(f)
-            w.writerow(['method','url','status','ms','result'])
-            w.writerows(results)
+            w = _csv.writer(f); w.writerow(['method','url','status','ms','result']); w.writerows(results)
         print(f"[VERIFY] written: {csv_path}  OK={oks} FAIL={fails} TOTAL={total}")
     except Exception as e:
         print(f"[VERIFY] CSV write failed: {e}")
     return oks, fails, total
 
-# --------------------- Planning helpers: build full dry-run plan over all endpoints ----------
+
+                                                                                               
 import json as _json
 
+# ----------------------- Funtion _plan_sample_for ----------------------------#
 def _plan_sample_for(name: str) -> str:
     v = _id_lookup(name)
     if v is not None:
@@ -508,10 +613,12 @@ def _plan_sample_for(name: str) -> str:
         return '2025-01-01'
     return 'sample'
 
+# ----------------------- Funtion _plan_fill_path_params ----------------------------#
 def _plan_fill_path_params(url: str) -> str:
     import re as _re
     return _re.sub(r'{([^}]+)}', lambda m: _plan_sample_for(m.group(1)), url)
 
+# ----------------------- Funtion _plan_build_example_from_schema ----------------------------#
 def _plan_build_example_from_schema(schema: dict):
     if not isinstance(schema, dict): return {}
     t = schema.get('type')
@@ -524,6 +631,7 @@ def _plan_build_example_from_schema(schema: dict):
     if t == 'string':  return 'string'
     return {}
 
+# ----------------------- Funtion _plan_body_from_requestbody ----------------------------#
 def _plan_body_from_requestbody(op: dict):
     rb = (op or {}).get('requestBody') or {}
     content = rb.get('content') or {}
@@ -569,7 +677,10 @@ def _plan_body_from_requestbody(op: dict):
     as_json = ('json' in (mt or '').lower()) and isinstance(ex, (dict, list))
     return mt, ex, as_json
 
+
+# ----------------------- Funtion plan_requests ----------------------------#
 def plan_requests(spec, base_url, csv_path=None, rewrites=None, disable_sanitize: bool = False, normalize_version: bool = False):
+                                                                                       
     if csv_path is None:
         try:
             csv_path = str(OUT_DIR / "apiscan-plan.csv")
@@ -578,48 +689,69 @@ def plan_requests(spec, base_url, csv_path=None, rewrites=None, disable_sanitize
     if rewrites is None:
         rewrites = []
 
-    paths = (spec or {}).get('paths', {}) or {}
     rows = []
     count = 0
+    used_universal = False
 
-    for pth, item in paths.items():
-        if not isinstance(item, dict):
-            continue
-        for m in ('GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS'):
-            op = item.get(m.lower())
-            if not isinstance(op, dict):
-                continue
-
-            url = (base_url.rstrip('/') + '/' + pth.lstrip('/'))
-            url = _plan_fill_path_params(url)
-            url = _sanitize_url2(url, rewrites, disable=disable_sanitize)
-            if normalize_version:
-                url = _normalize_version_in_url(url)
-
-            ct, body, as_json = (None, None, False)
-            if m in ('POST','PUT','PATCH'):
-                try:
-                    ct, body, as_json = _plan_body_from_requestbody(op)
-                except Exception:
-                    ct, body, as_json = (None, None, False)
-                if ct and 'json' in str(ct).lower():
-                    ct = 'application/json; charset=UTF-8'
-
-            blen = (len(_json.dumps(body)) if isinstance(body,(dict,list)) else len(body or '')) if body is not None else 0
-            print(f'[PLAN] {m} {url} ct={ct} len={blen} json={as_json}')
-            rows.append([m, url, ct or '', blen, 'json' if as_json else 'raw'])
+    try:
+        sec = _sec_from_args(builtins.args) if hasattr(builtins, "args") else _sec_from_args(argparse.Namespace())
+        for op in oas_iter_ops(spec):
+            req = oas_build_request(spec, base_url, op, sec)
+            method = req["method"]
+            url = req["url"]
+            body = req.get("json")
+            ctype = req["headers"].get("Content-Type", "")
+            if isinstance(body, (dict, list)):
+                blen = len(json.dumps(body))
+                mode = "json"
+            else:
+                blen = len(body or "") if body is not None else 0
+                mode = "raw"
+            print(f"[PLAN] {method} {url} ct={ctype or ''} len={blen} json={mode=='json'}")
+            rows.append([method, url, ctype or '', blen, mode])
             count += 1
+        used_universal = True
+    except Exception:
+        used_universal = False
+
+    if not used_universal:
+                         
+        paths = (spec or {}).get('paths', {}) or {}
+        for pth, item in paths.items():
+            if not isinstance(item, dict):
+                continue
+            for m in ('GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS'):
+                op = item.get(m.lower())
+                if not isinstance(op, dict):
+                    continue
+                url = (base_url.rstrip('/') + '/' + pth.lstrip('/'))
+                url = _plan_fill_path_params(url)
+                url = _sanitize_url2(url, rewrites, disable=disable_sanitize)
+                if normalize_version:
+                    url = _normalize_version_in_url(url)
+                ct, body, as_json = (None, None, False)
+                if m in ('POST','PUT','PATCH'):
+                    try:
+                        ct, body, as_json = _plan_body_from_requestbody(op)
+                    except Exception:
+                        ct, body, as_json = (None, None, False)
+                    if ct and 'json' in str(ct).lower():
+                        ct = 'application/json; charset=UTF-8'
+                blen = (len(json.dumps(body)) if isinstance(body,(dict,list)) else len(body or '')) if body is not None else 0
+                print(f'[PLAN] {m} {url} ct={ct} len={blen} json={as_json}')
+                rows.append([m, url, ct or '', blen, 'json' if as_json else 'raw'])
+                count += 1
 
     try:
         with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-            w = _csv.writer(f)
-            w.writerow(['method','url','content_type','body_len','mode'])
-            w.writerows(rows)
+            w = _csv.writer(f); w.writerow(['method','url','content_type','body_len','mode']); w.writerows(rows)
         print(f'[PLAN] written: {csv_path} ({count} requests)')
     except Exception as e:
         print(f'[PLAN] CSV write failed: {e}')
     return count
 
+
+# ----------------------- Funtion main ----------------------------#
 def main() -> None:
     parser = argparse.ArgumentParser(description=f"APISCAN {__version__} - API Security Scanner")
 
@@ -663,9 +795,9 @@ def main() -> None:
     parser.add_argument("--rewrite", action="append", default=[], help="Regex=>replacement rewrite applied to each URL (can be repeated)")
     parser.add_argument("--no-sanitize", action="store_true", help="Disable built-in URL normalization; only apply explicit --rewrite rules")
 
-# --------------------- Version normalization flags (mutually exclusive) ----------
+                                                                                   
 
-# --------------------- Version normalization flags (mutually exclusive) ----------
+                                                                                   
     group_nv = parser.add_mutually_exclusive_group()
     group_nv.add_argument(
         "--normalize-version",
@@ -685,7 +817,8 @@ def main() -> None:
 f"--api{i}", action="store_true", help=f"Run only API{i} audit")
 
     args = parser.parse_args()
-
+    if args.url and "://" not in args.url:
+        args.url = "http://" + args.url
     if getattr(args, "dummy", False):
         try:
             enable_dummy_mode(True)
@@ -760,14 +893,18 @@ f"--api{i}", action="store_true", help=f"Run only API{i} audit")
         logger.info(f"Loading Swagger from: {swagger_path}")
         styled_print(f"Loading validated Swagger file: {swagger_path}", "info")
 
-        with swagger_path.open("r", encoding="utf-8") as f:
-            spec = json.load(f)
+        spec = oas_load_spec(str(swagger_path), inject_base_url=args.url)
 
-        bola = BOLAAuditor(sess)
-        bola.spec = spec
-        endpoints = bola.get_object_endpoints(spec)
+        bola = BOLAAuditor(session=sess, base_url=args.url, swagger_spec=spec)
+
+        endpoints = bola.get_object_endpoints(spec) or []
+        uni_eps = _endpoints_from_universal(spec)
+        if uni_eps:
+            key = lambda d: (d.get('method','').upper(), d.get('path',''))
+            seen = {key(e) for e in endpoints}
+            endpoints.extend([e for e in uni_eps if key(e) not in seen])
         if not endpoints:
-            print("[debug] No endpoints found by discovery  falling back to paths")
+            print("[debug] No endpoints found by discovery; falling back to raw paths")
             endpoints = extract_endpoints_from_paths(spec)
 
         ai_endpoints = [
@@ -777,6 +914,7 @@ f"--api{i}", action="store_true", help=f"Run only API{i} audit")
 
         logger.debug(f"Swagger loaded - {len(endpoints)} endpoints")
         styled_print(f"Swagger loaded - {len(endpoints)} endpoints found", "ok")
+
     except (FileNotFoundError, ValueError) as e:
         logger.error(f"Swagger processing failed: {e}")
         styled_print(str(e), "fail")
@@ -785,14 +923,14 @@ f"--api{i}", action="store_true", help=f"Run only API{i} audit")
         logger.error(f"Unexpected error during Swagger parsing: {e}")
         styled_print("Unexpected error during Swagger parsing", "fail")
         sys.exit(1)
-# --------------------- Full planning phase (dry run over all endpoints) ----------
+                                                                                   
     base = args.url
     if getattr(args, 'plan_only', False) or getattr(args, 'plan_then_scan', False):
         plan_requests(spec, base, csv_path=None, rewrites=getattr(args, 'rewrite', []), disable_sanitize=getattr(args, 'no_sanitize', False))
         if getattr(args, 'plan_only', False):
             styled_print('Plan-only mode: done.', 'ok')
             return
-# --------------------- Optional verification (send planned requests and expect success) ----------
+                                                                                                   
     if getattr(args, 'verify_plan', False):
         oks, fails, total = verify_plan(args, sess, spec, base, csv_path=None, rewrites=getattr(args, 'rewrite', []), disable_sanitize=getattr(args, 'no_sanitize', False))
         if fails > 0 and not getattr(args, 'plan_then_scan', False):
@@ -815,14 +953,14 @@ f"--api{i}", action="store_true", help=f"Run only API{i} audit")
         tqdm.write(f"{Fore.CYAN}[API1] Starting BOLA (threads={args.threads}){Style.RESET_ALL}")
         logger.info("Running API1 - BOLA")
 
+        if args.url and "://" not in args.url:
+            args.url = "http://" + args.url
+
+        bola = BOLAAuditor(session=sess, base_url=args.url, swagger_spec=spec)
+
+        endpoints = bola.get_object_endpoints(spec) or []
+
         bola_results = []
-
-        bola = BOLAAuditor(sess)
-        bola.session = sess
-        bola.base_url = args.url
-        bola.spec = spec
-
-        endpoints = endpoints
 
         max_workers = max(1, min(args.threads, MAX_THREADS))
         if max_workers == 1:
@@ -848,7 +986,7 @@ f"--api{i}", action="store_true", help=f"Run only API{i} audit")
 
         bola.issues = [r.to_dict() for r in bola_results if getattr(r, "status_code", 0) != 0]
         try:
-            report = bola.generate_report()
+            bola.generate_report()
         except Exception as e:
             tqdm.write(f"{Fore.RED}[API1][ERR] report generation failed: {e}{Style.RESET_ALL}")
 
@@ -873,8 +1011,9 @@ f"--api{i}", action="store_true", help=f"Run only API{i} audit")
                 norm_eps.append({"path": path, "method": method})
             except KeyError:
                 continue
-        aa = AuthAuditor(args.url, sess, show_progress=True)
+        aa = AuthAuditor(session=sess, base_url=args.url, swagger_spec=spec, show_progress=True)
         auth_issues = aa.test_authentication_mechanisms(norm_eps)
+        auth_issues = _filter_auth_issues_min(auth_issues)
         for issue in auth_issues:
             desc = issue.get("description", "Unknown")
             ep   = issue.get("endpoint", issue.get("url", ""))
@@ -900,9 +1039,8 @@ f"--api{i}", action="store_true", help=f"Run only API{i} audit")
     if 4 in selected_apis:
         tqdm.write(f"{Fore.CYAN} API4 - Resource Consumption{Style.RESET_ALL}")
         logger.info("Running API4 - Resource Consumption")
-        rc = ResourceAuditor(args.url, sess, show_progress=True)
-        resource_eps = [{"path": ep["path"], "method": ep["method"]} for ep in endpoints]
-        res_issues = rc.test_resource_consumption(resource_eps)
+        rc = ResourceAuditor(session=sess, base_url=args.url, swagger_spec=spec, show_progress=True)
+        res_issues = rc.test_resource_consumption()
         save_html_report(res_issues, "Resource", args.url, output_dir)
         styled_print(f"API4 complete - {len(res_issues)} issues", "done")
 
@@ -910,14 +1048,10 @@ f"--api{i}", action="store_true", help=f"Run only API{i} audit")
     if 5 in selected_apis:
         tqdm.write(f"{Fore.CYAN} API5 - Function-level Authorization{Style.RESET_ALL}")
         logger.info("Running API5 - Function-level Authorization")
-        za = AuthorizationAuditor(args.url, sess)
-        za.discovered_endpoints = [
-            {"url": urljoin(args.url.rstrip("/") + "/", ep["path"].lstrip("/")),
-            "methods": [ep["method"].upper()],
-            "sensitive": "admin" in ep["path"].lower()}
-            for ep in endpoints
-        ]
+
+        za = AuthorizationAuditor(session=sess, base_url=args.url, spec=spec, flow=getattr(args, "flow", "none"), logger=logger)
         authz_issues = za.test_authorization(show_progress=True)
+
         for issue in authz_issues:
             tqdm.write(f"-> Authorization issue: {issue.get('description','Unknown')} @ {issue.get('endpoint','Unknown')}")
         save_html_report(authz_issues, "AdminAccess", args.url, output_dir)
@@ -927,7 +1061,7 @@ f"--api{i}", action="store_true", help=f"Run only API{i} audit")
     if 6 in selected_apis:
         print(" API6 - Sensitive Business Flows")
         logger.info("Running API6 - Sensitive Business Flows")
-        bf = BusinessFlowAuditor(args.url, sess)
+        bf = BusinessFlowAuditor(session=sess, base_url=args.url, swagger_spec=spec, flow=getattr(args, "flow", "none"))
         business_eps = [{"name": (ep.get("operationId") or f"{ep['method']} {ep['path']}").replace(" ", "_"), "url": urljoin(args.url.rstrip("/") + "/", ep["path"].lstrip("/")), "method": ep["method"], "body": {}} for ep in endpoints if ep["method"] in {"POST", "PUT", "PATCH"}]
         biz_issues = bf.test_business_flows(business_eps)
         save_html_report(biz_issues, "BusinessFlows", args.url, output_dir)
@@ -940,12 +1074,13 @@ f"--api{i}", action="store_true", help=f"Run only API{i} audit")
 
         ss_eps = SSRFAuditor.endpoints_from_swagger(args.swagger, default_base=args.url)
         if ss_eps:
-            ss = SSRFAuditor(args.url, sess, show_progress=True)
+            ss = SSRFAuditor(session=sess, base_url=args.url, swagger_spec=spec)
             ssrf_issues = ss.test_endpoints(ss_eps)
             save_html_report(ssrf_issues, 'SSRF', args.url, output_dir)
             styled_print(f"API7 complete - {len(ssrf_issues)} issues", "done")
         else:
             styled_print("No SSRF endpoints found", "warn")
+
 # --------------------- API8: Security Misconfiguration ----------
     if 8 in selected_apis:
         tqdm.write(f"{Fore.CYAN} API8 - Security Misconfiguration{Style.RESET_ALL}")
@@ -962,14 +1097,17 @@ f"--api{i}", action="store_true", help=f"Run only API{i} audit")
     if 9 in selected_apis:
         print(" API9 - Improper Inventory Management")
         logger.info("Running API9 - Improper Inventory Management")
-        inv_eps = InventoryAuditor.endpoints_from_swagger(args.swagger)
-        if inv_eps:
-            inv = InventoryAuditor(args.url, sess)
-            inv_issues = inv.test_inventory(inv_eps)
-            save_html_report(inv_issues, "Inventory", args.url, output_dir)
-            styled_print(f"API9 complete - {len(inv_issues)} issues", "done")
-        else:
-            styled_print("No inventory endpoints found", "warn")
+
+        inv_eps = InventoryAuditor.endpoints_from_swagger(args.swagger) or []
+        if not inv_eps and spec:
+            inv_eps = InventoryAuditor.endpoints_from_universal(spec) or []
+
+        inv = InventoryAuditor(session=sess, base_url=args.url, swagger_spec=spec)
+        inv_issues = inv.test_inventory(inv_eps if inv_eps else None)
+
+        save_html_report(inv_issues, "Inventory", args.url, output_dir)
+        styled_print(f"API9 complete - {len(inv_issues)} issues", "done")
+
 
 # --------------------- API10: Safe Consumption of 3rd-Party APIs ----------
     if 10 in selected_apis:
@@ -986,12 +1124,12 @@ f"--api{i}", action="store_true", help=f"Run only API{i} audit")
         save_html_report(safe_issues, "UnsafeConsumption", args.url, output_dir)
         styled_print(f"API10 complete - {len(safe_issues)} issues", "done")
 
-# --------------------- API11: AI-assisted analysis ----------
+                                                              
     if 11 in selected_apis:
         styled_print("API11 - AI-assisted OWASP analysis", "info")
         logger.info("Running API11 - AI-assisted audit")
 
-# --------------------- Preflight: check required environment variables ----------
+                                                                                  
         required = ["LLM_PROVIDER", "LLM_MODEL", "LLM_API_KEY"]
         missing = [v for v in required if not os.getenv(v)]
         if missing:
@@ -1000,10 +1138,10 @@ f"--api{i}", action="store_true", help=f"Run only API{i} audit")
                 "fail"
             )
             print(
-                "\nSet them, for example:\n"
-                "  export LLM_PROVIDER=openai_compat\n"
-                "  export LLM_MODEL=gpt-4o-mini\n"
-                "  export LLM_API_KEY=sk-...\n"
+                "\\nSet them, for example:\\n"
+                "  export LLM_PROVIDER=openai_compat\\n"
+                "  export LLM_MODEL=gpt-4o-mini\\n"
+                "  export LLM_API_KEY=sk-...\\n"
             )
             sys.exit(3)
 
@@ -1043,8 +1181,8 @@ f"--api{i}", action="store_true", help=f"Run only API{i} audit")
 
     total_vulnerabilities = sum(vulnerability_summary.values())
 
-# --------------------- Print formatted summary ----------
-    print("\n" + "="*50)
+                                                          
+    print("\\n" + "="*50)
     print("VULNERABILITY SCAN SUMMARY".center(50))
     print("="*50)
 

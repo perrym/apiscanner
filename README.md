@@ -42,7 +42,7 @@ Redistribution is not permitted without explicit permission.
 ## Install
 
 ```bash
-python -m venv .venv && . .venv/bin/activate   # (Windows: .venv\Scripts\activate)
+python -m venv .venv && . .venv/bin/activate   # ( for Windows: .venv\Scripts\activate)
 pip install -r requirements.txt
 Quick Start
 bash
@@ -129,11 +129,11 @@ other sample
 Plan & Verify
 bash
 --plan-only                                 # write apiscan-plan.csv (no requests)
---plan-then-scan                           # build plan first, then perform scan
+--plan-then-scan                            # build plan first, then perform scan
 --verify-plan --success-codes "200-299,304" # live requests  apiscan-verify.csv
 --method-filter GET POST                    # limit methods
---retry500                                 # adaptive retries on HTTP 5xx
---no-retry-500                             # disable adaptive retries
+--retry500                                  # adaptive retries on HTTP 5xx
+--no-retry-500                              # disable adaptive retries
 CSV formats
 
 Plan: method,url,content_type,body_len,as_json

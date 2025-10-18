@@ -226,6 +226,7 @@ Use --retry500 for endpoints that might require additional fields not present in
 
 Enable --normalize-version when dealing with inconsistent version formatting in API paths.
 
+---
 Links
 GitHub: https://github.com/perrym/apiscanner
 

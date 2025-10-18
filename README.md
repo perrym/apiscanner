@@ -33,7 +33,7 @@ Redistribution is not permitted without explicit permission.
 - **Plan/Verify**: `--plan-only`  `apiscan-plan.csv`; `--verify-plan`  sends real requests and writes `apiscan-verify.csv`.
 - **Method filter**: `--method-filter GET POST` to limit the set.
 - **Rewrite trace (tip)**: add a small print in `_apply_rewrites` to see exactly which URLs changed during debugging.
-- **Version normalization**: `--normalize-version` to normalize version segments in URLs like `/v2.00/` → `/v2.0/`
+- **Version normalization**: `--normalize-version` to normalize version segments in URLs like `/v2.00/`  `/v2.0/`
 - **Adaptive retries**: `--retry500` for automatic retries on HTTP 5xx errors with missing field detection
 - **Enhanced authentication**: Support for OAuth2 flows, client certificates, and NTLM authentication
 
@@ -199,7 +199,7 @@ APISCAN relies on an OpenAPI/Swagger specification to plan and verify requests.
 - If you already have an OpenAPI/Swagger file (e.g., `openapi.json` or `swagger.yaml`), provide it via `--swagger`.
 - If you only have a Postman collection, convert it to OpenAPI first.
 
-### Example: Postman → OpenAPI
+### Example: Postman  OpenAPI
 
 ```bash
 # Convert Postman to OpenAPI (see repo for options)
@@ -217,7 +217,7 @@ python apiscan.py --url https://api.example.com   --swagger ./openapi.json   --p
 - Use representative test data: include realistic examples in your Postman requests (headers, bodies, variables).
 - After conversion, quickly open the generated `openapi.json` to verify paths, methods, and `requestBody` examples for key endpoints.
 - If path formats differ between environments (e.g., `/v2` vs `/v2.00`), use the sanitizer/rewrites to align them.
-- For variable‑heavy collections: use `--headers-file` and `--ids-file` to supply runtime values without changing code.
+- For variableheavy collections: use `--headers-file` and `--ids-file` to supply runtime values without changing code.
 - Use `--retry500` for endpoints that may temporarily return 5xx or require additional fields not present in the initial request.
 - Enable `--normalize-version` when dealing with inconsistent version formatting in API paths.
 
@@ -230,4 +230,4 @@ python apiscan.py --url https://api.example.com   --swagger ./openapi.json   --p
 
 Email: pamsniffer@gmail.com
 
-© 2025 Perry Mertens
+ 2025 Perry Mertens

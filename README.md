@@ -192,47 +192,42 @@ Version mismatches use --normalize-version or --rewrite to align version formats
 
 Connection issues check --insecure for self-signed certs, --proxy for traffic inspection
 
-Prerequisite: You need an OpenAPI/Swagger file
-APISCAN works from an OpenAPI/Swagger specification to plan and verify calls.
-If you already have a Swagger/OpenAPI file (e.g., openapi.json or swagger.yaml), you can use it directly with --swagger.
+## Prerequisite: OpenAPI/Swagger file
 
-If you only have a Postman collection, convert it first:
+APISCAN relies on an OpenAPI/Swagger specification to plan and verify requests.
 
-Export your Postman collection (*.postman_collection.json).
+- If you already have an OpenAPI/Swagger file (e.g., `openapi.json` or `swagger.yaml`), provide it via `--swagger`.
+- If you only have a Postman collection, convert it to OpenAPI first.
 
-Convert it to OpenAPI/Swagger using the open-source converter: https://github.com/perrym/postman-to-swagger.
+### Example: Postman → OpenAPI
 
-Use the converted file with APISCAN via --swagger.
-
-Example conversion flow
-
-bash
-# Convert Postman -> Swagger/OpenAPI (see repo for options)
+```bash
+# Convert Postman to OpenAPI (see repo for options)
 python postman-to-swagger.py --input ./MyCollection.postman_collection.json --output ./openapi.json
+```
 
-# Then run APISCAN using the converted spec
-python apiscan.py --url https://api.example.com --swagger ./openapi.json --plan-only --verify-plan
-Notes & tips
+### Run APISCAN with the converted spec
 
-Good test material improves results: include realistic examples in your Postman requests (headers, bodies, variables).
+```bash
+python apiscan.py --url https://api.example.com   --swagger ./openapi.json   --plan-only --verify-plan
+```
 
-After conversion, quickly open the generated openapi.json to verify paths, methods, and requestBody examples exist for key endpoints.
+## Notes & tips
 
-If your spec paths differ across environments (e.g., /v2 vs /v2.00), use the sanitizer/rewrites described below to align them.
+- Use representative test data: include realistic examples in your Postman requests (headers, bodies, variables).
+- After conversion, quickly open the generated `openapi.json` to verify paths, methods, and `requestBody` examples for key endpoints.
+- If path formats differ between environments (e.g., `/v2` vs `/v2.00`), use the sanitizer/rewrites to align them.
+- For variable‑heavy collections: use `--headers-file` and `--ids-file` to supply runtime values without changing code.
+- Use `--retry500` for endpoints that may temporarily return 5xx or require additional fields not present in the initial request.
+- Enable `--normalize-version` when dealing with inconsistent version formatting in API paths.
 
-For variable-heavy collections: use --headers-file and --ids-file to supply runtime values without changing code.
+## Links
 
-Use --retry500 for endpoints that might require additional fields not present in the initial request.
+- GitHub: https://github.com/perrym/apiscanner
+- Medium: https://medium.com/@PerryPM/apiscan-a-practical-approach-to-api-security-testing-by-perry-mertens-96b5e676c071
 
-Enable --normalize-version when dealing with inconsistent version formatting in API paths.
+## Contact
 
----
-Links
-GitHub: https://github.com/perrym/apiscanner
+Email: pamsniffer@gmail.com
 
-Medium: https://medium.com/@PerryPM/apiscan-a-practical-approach-to-api-security-testing-by-perry-mertens-96b5e676c071
-
-Contact: mailto:pamsniffer@gmail.com
-
-Perry Mertens 2025 (C)
-
+© 2025 Perry Mertens

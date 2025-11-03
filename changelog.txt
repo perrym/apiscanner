@@ -1,10 +1,17 @@
 # APISCAN - CHANGELOG
-Version:2.0 release 18-10-2025
+Version:2.2 release 3-11-2025
 Author: Perry Mertens pamsniffer@gmail.com
 
 I’m excited to announce the first official release of APISCAN (v2.0) – a private API security tool.
 
 New 
+3-11-2025
+- Directory traversel is working
+- beter error handeling, but still a lot to do. 
+- modules are beter
+
+
+18-10-2025
 - Beter error handeling, but still need some extra work to do, working on a new version that use a sqlite database for all scan results, is now in Beta
 - Using openapi_universal.py. A version-agnostic OpenAPI helper that loads specs (JSON/YAML), iterates operations, builds concrete HTTP requests (params/bodies), and applies security config. Because Swagger 2.0 and OpenAPI 3+ differ in structure, a universal loader lets the scanner treat every spec the same no per-version parsing or special    
   cases. That consistency reduces maintenance and bugs, builds accurate requests from schemas/auth automatically, improves coverage, and cuts false positives.

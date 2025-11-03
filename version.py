@@ -1,10 +1,7 @@
-# =============================================================================
-#  APISCAN - OWASP API Security Scanner                                       #
-# =============================================================================
-#  Copyright (c) 2025 Perry Mertens Pamsniffer@gmail.com                      #
-#  This file is part of the APISCAN project.                                  #
-#                                                                             #
-#  Licensed under the MIT License.                                            #
-#  See the LICENSE file in the project root for full license information.     #
-# =============================================================================
-__version__ = "2.0.0-Release"
+########################################################
+# APISCAN - API Security Scanner                       #
+# Licensed under the MIT License                       #
+# Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
+# version 2.2  2-11--2025                             #
+########################################################
+__version__ = "2.2-Release"

@@ -1,7 +1,9 @@
-#########################################
-# APISCAN - API Security Scanner        #
-# MIT License - Perry Mertens  2025 (c) #
-#########################################                                
+########################################################
+# APISCAN - API Security Scanner                       #
+# Licensed under the MIT License                       #
+# Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
+# version 2.2  2-11--2025                             #
+########################################################                                
                              
 from __future__ import annotations
 
@@ -9,14 +11,13 @@ import base64
 import json
 import logging
 import re
-from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple, Set
-from urllib.parse import urljoin, urlparse
-
 import requests
 import urllib3
 from tqdm import tqdm
 from report_utils import ReportGenerator
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple, Set
+from urllib.parse import urljoin, urlparse
 from openapi_universal import (
     iter_operations as oas_iter_ops,
     build_request as oas_build_request,
@@ -418,14 +419,6 @@ class AuthorizationAuditor:
     # ----------------------- Funtion _filtered_issues ----------------------------#
         
     def _filtered_issues(self) -> List[Dict[str, Any]]:
-            """
-            Filter out false positives and deduplicate results.
-            Rules:
-            - Drop status 0/400/404/405 and all 5xx.
-            - Keep 200 only if body is not a generic success OR it contains sensitive indicators.
-            - Always keep clear sensitive exposures (e.g. .env).
-            - Dedup by method + canonical path + status + JSON-shape of response body.
-            """
             if not self.authz_issues:
                 return []
 
@@ -444,13 +437,12 @@ class AuthorizationAuditor:
                 path = str(it.get("endpoint") or "")
                 desc = (it.get("description") or "").lower()
                 body = it.get("response_body") or ""
-
-                # treat obvious sensitive exposures as keepers
+                
                 sensitive_flag = False
                 if ".env" in path or "exposed" in desc or "sensitive" in desc:
                     sensitive_flag = True
                 else:
-                    # heuristic: contains token/email/JWT
+                   
                     import re, json
                     if re.search(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", body, flags=re.I):
                         sensitive_flag = True
@@ -460,7 +452,7 @@ class AuthorizationAuditor:
                         sensitive_flag = True
 
                 if code == 200 and not sensitive_flag:
-                    # Generic success body? -> skip
+                   
                     generic = False
                     try:
                         data = json.loads(body)
@@ -475,7 +467,7 @@ class AuthorizationAuditor:
                     if generic:
                         continue
 
-                # Build stable fingerprint
+                
                 try:
                     canon = self._canonical_path(path)
                 except Exception:
@@ -516,8 +508,7 @@ class AuthorizationAuditor:
 
                 it["fingerprint"] = fp
                 out.append(it)
-
-            # Deduplicate
+           
             dedup: Dict[str, Dict[str, Any]] = {}
             for it in out:
                 fp = it.get("fingerprint")

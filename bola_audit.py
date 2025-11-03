@@ -1,4 +1,9 @@
-
+########################################################
+# APISCAN - API Security Scanner                       #
+# Licensed under the MIT License                       #
+# Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
+# version 2.2  2-11--2025                             #
+########################################################
 from __future__ import annotations
 
 import json
@@ -10,11 +15,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Iterable
 from urllib.parse import urljoin, urlparse, parse_qsl
-
 import requests
 from requests import exceptions as req_exc
 from tqdm import tqdm
-
 from report_utils import ReportGenerator
 from openapi_universal import (
     iter_operations as oas_iter_ops,
@@ -26,6 +29,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+#================funtion classify_risk derive risk level from HTTP result and context ##########
 def classify_risk(status_code: int, response_body: str = "", sensitive: bool = False, size_alert: bool = False, cross_user: bool = False) -> str:
     if status_code in (0, 400, 404, 405):
         return "Ignore"
@@ -40,6 +44,7 @@ def classify_risk(status_code: int, response_body: str = "", sensitive: bool = F
     return "Low"
 
 
+#================funtion _is_real_issue basic sanity check for a recorded issue ##########
 def _is_real_issue(issue: dict) -> bool:
     try:
         return int(issue.get("status_code", 0)) != 0
@@ -47,6 +52,7 @@ def _is_real_issue(issue: dict) -> bool:
         return False
 
 
+#================funtion _headers_to_list normalize headers to list of tuples ##########
 def _headers_to_list(hdrs) -> List[Tuple[str, str]]:
     if hasattr(hdrs, "getlist"):
         out = []
@@ -85,8 +91,9 @@ class TestResult:
     duplicate_of: Optional[str] = None
     duplicate_count: int = 1
 
+    #================funtion to_dict convert TestResult to serializable dict ##########
     def to_dict(self):
-        # For risk display only; true_positive is applied in _filter_issues()
+                                                                             
         cross_for_risk = bool(self.cross_user and self.method.upper() in {"GET", "PUT", "DELETE"})
         sens_for_risk = bool(self.sensitive_hit or self.true_positive)
         return {
@@ -122,6 +129,7 @@ class TestResult:
 
 
 class BOLAAuditor:
+    #================funtion __init__ initialize BOLAAuditor and OpenAPI indexes ##########
     def __init__(
         self,
         *args,
@@ -176,27 +184,31 @@ class BOLAAuditor:
 
         self._endpoints_cache: Optional[List[Dict[str, Any]]] = None
 
-    # ---------- utilities
+                          
 
+    #================funtion _canonical_path normalize an OpenAPI path template ##########
     def _canonical_path(self, p: str) -> str:
         p = "/" + (p or "").lstrip("/")
         return re.sub(r"\{[^}]+\}", "{}", p)
 
+    #================funtion _abs_url resolve relative path to absolute URL ##########
     def _abs_url(self, path_or_url: str) -> str:
         if path_or_url.startswith(("http://", "https://")):
             return path_or_url
         return urljoin(self.base_url, path_or_url.lstrip("/"))
 
+    #================funtion _canonicalize_url normalize URL for fingerprinting ##########
     def _canonicalize_url(self, url: str) -> str:
         try:
             u = urlparse(url)
-            # Canonicalize query: keep only keys (drop values)
+                                                              
             keys = sorted({k for k, _ in parse_qsl(u.query, keep_blank_values=True)})
             qs = "&".join(keys)
             return f"{u.scheme}://{u.netloc}{u.path}?{qs}" if qs else f"{u.scheme}://{u.netloc}{u.path}"
         except Exception:
             return url
 
+    #================funtion _json_shape reduce JSON to structural signature ##########
     def _json_shape(self, text: str) -> str:
         if not text:
             return ""
@@ -205,6 +217,7 @@ class BOLAAuditor:
         except Exception:
             return re.sub(r"\s+", " ", text).strip()[:4096]
 
+        #================funtion normalize function ##########
         def normalize(val):
             if isinstance(val, dict):
                 return {k: normalize(v) for k, v in sorted(val.items(), key=lambda x: x[0]) if k not in {"timestamp","time","date","requestId","request_id"}}
@@ -225,12 +238,14 @@ class BOLAAuditor:
         except Exception:
             return re.sub(r"\s+", " ", text).strip()[:4096]
 
+    #================funtion _fingerprint build stable hash for result dedup ##########
     def _fingerprint(self, method: str, url: str, status: int, body_text: str) -> str:
         canon = self._canonicalize_url(url)
         shape = self._json_shape(body_text or "")
         h = hashlib.sha1(f"{method}|{canon}|{status}|{shape}".encode("utf-8", "ignore")).hexdigest()
         return f"{method}|{canon}|{status}|{h}"
 
+    #================funtion _detect_sensitive detect tokens/emails and sensitive fields ##########
     def _detect_sensitive(self, body_text: str) -> bool:
         if not body_text:
             return False
@@ -238,6 +253,7 @@ class BOLAAuditor:
         try:
             data = json.loads(text)
             seen_keys = set()
+            #================funtion walk function ##########
             def walk(obj):
                 if isinstance(obj, dict):
                     for k, v in obj.items():
@@ -262,6 +278,7 @@ class BOLAAuditor:
             return True
         return False
 
+    #================funtion _is_true_positive determine if result is a true BOLA hit ##########
     def _is_true_positive(self, method: str, status_code: int, cross_user: bool, contains_sensitive: bool) -> bool:
         if status_code != 200:
             return False
@@ -271,6 +288,7 @@ class BOLAAuditor:
             return True
         return False
 
+    #================funtion _is_generic_success detect trivial success bodies ##########
     def _is_generic_success(self, body_text: str) -> bool:
         if not body_text:
             return True
@@ -288,8 +306,9 @@ class BOLAAuditor:
             return True
         return False
 
-    # ---------- OpenAPI plumbing
+                                 
 
+    #================funtion load_swagger load and index OpenAPI/Swagger spec ##########
     def load_swagger(self, swagger_path: str) -> Optional[Dict[str, Any]]:
         try:
             with open(swagger_path, "r", encoding="utf-8") as f:
@@ -307,6 +326,7 @@ class BOLAAuditor:
             logger.error(f"Error loading Swagger: {e}", exc_info=True)
             return None
 
+    #================funtion get_object_endpoints collect endpoints with object identifiers ##########
     def get_object_endpoints(self, swagger_spec: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         spec = swagger_spec or self.swagger_spec or {}
         if self._endpoints_cache is not None:
@@ -355,6 +375,7 @@ class BOLAAuditor:
         self._endpoints_cache = endpoints
         return endpoints
 
+    #================funtion _find_object_params extract likely object-identifying params ##########
     def _find_object_params(self, parameters: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         obj = []
         for param in parameters or []:
@@ -373,6 +394,7 @@ class BOLAAuditor:
                 })
         return obj
 
+    #================funtion _generate_test_values generate test cases for parameters ##########
     def _generate_test_values(self, parameters: List[Dict[str, Any]]) -> Dict[str, Dict[str, str]]:
         base_values = {
             "valid": "1",
@@ -404,6 +426,7 @@ class BOLAAuditor:
                     cases[cname] = {q["name"]: (v if q.get("type") == ptype else base_values["valid"]) for q in parameters}
         return cases
 
+    #================funtion _build_req_from_op construct request from OpenAPI operation ##########
     def _build_req_from_op(self, method: str, path_template: str) -> Dict[str, Any]:
         key = (method.upper(), path_template)
         op = self._op_index.get(key) or self._op_shape_index.get((method.upper(), self._canonical_path(path_template)))
@@ -417,6 +440,7 @@ class BOLAAuditor:
             except Exception:
                 return {"method": method.upper(), "url": self._abs_url(path_template), "headers": {"User-Agent": "APISecurityScanner/2.1"}}
 
+    #================funtion _apply_param_values apply parameter values into request ##########
     def _apply_param_values(self, req: Dict[str, Any], endpoint: Dict[str, Any], values: Dict[str, str]) -> Dict[str, Any]:
         out = dict(req)
         out.setdefault("headers", {})
@@ -447,6 +471,7 @@ class BOLAAuditor:
 
         return out
 
+    #================funtion _send_with_retry send HTTP request with simple retries ##########
     def _send_with_retry(self, req: Dict[str, Any]) -> tuple[Optional[requests.Response], float, Optional[str]]:
         attempts = 0
         start = time.time()
@@ -462,6 +487,7 @@ class BOLAAuditor:
             except Exception as exc:
                 return None, (time.time() - start), str(exc)
 
+    #================funtion test_endpoint run BOLA tests for one endpoint ##########
     def test_endpoint(self, base_url: str, endpoint: Dict[str, Any], *, progress_position: int | None = None) -> List[TestResult]:
         results: List[TestResult] = []
         if not endpoint.get("parameters"):
@@ -476,6 +502,7 @@ class BOLAAuditor:
             results.append(self._test_object_access(endpoint, name, vals))
         return results
 
+    #================funtion _test_object_access single test case executor for object access ##########
     def _test_object_access(self, endpoint: dict, name: str, vals: dict) -> TestResult:
         method = endpoint["method"]
         try:
@@ -531,20 +558,16 @@ class BOLAAuditor:
         tr.fingerprint = self._fingerprint(tr.method, tr.url, tr.status_code, body_text or tr.response_sample)
         return tr
 
+    #================funtion _sanitize_response redact secrets and trim body sample ##########
     def _sanitize_response(self, text: str, max_length: int = 200) -> str:
         if not text:
             return ""
         sanitized = re.sub(r'(password|token|secret|authorization)"?\s*:\s*"[^"]+"', r'\1":"*****"', text, flags=re.I)
         return (sanitized[:max_length] + "...") if len(sanitized) > max_length else sanitized
 
-    # ---------- FILTERING ----------
+                                     
+    #================funtion _filter_issues keep true positives and deduplicate ##########
     def _filter_issues(self) -> None:
-        """
-        Keep only True Positive BOLA findings and deduplicate by stable fingerprint.
-        - TP definition: HTTP 200 AND ( (GET/PUT/DELETE AND cross_user) OR sensitive content )
-        - Ignore 0/400/404/405 and all 5xx (configurable via init).
-        - Canonicalize URL (drop query values) and normalize JSON body during dedup.
-        """
         if not isinstance(self.issues, list) or not self.issues:
             self.issues = []
             return
@@ -572,13 +595,13 @@ class BOLAAuditor:
             if not tp:
                 continue
 
-            # ensure fingerprint
+                                
             fp = it.get("fingerprint")
             if not fp:
                 fp = self._fingerprint(method, it.get("url", it.get("endpoint", "")), code, body)
                 it["fingerprint"] = fp
 
-            # ensure severity reflects TP
+                                         
             it["severity"] = classify_risk(code, body, sensitive=True, size_alert=bool(it.get("size_alert")), cross_user=cross_user)
             it["true_positive"] = True
             it["cross_user"] = cross_user
@@ -588,7 +611,7 @@ class BOLAAuditor:
 
             filtered.append(it)
 
-        # Deduplicate by fingerprint
+                                    
         dedup: Dict[str, dict] = {}
         for it in filtered:
             fp = it.get("fingerprint")
@@ -605,7 +628,8 @@ class BOLAAuditor:
 
         self.issues = list(dedup.values())
 
-    # ---------- PIPELINE ----------
+                                    
+    #================funtion run run the full BOLA pipeline over endpoints ##########
     def run(self, swagger_spec: Optional[Dict[str, Any]] = None) -> List[TestResult]:
         spec = swagger_spec or self.swagger_spec or {}
         endpoints = self.get_object_endpoints(spec)
@@ -618,7 +642,7 @@ class BOLAAuditor:
         for i, ep in iterator:
             results = self.test_endpoint(self.base_url, ep, progress_position=(i + 1 if self.show_subbars else None))
             for tr in results:
-                # Run-time filter is intentionally permissive; final filter happens in _filter_issues()
+                                                                                                       
                 fp = tr.fingerprint or self._fingerprint(tr.method, tr.url, tr.status_code, tr.response_sample)
                 if fp in seen:
                     seen_tr = seen[fp]
@@ -630,15 +654,17 @@ class BOLAAuditor:
                 seen[fp] = tr
                 unique_results.append(tr)
 
-        # Pre-fill issues with raw results; report generation will filter
+                                                                         
         self.issues = [tr.to_dict() for tr in unique_results if _is_real_issue(tr.to_dict())]
         return unique_results
 
+    #================funtion generate_report render issues to HTML or Markdown ##########
     def generate_report(self, fmt: str = "html") -> str:
         self._filter_issues()
         gen = ReportGenerator(issues=self.issues, scanner="Bola Api1", base_url=self.base_url)
         return gen.generate_html() if fmt == "html" else gen.generate_markdown()
 
+    #================funtion save_report persist report to disk ##########
     def save_report(self, path: str, fmt: str = "html"):
         self._filter_issues()
         ReportGenerator(self.issues, scanner="Bola Api1", base_url=self.base_url).save(path, fmt=fmt)

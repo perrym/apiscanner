@@ -1,8 +1,9 @@
-###################################
-# APISCAN - API Security Scanner  #
-# Licensed under the MIT License  #
-# Author: Perry Mertens, 2025     #
-###################################
+########################################################
+# APISCAN - API Security Scanner                       #
+# Licensed under the MIT License                       #
+# Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
+# version 2.2  2-11--2025                              #
+########################################################                                   
 from __future__ import annotations
 from datetime import datetime
 import html
@@ -12,7 +13,7 @@ from typing import List, Dict, Any, Optional, Union, Iterable
 import json, html, re
 from bs4 import BeautifulSoup
 
-# ---------------- Constants from legacy ----------------
+                                                         
 RISK_INFO = {
     "BOLA": {"title": "API1:2023 - Broken Object Level Authorization"},
     "BrokenAuth": {"title": "API2:2023 - Broken Authentication"},
@@ -41,6 +42,7 @@ manual_file_map = {
 
 SEVERITY_ORDER = ["Critical", "High", "Medium", "Low", "Info"]
 
+#================funtion _extract_status extract integer HTTP status from issue dict ##########
 def _extract_status(issue: dict) -> int | None:
     for k in ("status_code", "res_status", "status", "http_status"):
         v = issue.get(k)
@@ -52,10 +54,8 @@ def _extract_status(issue: dict) -> int | None:
             continue
     return None
 
+#================funtion _iter_headers iterate headers from dict or list of tuples ##########
 def _iter_headers(hdrs):
-    """
-    Genereer (key, value) paren uit zowel dicts als list-of-tuples.
-    """
     if not hdrs:                       
         return
     if isinstance(hdrs, dict):
@@ -65,6 +65,7 @@ def _iter_headers(hdrs):
 
 
 class EnhancedReportGenerator:
+    #================funtion __init__ initialize report generator and preprocess issues ##########
     def __init__(self, issues, scanner: str, base_url: str = "", **kwargs) -> None:
         self.issues = issues
         self.scanner = scanner
@@ -77,10 +78,11 @@ class EnhancedReportGenerator:
             _issues = [i for i in _issues if (_extract_status(i) or -1) > 0]
         self.issues = _issues
 
+    #================funtion _format_request_html render HTTP request panel in HTML ##########
     def _format_request_html(self, issue: Dict[str, Any]) -> str:
         method = issue.get("method", "GET").upper()
         url = issue.get("endpoint", "-")
-        #headers = "\n".join(f"{k}: {v}" for k, v in (issue.get("request_headers") or {}).items())
+                                                                                                  
         req_hdrs = issue.get("request_headers")
         headers = "\n".join(f"{k}: {v}" for k, v in _iter_headers(req_hdrs))
         body = issue.get("payload") or issue.get("request") or issue.get("request_body") or ""
@@ -122,6 +124,7 @@ class EnhancedReportGenerator:
             """
 
 
+    #================funtion generate_markdown produce simple Markdown report ##########
     def generate_markdown(self) -> str:
         if not self.issues:
             return "# No vulnerabilities found\n\n"
@@ -141,12 +144,13 @@ class EnhancedReportGenerator:
         return "\n".join(markdown)
        
     
+    #================funtion _format_response_html render HTTP response panel in HTML ##########
     def _format_response_html(self, issue: Dict[str, Any]) -> str:
         status = issue.get("status_code", "-")
-        # -- headers -------------------------------------------------------
+                                                                            
         hdr_pairs = _iter_headers(issue.get("response_headers"))
         headers = "\n".join(f"{k}: {v}" for k, v in hdr_pairs)
-        # -- cookies -------------------------------------------------------
+                                                                            
         resp_cookies = issue.get("response_cookies") or {}
         cookies_html = ""
         if resp_cookies:
@@ -157,7 +161,7 @@ class EnhancedReportGenerator:
                 f"<pre>{html.escape(cookie_lines)}</pre>"
                 "</details>"
             )
-        # -- body / error --------------------------------------------------
+                                                                            
         body = issue.get("response_body")
         error = issue.get("error")
         error_html = (
@@ -179,7 +183,7 @@ class EnhancedReportGenerator:
                 "</details>"
             )
 
-        # -- eind-HTML -----------------------------------------------------
+                                                                            
         return (
             '<div class="response">'
             f"<h4>HTTP {status}</h4>"
@@ -193,6 +197,7 @@ class EnhancedReportGenerator:
             "</div>"
         )
 
+    #================funtion generate_html build grouped HTML report with summary ##########
     def generate_html(self) -> str:
         if not self.issues:
             return self._generate_no_findings_html()
@@ -201,7 +206,7 @@ class EnhancedReportGenerator:
         for issue in self.issues:
             sev = str(issue.get("severity", "Info")).capitalize()
             if sev not in grouped:
-                sev = "Info"  # fallback
+                sev = "Info"            
             grouped[sev].append(issue)
 
         findings_html = []
@@ -212,13 +217,14 @@ class EnhancedReportGenerator:
             findings_html.append(self._generate_severity_section(lvl, grouped[lvl]))
 
        
-        # -- nieuw: maak echt een count-dict -----------------------------
+                                                                          
         counts = {sev: len(grouped.get(sev, [])) for sev in ("Critical", "High", "Medium", "Low" , "Info")}
         summary_table = self._generate_summary_table(counts)
         return self._generate_full_html(summary_table, "".join(findings_html))
 
 
 
+    #================funtion _generate_no_findings_html render HTML page for zero findings ##########
     def _generate_no_findings_html(self) -> str:
         parts = []
         parts.append("\n        <!DOCTYPE html>\n")
@@ -235,6 +241,7 @@ class EnhancedReportGenerator:
         return "".join(parts)
 
 
+    #================funtion _generate_severity_section render severity group section ##########
     def _generate_severity_section(self, severity: str, issues: List[Dict[str, Any]]) -> str:
         sev_class = severity.lower()
         out = []
@@ -269,6 +276,7 @@ class EnhancedReportGenerator:
         return "".join(out)
 
 
+    #================funtion old_generate_summary_table legacy summary table renderer ##########
     def old_generate_summary_table(self, grouped: Dict[str, List[Dict[str, Any]]]) -> str:
         return f"""
         <div class="summary">
@@ -307,14 +315,12 @@ class EnhancedReportGenerator:
         </div>
         """
         
-     # ------------------------------------------------------------------
-    #   S U M M A R Y   T A B L E
-    # ------------------------------------------------------------------
+                                                                         
+                                 
+                                                                        
 
+    #================funtion _generate_summary_table build compact summary table ##########
     def _generate_summary_table(self, counts: dict[str, int]) -> str:
-        """
-        Build Scan Summary table + proportional bars with percentages.
-        """
         severity_meta = [
             ("Critical", "critical", "Multiple sensitive items exposed"),
             ("High",     "high",     "Single sensitive item exposed"),
@@ -345,6 +351,7 @@ class EnhancedReportGenerator:
 
         return html_out
 
+    #================funtion _generate_html_head emit HTML <head> with styles ##########
     def _generate_html_head(self) -> str:
         parts = []
         parts.append("\n        <head>\n")
@@ -419,6 +426,7 @@ class EnhancedReportGenerator:
         parts.append("        </head>\n")
         return "".join(parts)
 
+    #================funtion _generate_header emit report header block ##########
     def _generate_header(self) -> str:
         parts = []
         parts.append("\n        <header style=\"margin-bottom: 30px;\">\n")
@@ -432,6 +440,7 @@ class EnhancedReportGenerator:
         return "".join(parts)
 
 
+    #================funtion _generate_full_html assemble full HTML document ##########
     def _generate_full_html(self, summary: str, findings: str) -> str:
         parts = []
         parts.append("\n        <!DOCTYPE html>\n")
@@ -450,6 +459,7 @@ class EnhancedReportGenerator:
         return "".join(parts)
 
 
+    #================funtion save write HTML report to disk ##########
     def save(self, path: Union[str, Path]):
         html_content = self.generate_html()
         with open(path, "w", encoding="utf-8") as f:
@@ -458,8 +468,8 @@ class EnhancedReportGenerator:
 ReportGenerator = EnhancedReportGenerator
 HTMLReportGenerator = EnhancedReportGenerator
 
+#================funtion combine_html_reports merge multiple HTML reports into one ##########
 def combine_html_reports(output_dir: Path):
-    """Combine reports while preserving all findings and original structure"""
     from bs4 import BeautifulSoup
     import html
 
@@ -565,8 +575,8 @@ def combine_html_reports(output_dir: Path):
         
        
         for element in body.find_all(['div', 'section'], recursive=False):
-            if 'findings' in element.get('class', []) or \
-               'severity-section' in element.get('class', []) or \
+            if 'findings' in element.get('class', []) or\
+               'severity-section' in element.get('class', []) or\
                'summary' in element.get('class', []):
                 combined_html += element.decode_contents()
         
@@ -592,7 +602,7 @@ def combine_html_reports(output_dir: Path):
     </html>
     """
     
-    # -------------- Save the combined report ----------------
+                                                              
     combined_path = output_dir / "combined_report.html"
     try:
         combined_path.write_text(combined_html, encoding='utf-8')

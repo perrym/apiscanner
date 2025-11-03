@@ -1,8 +1,9 @@
-##################################
-# APISCAN - API Security Scanner #
-# Licensed under the MIT License #
-# Author: Perry Mertens 2025(C)  #
-##################################                                
+########################################################
+# APISCAN - API Security Scanner                       #
+# Licensed under the MIT License                       #
+# Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
+# version 2.2  2-11--2025                             #
+########################################################                       
 from __future__ import annotations
 import base64
 import json
@@ -12,10 +13,8 @@ import ssl
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 from urllib.parse import urlparse, urljoin
-
 import requests
 from tqdm import tqdm
-
 from report_utils import ReportGenerator
 from openapi_universal import (
     iter_operations as oas_iter_ops,
@@ -187,10 +186,11 @@ class AuthAuditor:
                 self._test_endpoint_auth(ep)
             except Exception as exc:
                 self._log_issue(ep["url"], f"Auth test error: {exc}", "Medium")
+        
+        # Verbeterde crypto tests
         crypto_tests = [
-            self._test_plain_http,
-            self._test_tls_versions,
-            self._test_cipher_suites,
+            self._test_secure_transport,
+            self._test_certificate_validation,
             self._test_secret_exposure,
             lambda: self._test_password_hash_strength(self._swagger_get_eps),
         ]
@@ -313,47 +313,131 @@ class AuthAuditor:
         except Exception:
             pass
 
-    # ----------------------- Funtion _test_plain_http ----------------------------#
-    def _test_plain_http(self) -> None:
+    # ----------------------- NIEUWE FUNCTIE: _test_secure_transport ----------------------------#
+    def _test_secure_transport(self) -> None:
+        """Comprehensive secure transport testing"""
+        # Test 1: Plain HTTP accessibility
         if self.base_url.startswith("http://"):
-            self._log_issue(self.base_url, "Secure transport layer missing - service is only reachable over HTTP", "High")
-            return
+            self._log_issue(self.base_url, "Service uses HTTP instead of HTTPS", "Critical")
+        
+        # Test 2: Check if HTTPS endpoint is reachable via HTTP
         http_url = "http://" + self.base_url.split("://", 1)[1]
         try:
             resp = self.session.get(http_url, timeout=5, allow_redirects=False)
             if resp.status_code < 400 and resp.status_code not in (301, 302, 307, 308):
-                self._log_issue(http_url, "HTTP endpoint reachable without enforced redirect to HTTPS", "High", response_obj=resp)
+                self._log_issue(http_url, "HTTP endpoint reachable without HTTPS redirect", "High", response_obj=resp)
+            elif resp.status_code in (301, 302, 307, 308):
+                location = resp.headers.get('Location', '')
+                if not location.startswith('https://'):
+                    self._log_issue(http_url, f"HTTP redirects to non-HTTPS location: {location}", "High", response_obj=resp)
         except requests.RequestException:
-            pass
+            pass  # HTTP not accessible is good
+        
+        # Test 3: Test TLS versions with improved method
+        self._test_tls_versions_improved()
 
-    # ----------------------- Funtion _test_tls_versions ----------------------------#
-    def _test_tls_versions(self) -> None:
+    # ----------------------- NIEUWE FUNCTIE: _test_tls_versions_improved ----------------------------#
+    def _test_tls_versions_improved(self) -> None:
+        """Improved TLS version testing"""
         host = self._host
-        port = 443
-        deprecated = []
-        if hasattr(ssl.TLSVersion, "SSLv2"):
-            deprecated.append(("SSLv2", ssl.TLSVersion.SSLv2))
-        if hasattr(ssl.TLSVersion, "SSLv3"):
-            deprecated.append(("SSLv3", ssl.TLSVersion.SSLv3))
-        deprecated.extend([("TLSv1.0", ssl.TLSVersion.TLSv1), ("TLSv1.1", ssl.TLSVersion.TLSv1_1)])
-        for name, version in deprecated:
+        port = self._port
+        
+        # Test deprecated protocols
+        deprecated_protocols = [
+            (ssl.PROTOCOL_SSLv2, "SSLv2"),
+            (ssl.PROTOCOL_SSLv3, "SSLv3"), 
+            (ssl.PROTOCOL_TLSv1, "TLSv1.0"),
+            (ssl.PROTOCOL_TLSv1_1, "TLSv1.1")
+        ]
+        
+        for protocol, name in deprecated_protocols:
             try:
-                context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-                context.set_ciphers("ALL:@SECLEVEL=0")
-                context.minimum_version = version
-                context.maximum_version = version
+                context = ssl.SSLContext(protocol)
+                context.verify_mode = ssl.CERT_NONE
+                context.check_hostname = False
+                
                 with socket.create_connection((host, port), timeout=5) as sock:
-                    with context.wrap_socket(sock, server_hostname=host):
-                        self._log_issue(f"https://{host}:{port}", f"Server accepts deprecated protocol {name}", "High")
-            except ssl.SSLError:
-                continue
-            except (socket.timeout, OSError):
-                break
+                    with context.wrap_socket(sock, server_hostname=host) as ssock:
+                        self._log_issue(
+                            f"https://{host}:{port}", 
+                            f"Server accepts deprecated protocol: {name}", 
+                            "High",
+                            extra={"protocol": name}
+                        )
+            except (ssl.SSLError, socket.timeout, OSError):
+                continue  # Protocol not supported - this is good
 
-    # ----------------------- Funtion _test_cipher_suites ----------------------------#
+    # ----------------------- NIEUWE FUNCTIE: _test_certificate_validation ----------------------------#
+    def _test_certificate_validation(self) -> None:
+        """Test certificate validity and strength"""
+        host = self._host
+        port = self._port
+        
+        try:
+            # Get certificate info
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            
+            with socket.create_connection((host, port), timeout=5) as sock:
+                with context.wrap_socket(sock, server_hostname=host) as ssock:
+                    cert = ssock.getpeercert()
+                    cert_binary = ssock.getpeercert(binary_form=True)
+                    
+                    # Check certificate expiration
+                    if cert and 'notAfter' in cert:
+                        not_after = cert['notAfter']
+                        exp_date = datetime.strptime(not_after, '%b %d %H:%M:%S %Y %Z')
+                        if exp_date < datetime.utcnow():
+                            self._log_issue(
+                                self.base_url, 
+                                "SSL certificate has expired", 
+                                "Critical",
+                                extra={"expiration_date": not_after}
+                            )
+                        elif (exp_date - datetime.utcnow()).days < 30:
+                            self._log_issue(
+                                self.base_url, 
+                                "SSL certificate expires soon", 
+                                "Medium",
+                                extra={"expiration_date": not_after, "days_remaining": (exp_date - datetime.utcnow()).days}
+                            )
+                    
+                    # Check certificate subject
+                    if cert and 'subject' in cert:
+                        subject = cert['subject']
+                        subject_str = ', '.join([f"{k}={v}" for item in subject for k, v in item])
+                        if not any(org in subject_str for org in ['CN=', 'O=', 'OU=']):
+                            self._log_issue(
+                                self.base_url,
+                                "SSL certificate has incomplete subject information",
+                                "Medium",
+                                extra={"subject": subject_str}
+                            )
+        
+        except ssl.SSLCertVerificationError as e:
+            self._log_issue(
+                self.base_url,
+                f"SSL certificate validation failed: {str(e)}",
+                "High",
+                extra={"error_type": "CertificateValidationError"}
+            )
+        except Exception as e:
+            self._log_issue(
+                self.base_url,
+                f"Certificate check failed: {str(e)}",
+                "Medium",
+                extra={"error_type": "CertificateCheckError"}
+            )
+
+    # ----------------------- Verbeterde _test_cipher_suites ----------------------------#
     def _test_cipher_suites(self) -> None:
+        """Improved cipher suite testing"""
         if Scanner is None:
+            # Fallback to basic SSL context check
+            self._test_cipher_suites_basic()
             return
+            
         host = self._host
         port = self._port
         try:
@@ -362,16 +446,60 @@ class AuthAuditor:
             scanner.queue_scan(scan_req)
             scanner.run_scans()
             res = scanner.get_results()[scan_req]
+            
             try:
-                cs = res.scan_result.tls_cipher_suites
-                for accepted in cs.accepted_cipher_suites:
-                    name = accepted.cipher_suite.name
-                    if "RC4" in name or "DES" in name:
-                        self._log_issue(self.base_url, f"Weak cipher supported: {name}", "Medium", extra={"cipher": name})
+                if hasattr(res.scan_result, 'tls_cipher_suites'):
+                    cs = res.scan_result.tls_cipher_suites
+                    for accepted in cs.accepted_cipher_suites:
+                        name = accepted.cipher_suite.name
+                        if any(weak in name for weak in ['RC4', 'DES', '3DES', 'NULL', 'ANON', 'EXPORT']):
+                            self._log_issue(
+                                self.base_url, 
+                                f"Weak cipher supported: {name}", 
+                                "Medium", 
+                                extra={"cipher": name}
+                            )
             except Exception as e:
-                self._log_issue(self.base_url, f"Cipher suite analysis failed: {str(e)}", "Medium")
+                self._log_issue(
+                    self.base_url, 
+                    f"Cipher suite analysis failed: {str(e)}", 
+                    "Medium"
+                )
         except Exception as e:
-            self._log_issue(self.base_url, f"SSLyze scan failed: {str(e)}", "Medium")
+            self._log_issue(
+                self.base_url, 
+                f"SSLyze scan failed: {str(e)}", 
+                "Medium"
+            )
+
+    # ----------------------- NIEUWE FUNCTIE: _test_cipher_suites_basic ----------------------------#
+    def _test_cipher_suites_basic(self) -> None:
+        """Basic cipher suite test when SSLyze is not available"""
+        host = self._host
+        port = self._port
+        
+        weak_ciphers = [
+            'RC4', 'DES', '3DES', 'NULL', 'ANON', 'EXPORT', 'MD5', 'RC2'
+        ]
+        
+        try:
+            context = ssl.create_default_context()
+            context.set_ciphers('DEFAULT')
+            
+            with socket.create_connection((host, port), timeout=5) as sock:
+                with context.wrap_socket(sock, server_hostname=host) as ssock:
+                    cipher = ssock.cipher()
+                    if cipher:
+                        cipher_name = cipher[0]
+                        if any(weak in cipher_name for weak in weak_ciphers):
+                            self._log_issue(
+                                self.base_url,
+                                f"Potentially weak cipher in use: {cipher_name}",
+                                "Medium",
+                                extra={"cipher": cipher_name}
+                            )
+        except Exception as e:
+            pass  # Ignore errors in basic check
 
     # ----------------------- Funtion _test_secret_exposure ----------------------------#
     def _test_secret_exposure(self) -> None:

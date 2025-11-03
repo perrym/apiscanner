@@ -1,9 +1,10 @@
-##############################################
-# APISCAN - API Security Scanner             #
-# Licensed under the MIT License             #
-# Author: Perry Mertens (2025)               #
-##############################################
-
+########################################################
+# APISCAN - API Security Scanner                       #
+# Licensed under the MIT License                       #
+# Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
+# version 2.2  2-11--2025                             #
+########################################################
+from __future__ import annotations                                     
 import logging
 import requests
 import json
@@ -21,8 +22,9 @@ from openapi_universal import (
     build_request as oas_build_request,
     SecurityConfig as OASSecurityConfig,
 )
-# ----------------------- Funtion _headers_to_list ----------------------------#
+                                                                                 
 
+#================funtion _headers_to_list normalize headers to list of tuples ##########
 def _headers_to_list(hdrs):
     if hasattr(hdrs, "getlist"):
         return [(k, v) for k in hdrs for v in hdrs.getlist(k)]
@@ -49,7 +51,8 @@ class ObjectPropertyAuditor:
         "auth_token": r'\b[a-fA-F0-9]{64,}\b'
     }
 
-    # ----------------------- Funtion __init__ ----------------------------#
+                                                                             
+    #================funtion __init__ initialize auditor and index OpenAPI ops ##########
     def __init__(self, base_url: str, session: Optional[requests.Session] = None, *, show_progress: bool = True, test_user_id: Optional[str] = None, test_admin_id: Optional[str] = None, swagger_spec: Optional[dict] = None, security_config: Optional[OASSecurityConfig] = None):
         self.base_url = base_url.rstrip("/")
         self.session = session or requests.Session()
@@ -70,7 +73,9 @@ class ObjectPropertyAuditor:
                     self._op_index[key] = _op
         except Exception:
             self._op_index = {}
-    # ----------------------- Funtion _ptype_fmt_def_ex ----------------------------#
+            
+                                                                                      
+    #================funtion _ptype_fmt_def_ex extract type/format/default/example from param ##########
     def _ptype_fmt_def_ex(self, p: dict):
         sch = (p.get("schema") or {})
         return (
@@ -80,7 +85,8 @@ class ObjectPropertyAuditor:
             sch.get("example", p.get("example")),
         )
 
-    # ----------------------- Funtion _sample_for_param ----------------------------#
+                                                                                      
+    #================funtion _sample_for_param generate sample value for parameter name/type ##########
     def _sample_for_param(self, pname: str, ptype: str = "string", pformat: str = "", default=None, example=None):
         if example is not None:
             return example
@@ -109,8 +115,8 @@ class ObjectPropertyAuditor:
             return "+31600000000"
         return "test_value"
 
-
-    # ----------------------- Funtion test_object_properties ----------------------------#
+                                                                                           
+    #================funtion test_object_properties run object property security tests ##########
     def test_object_properties(self, endpoints: List[Dict[str, Any]]):
                                                      
         unique_endpoints = []
@@ -128,17 +134,19 @@ class ObjectPropertyAuditor:
 
         iterator = unique_endpoints
         if self.show_progress:
-            iterator = tqdm(unique_endpoints, desc="API3 endpoints", unit="endpoint")
+            iterator = tqdm(unique_endpoints, desc="Broken Object Property tests", unit="endpoint")
 
         for endpoint in iterator:
-            self._test_data_exposure(endpoint)
-            self._test_mass_assignment(endpoint)
+                                                   
+            self._test_mass_assignment(endpoint)                 
+            self._test_idor(endpoint)                              
             self._test_property_manipulation(endpoint)
-            self._test_idor(endpoint)
+            self._test_data_exposure(endpoint)
             self._test_insecure_direct_reference(endpoint)
         return self.issues
 
-    # ----------------------- Funtion _normalize_endpoint ----------------------------#
+                                                                                        
+    #================funtion _normalize_endpoint normalize mixed endpoint shapes to uniform ##########
     def _normalize_endpoint(self, endpoint):
         if "url" in endpoint and "method" in endpoint:
             return endpoint
@@ -161,7 +169,8 @@ class ObjectPropertyAuditor:
         logging.warning(f"Invalid endpoint format: {list(endpoint.keys())}")
         return None
 
-    # ----------------------- Funtion _create_test_object ----------------------------#
+                                                                                        
+    #================funtion _create_test_object build test object from endpoint params/path ##########
     def _create_test_object(self, endpoint):
         test_obj = {}
                                                     
@@ -185,9 +194,8 @@ class ObjectPropertyAuditor:
 
         return test_obj
 
-
-
-    # ----------------------- Funtion _generate_test_value ----------------------------#
+                                                                                         
+    #================funtion _generate_test_value generate value matching param schema ##########
     def _generate_test_value(self, param):
         if "schema" in param and "type" in param["schema"]:
             param_type = param["schema"]["type"]
@@ -204,7 +212,8 @@ class ObjectPropertyAuditor:
                 return True
         return "test_value"
 
-    # ----------------------- Funtion _test_data_exposure ----------------------------#
+                                                                                        
+    #================funtion _test_data_exposure detect sensitive field or pattern exposure ##########
     def _test_data_exposure(self, endpoint):
         url = self._build_url(endpoint["url"], endpoint.get("test_object", {}))
         try:
@@ -236,7 +245,8 @@ class ObjectPropertyAuditor:
             logging.error(f"Error testing data exposure on {url}: {e}")
             self._log_issue(endpoint["url"], "Test Error", str(e), "Low")
 
-    # ----------------------- Funtion _test_mass_assignment ----------------------------#
+                                                                                          
+    #================funtion _test_mass_assignment attempt to set restricted fields ##########
     def _test_mass_assignment(self, endpoint):
         if endpoint["method"] not in ["POST", "PUT", "PATCH"]:
             return
@@ -283,7 +293,8 @@ class ObjectPropertyAuditor:
             logging.error(f"Error testing mass assignment on {url}: {e}")
             self._log_issue(endpoint["url"], "Test Error", str(e), "Low")
 
-    # ----------------------- Funtion _test_property_manipulation ----------------------------#
+                                                                                                
+    #================funtion _test_property_manipulation attempt unauthorized property changes ##########
     def _test_property_manipulation(self, endpoint):
         if endpoint["method"] not in ["PUT", "PATCH"]:
             return
@@ -344,57 +355,227 @@ class ObjectPropertyAuditor:
             logging.error(f"Error testing property manipulation on {url}: {e}")
             self._log_issue(endpoint["url"], "Test Error", str(e), "Low")
 
-    # ----------------------- Funtion _test_idor ----------------------------#
+                                                                                 
+    #================funtion _test_idor delegate to improved IDOR testing ##########
     def _test_idor(self, endpoint):
-                                                    
+        self._test_idor_improved(endpoint)
+
+    #================funtion _test_idor_improved perform advanced IDOR tests on path params ##########
+    def _test_idor_improved(self, endpoint):
         if endpoint["method"] not in ["GET", "PUT", "DELETE", "PATCH"]:
             return
             
         original_obj = endpoint.get("test_object", {})
-        url = self._build_url(endpoint["url"], original_obj)
+        path_params = re.findall(r'\{(\w+)\}', endpoint["url"])
         
-                                                                           
-        test_ids = [
-            self.test_admin_id,            
-            "12345",             
-            "0",                 
-            "-1",                
-            "9999999999"
-        ]
+        if not path_params:
+            return
+        
+                                          
+        for param_name in path_params:
+            self._test_single_parameter_idor(endpoint, param_name, original_obj)
+        
+                                      
+        self._test_all_parameters_idor(endpoint, path_params, original_obj)
+
+    #================funtion _test_single_parameter_idor test IDOR for a single parameter ##########
+    def _test_single_parameter_idor(self, endpoint, param_name, original_obj):
+        original_value = original_obj.get(param_name)
+        if not original_value:
+            return
+            
+        test_ids = self._get_context_aware_test_ids(param_name, original_value)
         
         for test_id in test_ids:
-                                                               
             test_obj = deepcopy(original_obj)
-            test_url = url
+            test_obj[param_name] = test_id
             
-                                          
-            for param_name in ["id", "userId", "userid", "user_id", "accountId"]:
-                if f"{{{param_name}}}" in test_url and param_name in test_obj:
-                    original_id = test_obj[param_name]
-                    test_obj[param_name] = test_id
-                    test_url = test_url.replace(f"{{{param_name}}}", str(test_id))
-            
-            try:
-                response = self._send_request(endpoint["method"], test_url, endpoint=endpoint, json=test_obj)
-                
-                                                                            
-                if response.status_code in [200, 201, 204]:
-                    self._log_issue(
-                        endpoint["url"], "Insecure Direct Object Reference (IDOR)",
-                        f"Access to resource {test_id} possible with user {self.test_user_id}",
-                        "High",
-                        {
-                            "requested_id": test_id,
-                            "user_id": self.test_user_id,
-                            "response_code": response.status_code
-                        },
-                        response=response,
-                        request_payload=test_obj
-                    )
-            except Exception as e:
-                logging.error(f"Error testing IDOR on {test_url}: {e}")
+            test_url = self._build_url(endpoint["url"], test_obj)
+            self._execute_idor_test(endpoint, test_url, test_obj, param_name, test_id)
 
-    # ----------------------- Funtion _test_insecure_direct_reference ----------------------------#
+    #================funtion _test_all_parameters_idor test IDOR by changing all parameters ##########
+    def _test_all_parameters_idor(self, endpoint, path_params, original_obj):
+        test_obj = deepcopy(original_obj)
+        changed_params = {}
+        
+        for param_name in path_params:
+            original_value = original_obj.get(param_name)
+            if original_value:
+                test_ids = self._get_context_aware_test_ids(param_name, original_value)
+                if test_ids:
+                    test_obj[param_name] = test_ids[0]                     
+                    changed_params[param_name] = test_ids[0]
+        
+        if changed_params:
+            test_url = self._build_url(endpoint["url"], test_obj)
+            self._execute_idor_test(endpoint, test_url, test_obj, "multiple", changed_params)
+
+    #================funtion _get_context_aware_test_ids produce test IDs based on original value ##########
+    def _get_context_aware_test_ids(self, param_name, original_value):
+        param_lower = param_name.lower()
+        
+                     
+        if original_value and str(original_value).isdigit():
+            original_num = int(original_value)
+            return [
+                str(original_num + 1),               
+                str(original_num - 1),                     
+                str(original_num + 100),                 
+                "0", "-1", "999999999"
+            ]
+        
+               
+        elif original_value and re.match(r'^[0-9a-f-]{36}$', str(original_value)):
+            return [
+                "00000000-0000-0000-0000-000000000000",
+                "ffffffff-ffff-ffff-ffff-ffffffffffff",
+                "550e8400-e29b-41d4-a716-446655440000"
+            ]
+        
+                    
+        else:
+            return [
+                "admin", "root", "test", "null", "undefined",
+                "../../etc/passwd", "../../../etc/passwd"
+            ]
+
+    #================funtion _execute_idor_test execute baseline vs test request and compare ##########
+    def _execute_idor_test(self, endpoint, test_url, test_obj, param_name, test_id):
+        try:
+                                                        
+            original_obj = endpoint.get("test_object", {})
+            baseline_url = self._build_url(endpoint["url"], original_obj)
+            baseline_response = self._send_request(endpoint["method"], baseline_url, endpoint=endpoint)
+            
+            if baseline_response.status_code not in [200, 201, 204]:
+                return
+                
+            baseline_data = self._safe_json(baseline_response)
+            
+                           
+            test_response = self._send_request(endpoint["method"], test_url, endpoint=endpoint)
+            
+            if test_response.status_code in [200, 201, 204]:
+                test_data = self._safe_json(test_response)
+                
+                                         
+                is_different, diff_description = self._compare_responses_improved(
+                    baseline_data, test_data, endpoint
+                )
+                
+                if is_different:
+                    self._log_idor_issue(
+                        endpoint, test_url, param_name, test_id, 
+                        baseline_data, test_data, test_response, is_critical=True
+                    )
+                elif test_response.status_code == 200:
+                    self._log_idor_issue(
+                        endpoint, test_url, param_name, test_id,
+                        baseline_data, test_data, test_response, is_critical=False
+                    )
+                    
+        except Exception as e:
+            logging.error(f"Error executing IDOR test on {test_url}: {e}")
+
+    #================funtion _compare_responses_improved compare responses with structure awareness ##########
+    def _compare_responses_improved(self, resp1, resp2, endpoint):
+        if type(resp1) != type(resp2):
+            return True, "Different types"
+            
+        if resp1 is None or resp2 is None:
+            return True, "One response is None"
+        
+                          
+        if isinstance(resp1, dict) and isinstance(resp2, dict):
+            return self._compare_dicts_improved(resp1, resp2, endpoint)
+        
+                   
+        elif isinstance(resp1, list) and isinstance(resp2, list):
+            return self._compare_lists_improved(resp1, resp2, endpoint)
+        
+                        
+        else:
+            return resp1 != resp2, "Different primitive values"
+
+    #================funtion _compare_dicts_improved diff dictionaries with tolerance ##########
+    def _compare_dicts_improved(self, dict1, dict2, endpoint):
+        differences = []
+        
+        keys1 = set(dict1.keys())
+        keys2 = set(dict2.keys())
+        
+                                  
+        if keys1 != keys2:
+            missing = keys1 - keys2
+            extra = keys2 - keys1
+            if missing:
+                differences.append(f"Missing keys: {missing}")
+            if extra:
+                differences.append(f"Extra keys: {extra}")
+        
+                                        
+        common_keys = keys1.intersection(keys2)
+        volatile_fields = {'created_at', 'updated_at', 'timestamp', 'last_modified', 'last_login'}
+        
+        for key in common_keys:
+            if key in volatile_fields:
+                continue
+                
+            val1 = dict1[key]
+            val2 = dict2[key]
+            
+            if val1 != val2:
+                                                  
+                if isinstance(val1, (int, float)) and isinstance(val2, (int, float)):
+                    if abs(val1 - val2) < 0.01:                                
+                        continue
+                
+                differences.append(f"Field '{key}': {val1} != {val2}")
+        
+        return len(differences) > 0, "; ".join(differences)
+
+    #================funtion _compare_lists_improved diff lists item-by-item ##########
+    def _compare_lists_improved(self, list1, list2, endpoint):
+        if len(list1) != len(list2):
+            return True, f"Different lengths: {len(list1)} vs {len(list2)}"
+        
+        differences = []
+        for i in range(min(len(list1), len(list2))):
+            is_diff, diff_desc = self._compare_responses_improved(list1[i], list2[i], endpoint)
+            if is_diff:
+                differences.append(f"Index {i}: {diff_desc}")
+        
+        return len(differences) > 0, "; ".join(differences)
+
+                                                                              
+    #================funtion _log_idor_issue record IDOR finding with context ##########
+    def _log_idor_issue(self, endpoint, test_url, param_name, test_id, baseline_data, response_data, response, is_critical=True):
+        issue_type = "Insecure Direct Object Reference (IDOR)"
+        severity = "Critical" if is_critical else "Medium"
+        description = f"Unauthorized access to resource using {param_name}={test_id}"
+
+                                                            
+        if param_name == "multiple" and isinstance(test_id, (dict, list)):
+            req_payload = test_id
+        else:
+            req_payload = {param_name: test_id}
+
+        self._log_issue(
+            endpoint["url"], issue_type, description, severity,
+            {
+                "parameter_tested": param_name,
+                "test_value": test_id,
+                "baseline_sample": baseline_data,
+                "response_sample": response_data,
+                "response_code": response.status_code
+            },
+            response=response,
+            request_payload=req_payload             
+        )
+
+
+                                                                                                    
+    #================funtion _test_insecure_direct_reference detect internal refs in responses ##########
     def _test_insecure_direct_reference(self, endpoint):
                                                                       
         if endpoint["method"] not in ["GET", "POST"]:
@@ -420,7 +601,8 @@ class ObjectPropertyAuditor:
         except Exception as e:
             logging.error(f"Error testing insecure direct reference on {url}: {e}")
 
-# ----------------------- Funtion _send_request ----------------------------#
+                                                                                  
+    #================funtion _send_request build and send HTTP request (OAS aware) ##########
     def _send_request(self, method, url, endpoint=None, **kwargs):
         headers = kwargs.pop('headers', {}) or {}
         try:
@@ -455,9 +637,8 @@ class ObjectPropertyAuditor:
         resp = self.session.request(method=method, url=url, headers=headers, timeout=15, **kwargs)
         return resp
 
-# ----------------------- Funtion _safe_json ----------------------------#
-
-
+                                                                               
+    #================funtion _safe_json safely parse JSON or fallback ##########
     def _safe_json(self, response):
         try:
             return response.json()
@@ -472,7 +653,8 @@ class ObjectPropertyAuditor:
                 pass
             return {}
 
-    # ----------------------- Funtion _build_url ----------------------------#
+                                                                               
+    #================funtion _build_url substitute params and absolutize path ##########
     def _build_url(self, template, params):
         url = template
         for k, v in params.items():
@@ -481,9 +663,11 @@ class ObjectPropertyAuditor:
             url = urljoin(f"{self.base_url}/", url.lstrip("/"))
         return url
 
-    # ----------------------- Funtion _find_sensitive_fields ----------------------------#
+                                                                                           
+    #================funtion _find_sensitive_fields scan JSON for sensitive field names ##########
     def _find_sensitive_fields(self, data):
         sensitive = []
+        #================funtion _scan function ##########
         def _scan(obj, path=""):
             if isinstance(obj, dict):
                 for k, v in obj.items():
@@ -500,7 +684,8 @@ class ObjectPropertyAuditor:
         _scan(data)
         return sensitive
 
-    # ----------------------- Funtion _find_pattern_exposure ----------------------------#
+                                                                                           
+    #================funtion _find_pattern_exposure scan text for sensitive regex patterns ##########
     def _find_pattern_exposure(self, text):
                                                                 
         matches = []
@@ -509,11 +694,13 @@ class ObjectPropertyAuditor:
                 matches.append(pattern_name)
         return matches
 
-    # ----------------------- Funtion _find_internal_references ----------------------------#
+                                                                                              
+    #================funtion _find_internal_references find internal/db/reference fields ##########
     def _find_internal_references(self, data):
                                                                                       
         internal_refs = []
         
+        #================funtion _scan function ##########
         def _scan(obj, path=""):
             if isinstance(obj, dict):
                 for k, v in obj.items():
@@ -530,25 +717,48 @@ class ObjectPropertyAuditor:
         _scan(data)
         return internal_refs
 
-    # ----------------------- Funtion _log_issue ----------------------------#
+                                                                               
+       
+    #================funtion _log_issue append structured issue entry ##########
     def _log_issue(self, endpoint, issue_type, description, severity, data=None, response=None, request_payload=None):
         entry = {}
         if response is not None:
             try:
+                                                               
+                req_body = request_payload
+                if req_body is None and getattr(response, "request", None) is not None:
+                    body = response.request.body
+                    if body:
+                        if isinstance(body, bytes):
+                            try:
+                                req_body = body.decode("utf-8", errors="replace")
+                            except Exception:
+                                req_body = str(body)
+                        else:
+                            req_body = body
+                                                                            
+                if req_body is None:
+                    try:
+                        q = urlparse(response.url).query
+                        if q:
+                            req_body = f"?{q}"
+                    except Exception:
+                        pass
+
                 entry = {
                     "method": response.request.method if response.request else "",
                     "url": response.url,
                     "status_code": response.status_code,
                     "request_headers": _headers_to_list(response.request.headers) if response.request else [],
-                    "request_body": request_payload,
+                    "request_body": req_body,
                     "response_headers": _headers_to_list(response.headers),
-                    "response_body": response.text[:4096],                    
+                    "response_body": response.text[:4096],
                     "request_cookies": self.session.cookies.get_dict(),
                     "response_cookies": response.cookies.get_dict(),
                 }
             except Exception as e:
                 logging.error(f"Error logging issue details: {e}")
-        
+
         issue_record = {
             "endpoint": endpoint,
             "type": issue_type,
@@ -560,11 +770,14 @@ class ObjectPropertyAuditor:
         issue_record.update(entry)
         self.issues.append(issue_record)
 
-    # ----------------------- Funtion generate_report ----------------------------#
+
+                                                                                    
+    #================funtion generate_report render report in md or json ##########
     def generate_report(self, fmt="markdown"):
         gen = ReportGenerator(issues=self.issues, scanner="ObjectProperty (API03)", base_url=self.base_url)
         return gen.generate_markdown() if fmt == "markdown" else gen.generate_json()
 
-    # ----------------------- Funtion save_report ----------------------------#
+                                                                                
+    #================funtion save_report persist report to disk ##########
     def save_report(self, path: str, fmt: str = "html"):
         ReportGenerator(self.issues, scanner="ObjectProperty (API03)", base_url=self.base_url).save(path, fmt=fmt)

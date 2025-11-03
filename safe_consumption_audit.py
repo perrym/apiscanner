@@ -1,8 +1,10 @@
-##################################
-# APISCAN - API Security Scanner #
-# Licensed under the MIT License #
-# Author: Perry Mertens, 2025    #
-##################################                                                             
+########################################################
+# APISCAN - API Security Scanner                       #
+# Licensed under the MIT License                       #
+# Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
+# version 2.2  2-11--2025                             #
+########################################################
+
 from __future__ import annotations
 import concurrent.futures
 import json
@@ -26,6 +28,110 @@ from requests.adapters import HTTPAdapter
 from tqdm import tqdm
 from urllib3.util.retry import Retry
 from report_utils import ReportGenerator
+from urllib.parse import urlsplit as _pt_urlsplit, urlunsplit as _pt_urlunsplit
+os.environ.setdefault('APISCAN_MAX_WORKERS', '8')
+os.environ.setdefault('APISCAN_TIMEOUT', '5')
+os.environ.setdefault('APISCAN_RATE_LIMIT', '0.5')
+
+def _pt_normalize_url(u: str) -> str:
+    if '://' not in u:
+        u = 'https://' + u.lstrip('/')
+    return u
+
+#================funtion build_traversal_variants_segment_replace Build Traversal Variants Segment Replace ##########
+def build_traversal_variants_segment_replace(url: str, replace_index: int=-2, max_dot: int=4, max_ddot: int=4, max_ellipsis: int=4) -> list[str]:
+    url = _pt_normalize_url(url)
+    parts = _pt_urlsplit(url)
+    path = parts.path or '/'
+    lead = '' if path.startswith('/') else None
+    segs = [s for s in path.split('/') if s != '']
+    if not segs:
+        return []
+    idx = replace_index if replace_index >= 0 else len(segs) + replace_index
+    if idx < 0 or idx >= len(segs):
+        return []
+
+    #================funtion join_segments Join Segments ##########
+    def join_segments(_lead, _segs):
+        out = '/'.join(_segs)
+        if _lead == '':
+            out = '/' + out
+        return out or '/'
+
+    #================funtion replace_with Replace With ##########
+    def replace_with(rep_segment: str, count: int) -> str:
+        new_segs = segs[:idx] + [rep_segment] * count + segs[idx + 1:]
+        return _pt_urlunsplit((parts.scheme, parts.netloc, join_segments(lead, new_segs), parts.query, parts.fragment))
+    variants: list[str] = []
+    for n in range(1, max(0, int(max_dot)) + 1):
+        v = replace_with('.', n)
+        variants.append(v)
+        variants.extend(_encode_siblings(v))
+    for n in range(1, max(0, int(max_ddot)) + 1):
+        v = replace_with('..', n)
+        variants.append(v)
+        variants.extend(_encode_siblings(v))
+    for n in range(1, max(0, int(max_ellipsis)) + 1):
+        v = replace_with('...', n)
+        variants.append(v)
+        variants.extend(_encode_siblings(v))
+    seen, out = (set(), [])
+    for v in variants:
+        if v not in seen:
+            out.append(v)
+            seen.add(v)
+    return out
+
+def _encode_siblings(v: str) -> list[str]:
+    out: list[str] = []
+    out.append(v.replace('/./', '/.%2f/').replace('./', '.%2f'))
+    out.append(v.replace('/../', '/..%2f/').replace('../', '..%2f'))
+    return out
+
+#================funtion build_traversal_variants_insert_between Build Traversal Variants Insert Between ##########
+def build_traversal_variants_insert_between(url: str, insert_before_index: int=-1, max_dot: int=4, max_ddot: int=4, max_ellipsis: int=4) -> list[str]:
+    url = _pt_normalize_url(url)
+    parts = _pt_urlsplit(url)
+    path = parts.path or '/'
+    lead = '' if path.startswith('/') else None
+    segs = [s for s in path.split('/') if s != '']
+    idx = insert_before_index if insert_before_index >= 0 else len(segs) + insert_before_index
+    if idx < 0:
+        idx = 0
+    if idx > len(segs):
+        idx = len(segs)
+
+    #================funtion join_segments Join Segments ##########
+    def join_segments(_lead, _segs):
+        out = '/'.join(_segs)
+        if _lead == '':
+            out = '/' + out
+        return out or '/'
+
+    #================funtion insert_with Insert With ##########
+    def insert_with(rep_segment: str, count: int) -> str:
+        new_segs = segs[:idx] + [rep_segment] * count + segs[idx:]
+        new_path = join_segments(lead, new_segs)
+        return _pt_urlunsplit((parts.scheme, parts.netloc, new_path, parts.query, parts.fragment))
+    variants: list[str] = []
+    for n in range(1, max(0, int(max_dot)) + 1):
+        v = insert_with('.', n)
+        variants.append(v)
+        variants.extend(_encode_siblings(v))
+    for n in range(1, max(0, int(max_ddot)) + 1):
+        v = insert_with('..', n)
+        variants.append(v)
+        variants.extend(_encode_siblings(v))
+    for n in range(1, max(0, int(max_ellipsis)) + 1):
+        v = insert_with('...', n)
+        variants.append(v)
+        variants.extend(_encode_siblings(v))
+    seen, out = (set(), [])
+    for v in variants:
+        if v not in seen:
+            out.append(v)
+            seen.add(v)
+    return out
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 try:
     from colorama import Fore, Style
@@ -39,24 +145,18 @@ try:
     _HAS_H2 = True
 except Exception:
     _HAS_H2 = False
-
 try:
-    from openapi_universal import (
-        iter_operations as oas_iter_ops,
-        build_request as oas_build_request,
-        SecurityConfig as OASSecurityConfig,
-    )
+    from openapi_universal import iter_operations as oas_iter_ops, build_request as oas_build_request, SecurityConfig as OASSecurityConfig
     _HAS_OAS_UNIVERSAL = True
 except Exception:
     _HAS_OAS_UNIVERSAL = False
-
 Issue = Dict[str, Any]
 SAFE_STATUSES = {400, 401, 403, 404, 405, 422}
 WAF_MARKERS = ('cloudflare', 'akamai', 'imperva', 'mod_security', 'aws waf', 'request blocked', 'access denied')
 PROBLEM_JSON_CT = 'application/problem+json'
 stop_requested = threading.Event()
 
-# ----------------------- Funtion listen_for_quit ----------------------------#
+#================funtion listen_for_quit Graceful stop listener ##########
 def listen_for_quit():
     print("Enter 'Q' to stop scanning...")
     while True:
@@ -70,7 +170,6 @@ if os.getenv('APISCAN_ENABLE_CONSOLE_STOP', '0') == '1':
     listener_thread = threading.Thread(target=listen_for_quit, daemon=True)
     listener_thread.start()
 
-# ----------------------- Funtion _headers_to_list ----------------------------#
 def _headers_to_list(headerobj):
     if hasattr(headerobj, 'getlist'):
         out = []
@@ -82,24 +181,24 @@ def _headers_to_list(headerobj):
 
 class SafeConsumptionAuditor:
 
-    # ----------------------- Funtion endpoints_from_openapi_universal ----------------------------#
     @staticmethod
-    def endpoints_from_openapi_universal(spec: dict, base_url: str, sec_cfg: "OASSecurityConfig | None" = None) -> list[str]:
-        if not globals().get("_HAS_OAS_UNIVERSAL", False):
-            raise RuntimeError("openapi_universal is not available")
+    #================funtion endpoints_from_openapi_universal Build requests via openapi_universal ##########
+    def endpoints_from_openapi_universal(spec: dict, base_url: str, sec_cfg: 'OASSecurityConfig | None'=None) -> list[str]:
+        if not globals().get('_HAS_OAS_UNIVERSAL', False):
+            raise RuntimeError('openapi_universal is not available')
         eps: set[str] = set()
         for op in oas_iter_ops(spec):
             try:
                 req = oas_build_request(spec, base_url, op, sec_cfg)
-                url = req.get("url")
+                url = req.get('url')
                 if isinstance(url, str) and url:
-                    eps.add(url.rstrip("/"))
+                    eps.add(url.rstrip('/'))
             except Exception:
                 continue
         return sorted(eps)
 
-    # ----------------------- Funtion scan_openapi_universal ----------------------------#
-    def scan_openapi_universal(self, spec: dict, base_url: str, sec_cfg: "OASSecurityConfig | None" = None) -> list[dict]:
+    #================funtion scan_openapi_universal Scan using openapi_universal ##########
+    def scan_openapi_universal(self, spec: dict, base_url: str, sec_cfg: 'OASSecurityConfig | None'=None) -> list[dict]:
         endpoints = self.endpoints_from_openapi_universal(spec, base_url, sec_cfg)
         return self.test_endpoints(endpoints)
     SQL_ENGINE_MARKERS = {'sqlsyntaxerror', 'psql:', 'psycopg2', 'org.hibernate', 'mysql server version', 'sqlite error', 'sqlserverexception', 'odbc sql', 'syntax error at or near', 'unclosed quotation mark', 'ora-', 'pls-', 'ora-00933', 'ora-01756'}
@@ -114,15 +213,17 @@ class SafeConsumptionAuditor:
     NETWORK_TIMEOUT_PATTERNS = ('httpconnectionpool', 'read timed out', 'connect timeout', 'connecttimeout', 'write timeout', 'newconnectionerror', 'failed to establish a new connection', 'max retries exceeded', 'temporarily unavailable')
     GENERIC_4XX = {400, 401, 403, 404, 405, 406, 409, 415, 422, 429}
 
-    # ----------------------- Funtion __init__ ----------------------------#
-    def __init__(self, base_url: str, session: Optional[requests.Session]=None, *, timeout: int=3, rate_limit: float=1.0, log_monitor: Optional[Callable[[Dict[str, Any]], None]]=None) -> None:
+    #================funtion __init__ Initialize auditor configuration ##########
+    def __init__(self, base_url: str, session: Optional[requests.Session]=None, *, timeout: Optional[int]=None, rate_limit: Optional[float]=None, log_monitor: Optional[Callable[[Dict[str, Any]], None]]=None) -> None:
+        self.timeout = timeout if timeout is not None else int(os.getenv('APISCAN_TIMEOUT', '3'))
+        self.rate_limit = rate_limit if rate_limit is not None else float(os.getenv('APISCAN_RATE_LIMIT', '1.0'))
+        default_max_workers = min(32, max(8, (os.cpu_count() or 1) * 4))
+        self.max_workers = int(os.getenv('APISCAN_MAX_WORKERS', str(default_max_workers)))
         self.base_url: str = base_url.rstrip('/')
         self.session: requests.Session = session or self._create_secure_session()
-        self.timeout: int = timeout
-        self.rate_limit: float = rate_limit
         self.log_monitor = log_monitor
         self.server_log_provider: Optional[Callable[[], List[str]]] = None
-        self.fast_mode = os.getenv('APISCAN_FAST', '1') == '1'
+        self.fast_mode = os.getenv('APISCAN_FAST', '0').strip().lower() in ('1', 'true', 'yes', 'on')
         self.triage_payloads_per_type = 2
         self.per_host_max_concurrency = int(os.getenv('APISCAN_PER_HOST', '8'))
         self.host_semaphores: defaultdict[str, threading.BoundedSemaphore] = defaultdict(lambda: threading.BoundedSemaphore(self.per_host_max_concurrency))
@@ -146,18 +247,15 @@ class SafeConsumptionAuditor:
             self.SQL_ERROR_REGEX = payloads_data['sql_error_regex']
             self.GRAPHQL_INTROSPECTION_QUERY = payloads_data['graphql_introspection_query']
             self.SQL_ERROR_RX = [re.compile(p, re.I) for p in self.SQL_ERROR_REGEX]
+            self.DIR_TRAVERSAL_PAYLOADS = payloads_data.get('directory_traversal_payloads', [])
+            self.DIR_TRAVERSAL_FILES = payloads_data.get('directory_traversal_files', [])
         except (KeyError, json.JSONDecodeError) as e:
             print(f'Error parsing JSON payload file: {e}')
             os.sys.exit(1)
-        print(f'[INIT] Auditor ready for {self.base_url} (timeout={self.timeout}s, rate_limit={self.rate_limit}s, per_host={self.per_host_max_concurrency})')
+        print(f'[INIT] Auditor ready for {self.base_url} (timeout={self.timeout}s, rate_limit={self.rate_limit}s, max_workers={self.max_workers}, per_host={self.per_host_max_concurrency})')
 
-    # ----------------------- Funtion _create_secure_session ----------------------------#
     @staticmethod
     def _create_secure_session() -> requests.Session:
-        import os
-        import requests
-        from requests.adapters import HTTPAdapter
-        from urllib3.util.retry import Retry
         s = requests.Session()
         retries = Retry(total=2, connect=2, read=2, backoff_factor=0.2, status_forcelist=[500, 502, 503], allowed_methods=['HEAD', 'GET', 'OPTIONS', 'POST', 'PUT', 'DELETE', 'PATCH'], raise_on_status=False, raise_on_redirect=False)
         adapter = HTTPAdapter(max_retries=retries, pool_connections=200, pool_maxsize=200, pool_block=True)
@@ -173,7 +271,6 @@ class SafeConsumptionAuditor:
         s.headers.update({'User-Agent': 'safe_consumption10/10', 'Accept': 'application/json, */*;q=0.1', 'Accept-Encoding': 'gzip, deflate', 'Connection': 'keep-alive'})
         return s
 
-    # ----------------------- Funtion _throttle ----------------------------#
     def _throttle(self, domain: str) -> None:
         sem = self.host_semaphores[domain]
         sem.acquire()
@@ -186,7 +283,6 @@ class SafeConsumptionAuditor:
         finally:
             sem.release()
 
-    # ----------------------- Funtion _safe_body ----------------------------#
     @staticmethod
     def _safe_body(data: Any) -> str:
         if data is None:
@@ -198,41 +294,98 @@ class SafeConsumptionAuditor:
                 return f'<<{len(data)} bytes>>'
         return str(data)
 
-    # ----------------------- Funtion _log ----------------------------#
-    def _log(self, issue: str, target: str, severity: str, *, payload: Optional[str]=None, response: Optional[requests.Response]=None, extra: Optional[Dict[str, Any]]=None) -> None:
+    def _log(self, issue: str, target: str, severity: str, *, payload=None, response=None, extra=None) -> None:
         if extra and getattr(self, 'IGNORE_NETWORK_TIMEOUTS', True):
             err_low = str(extra.get('error', '')).lower()
-            if any((p in err_low for p in getattr(self, 'NETWORK_TIMEOUT_PATTERNS', ()))):
-                return
+            for p in getattr(self, 'NETWORK_TIMEOUT_PATTERNS', ('timeout', 'timed out', 'read timed out', 'connect timeout')):
+                if p in err_low:
+                    return
         skip_markers = ('failed to parse', "name 'parsed' is not defined")
-        check_fields = [issue]
+        chk = [issue]
         if extra and 'error' in extra:
-            check_fields.append(str(extra['error']))
-        if any((k in f.lower() for k in skip_markers for f in check_fields)):
-            return
-        entry: Dict[str, Any] = {'issue': issue, 'description': issue, 'target': target, 'severity': severity, 'timestamp': datetime.utcnow().isoformat(timespec='seconds') + 'Z', 'method': 'GET', 'url': target, 'endpoint': target, 'status_code': response.status_code if response else '-'}
-        if payload:
-            entry['payload'] = payload
+            chk.append(str(extra['error']))
+        for f in chk:
+            low = str(f).lower()
+            if any((k in low for k in skip_markers)):
+                return
+
+        def _is_binary_response(resp) -> bool:
+            try:
+                ctype = (resp.headers.get('Content-Type') or '').lower()
+            except Exception:
+                ctype = ''
+            if ctype.startswith(('image/', 'audio/', 'video/')):
+                return True
+            if any((x in ctype for x in ('application/pdf', 'application/octet-stream', 'application/zip', 'application/gzip'))):
+                return True
+            disp = (resp.headers.get('Content-Disposition') or '').lower()
+            if 'filename=' in disp and disp.endswith(('.png', '.jpg', '.jpeg', '.gif', '.pdf', '.zip', '.gz')):
+                return True
+            data = getattr(resp, 'content', b'') or b''
+            if not data:
+                return False
+            sample = data[:1024]
+            printable = sum((32 <= b < 127 or b in (9, 10, 13) for b in sample))
+            return printable / max(1, len(sample)) < 0.8
+        if response is not None:
+            low_issue = (issue or '').lower()
+            if ('sql injection' in low_issue or 'sqli' in low_issue) and _is_binary_response(response):
+                if os.getenv('APISCAN_IGNORE_BINARY_SUSPECTS', '1').strip().lower() in ('1', 'true', 'yes', 'on'):
+                    return
+                else:
+                    severity = 'Info'
+                    if not extra:
+                        extra = {}
+                    extra['note'] = 'Downgraded: binary response (image/pdf/zip)'
+        entry = {'issue': issue, 'description': issue, 'severity': severity, 'target': target, 'payload': payload if payload is not None else '', 'status_code': response.status_code if response is not None else '-'}
         if extra:
             entry.update(extra)
-        if response is not None:
-            req = response.request
-            full_url = req.url
-            parsed = urlparse.urlparse(full_url)
-            entry.update(method=req.method, url=full_url, endpoint=full_url, path=parsed.path or '/', status_code=response.status_code, request_headers_list=_headers_to_list(req.headers), response_headers_list=_headers_to_list(response.raw.headers), request_body=self._safe_body(req.body), response_body=response.text, elapsed_ms=response.elapsed.total_seconds() * 1000 if response.elapsed else None, request_headers=dict(req.headers), response_headers=dict(response.headers), request_cookies=self.session.cookies.get_dict(), response_cookies=response.cookies.get_dict())
+        try:
+            import urllib.parse as urlparse
+            if response is not None and getattr(response, 'request', None) is not None:
+                req = response.request
+                full_url = getattr(req, 'url', target) or target
+                parsed = urlparse.urlparse(full_url)
+                entry.update(method=req.method or 'GET', url=full_url, endpoint=parsed.path or '/', request_headers=dict(getattr(req, 'headers', {}) or {}), response_headers=dict(response.headers or {}), request_cookies=getattr(response, 'cookies', {}).get_dict() if hasattr(response, 'cookies') else {}, response_cookies=response.cookies.get_dict() if hasattr(response, 'cookies') else {})
+                try:
+                    rb = getattr(req, 'body', b'')
+                    entry['request_body'] = self._safe_body(rb)[:20000]
+                except Exception:
+                    entry['request_body'] = ''
+                try:
+                    ct = (response.headers.get('Content-Type') or '').lower()
+                    if not self._is_generic_html_error(response) and (not ct.startswith(('image/', 'video/', 'audio/'))) and ('application/octet-stream' not in ct):
+                        entry['response_body'] = (response.text or '')[:20000]
+                        entry['response_body_len'] = len(response.text or '')
+                    else:
+                        raw = getattr(response, 'content', b'') or b''
+                        entry['response_body'] = f'<<binary {len(raw)} bytes>>'
+                        entry['response_body_len'] = len(raw)
+                    entry['response_content_type'] = ct
+                except Exception:
+                    pass
+            else:
+                entry.setdefault('url', target)
+                entry.setdefault('endpoint', urlparse.urlparse(target).path or '/')
+        except Exception as e:
+            entry['parse_error'] = str(e)
+            entry.setdefault('url', target)
+            entry.setdefault('endpoint', urlparse.urlparse(target).path or '/')
         if entry.get('status_code') == '-' or 'timeout' in str(entry.get('error', '')).lower():
             entry['severity'] = 'Info'
         with self.issues_lock:
             self.issues.append(entry)
-        if self.log_monitor:
+        if getattr(self, 'log_monitor', None):
             try:
                 self.log_monitor(entry)
             except Exception:
                 pass
-        if entry['severity'].lower() != 'info':
-            print(f"[{entry['severity']}] {issue} @ {entry['url']}")
+        try:
+            if str(entry.get('severity', '')).lower() != 'info':
+                print(f"[{entry['severity']}] {entry.get('issue', '')} @ {entry.get('url', '')}")
+        except Exception:
+            pass
 
-    # ----------------------- Funtion _has_engine_marker ----------------------------#
     def _has_engine_marker(self, text: str, attack_type: str) -> bool:
         t = text.lower()
         if attack_type == 'sql':
@@ -247,7 +400,6 @@ class SafeConsumptionAuditor:
             return any((k in t for k in self.XXE_ERROR_KEYWORDS | self.STACKTRACE_MARKERS))
         return False
 
-    # ----------------------- Funtion _is_parse_error ----------------------------#
     def _is_parse_error(self, response: requests.Response) -> bool:
         try:
             ctype = (response.headers.get('Content-Type') or '').lower()
@@ -256,36 +408,32 @@ class SafeConsumptionAuditor:
         body = (response.text or '').lower()
         return any((p in body for p in self.JSON_PARSE_ERRORS)) or ('application/json' in ctype and response.status_code == 400)
 
-    # ----------------------- Funtion _looks_like_waf ----------------------------#
     def _looks_like_waf(self, response: requests.Response) -> bool:
         body = (response.text or '').lower()
         return response.status_code in {403, 406, 429} or any((p in body for p in self.WAF_PATTERNS))
 
-    # ----------------------- Funtion _is_generic_html_error ----------------------------#
     def _is_generic_html_error(self, response) -> bool:
         try:
-            status = int(getattr(response, "status_code", 0))
+            status = int(getattr(response, 'status_code', 0))
         except Exception:
             status = 0
         try:
-            ctype = (response.headers.get("Content-Type") or "").lower()
+            ctype = (response.headers.get('Content-Type') or '').lower()
         except Exception:
-            ctype = ""
-        body = (getattr(response, "text", "") or "")
+            ctype = ''
+        body = getattr(response, 'text', '') or ''
         head = body.strip()[:200].lower()
-        title_low = ""
+        title_low = ''
         try:
             import re as _re
-            m = _re.search(r"<title>([^<]+)</title>", body, _re.I)
-            title_low = (m.group(1) if m else "").strip().lower()
+            m = _re.search('<title>([^<]+)</title>', body, _re.I)
+            title_low = (m.group(1) if m else '').strip().lower()
         except Exception:
-            title_low = ""
-        looks_html = "text/html" in ctype or head.startswith("<!doctype html") or head.startswith("<html")
-        looks_error = ("error" in title_low) or ("server error" in head) or ("internal server error" in head)
+            title_low = ''
+        looks_html = 'text/html' in ctype or head.startswith('<!doctype html') or head.startswith('<html')
+        looks_error = 'error' in title_low or 'server error' in head or 'internal server error' in head
         return status >= 500 and looks_html and looks_error
 
-
-    # ----------------------- Funtion _payload_reflected ----------------------------#
     def _payload_reflected(self, payload: str, response_text: str) -> bool:
         if not payload:
             return False
@@ -294,7 +442,7 @@ class SafeConsumptionAuditor:
         variants = {payload.lower(), quote(payload).lower(), quote(payload, safe='').lower()}
         return any((v in t for v in variants))
 
-    # ----------------------- Funtion classify_transport_anomaly ----------------------------#
+    #================funtion classify_transport_anomaly Classify Transport Anomaly ##########
     def classify_transport_anomaly(self, url: str, method: str, exc: Exception | None, elapsed: float) -> str:
         e = (str(exc) if exc else '').lower()
         if 'hpe_invalid' in e or 'invalid chunk size' in e or 'http/1.1 400 bad request' in e:
@@ -303,19 +451,63 @@ class SafeConsumptionAuditor:
             return 'Info'
         return 'Info'
 
-    # ----------------------- Funtion _dedupe_issues ----------------------------#
+    
     def _dedupe_issues(self) -> None:
-        seen: dict[tuple, dict] = {}
-        for f in self.issues:
-            key = (f.get('method'), f.get('path') or f.get('endpoint'), f.get('status_code'), f.get('severity'), f.get('issue'), f.get('payload'))
-            if key in seen:
-                seen[key]['duplicates'] += 1
-            else:
-                f['duplicates'] = 0
-                seen[key] = f
-        self.issues = list(seen.values())
+            #================funtion _dedupe_issues De-duplicate findings ##########
+            def _canon(f: dict) -> tuple:
+                issue = (f.get('issue') or '').lower()
+                desc = (f.get('description') or '').lower()
+                method = f.get('method') or 'GET'
+                path = f.get('path') or f.get('endpoint') or f.get('url') or ''
+                status = f.get('status_code')
+                payload = f.get('payload') or ''
+                vector = (f.get('vector') or '').lower()
+                if vector == 'generic-5xx' or 'server error without sql evidence' in issue or 'generic 5xx response without sql/db markers' in desc:
+                    return ('generic-5xx', method, path, status)
+                if vector == 'dirtrav' or issue.startswith('directory traversal'):
+                    base_ep = f.get('base_endpoint') or path
+                    sev = f.get('severity')
+                    return ('dirtrav', method, base_ep, sev)
+                if vector == 'cors' or issue == 'Broad CORS policy':
+                    return ('cors', method, path, 200)
+                return ('default', method, path, status, (f.get('issue') or ''), payload)
 
-    # ----------------------- Funtion _dump_raw_issues ----------------------------#
+            merged: dict[tuple, dict] = {}
+            for f in self.issues:
+                k = _canon(f)
+                cur = merged.get(k)
+                if cur is None:
+                    f['duplicates'] = 0
+                    # init evidence containers
+                    if (f.get('vector') or '').lower() == 'dirtrav':
+                        f['evidence_urls'] = [f.get('url') or f.get('endpoint')]
+                    elif (f.get('vector') or '').lower() == 'cors':
+                        f['evidence_origins'] = [f.get('origin')] if f.get('origin') else []
+                    elif (f.get('vector') or '').lower() == 'generic-5xx':
+                        f['evidence_payloads'] = [f.get('payload')] if f.get('payload') else []
+                    merged[k] = f
+                else:
+                    cur['duplicates'] = int(cur.get('duplicates', 0)) + 1
+                    # merge minimal evidence
+                    v = (f.get('vector') or '').lower()
+                    if v == 'dirtrav':
+                        urls = cur.setdefault('evidence_urls', [])
+                        u = f.get('url') or f.get('endpoint')
+                        if u and u not in urls and len(urls) < 10:
+                            urls.append(u)
+                    elif v == 'cors':
+                        origins = cur.setdefault('evidence_origins', [])
+                        o = f.get('origin')
+                        if o and o not in origins and len(origins) < 10:
+                            origins.append(o)
+                    elif v == 'generic-5xx':
+                        payloads = cur.setdefault('evidence_payloads', [])
+                        pld = f.get('payload')
+                        if pld and pld not in payloads and len(payloads) < 10:
+                            payloads.append(pld)
+            self.issues = list(merged.values())
+
+
     def _dump_raw_issues(self, log_dir: Path) -> Path:
         import json as _json
         import datetime as _dt
@@ -327,8 +519,8 @@ class SafeConsumptionAuditor:
         print(f'[LOG] Full issue log written to {path}')
         return path
 
-    # ----------------------- Funtion third_party_hosts_from_swagger ----------------------------#
     @staticmethod
+    #================funtion third_party_hosts_from_swagger Collect referenced external hosts ##########
     def third_party_hosts_from_swagger(swagger_path: str) -> List[str]:
         spec = json.loads(Path(swagger_path).read_text(encoding='utf-8'))
         hosts: Set[str] = set()
@@ -339,7 +531,7 @@ class SafeConsumptionAuditor:
                 if parsed.netloc:
                     hosts.add(parsed.netloc.split(':')[0])
 
-        # ----------------------- Funtion walk ----------------------------#
+        #================funtion walk Walk ##########
         def walk(node: Any):
             if isinstance(node, dict):
                 for k, v in node.items():
@@ -352,8 +544,8 @@ class SafeConsumptionAuditor:
         walk(spec)
         return sorted(hosts)
 
-    # ----------------------- Funtion endpoints_from_swagger ----------------------------#
     @staticmethod
+    #================funtion endpoints_from_swagger Extract endpoints from OpenAPI file ##########
     def endpoints_from_swagger(swagger_path: str) -> List[str]:
         spec = json.loads(Path(swagger_path).read_text(encoding='utf-8'))
         servers = [srv.get('url').rstrip('/') for srv in spec.get('servers', []) if srv.get('url')]
@@ -364,43 +556,23 @@ class SafeConsumptionAuditor:
                 endpoints.append(server + path)
         return endpoints
 
-    # ----------------------- Funtion _is_payload_reflected ----------------------------#
     def _is_payload_reflected(self, finding: dict) -> bool:
         payload = finding.get('payload') or ''
         body = (finding.get('response_body') or '').lower()
         return payload.lower() in body
 
-    # ----------------------- Funtion _test_injection ----------------------------#
-    def _test_injection(self, test_url: str, attack_type: str, *, method: str = 'auto', payload: str | None = None) -> None:
+    def _test_injection(self, test_url: str, attack_type: str, *, method: str='auto', payload: str | None=None) -> None:
         if stop_requested.is_set():
             return
-
-        defaults = {
-            'sql': "' OR 1=1--",
-            'nosql': '{"$ne": "invalid"}',
-            'xss': '<svg/onload=alert(1)>',
-            'ssti': '${7*7}',
-            'ssrf': 'http://169.254.169.254/latest/meta-data/',
-            'ldap': '*))(&(objectClass=*',
-            'xxe': "<?xml version='1.0'?><!DOCTYPE t [<!ENTITY x SYSTEM 'file:///etc/passwd'>]><t>&x;</t>",
-            'cmdi': '; id;',
-            'jsonp': 'callback=alert(1)',
-            'path': '../../../../etc/passwd%00',
-            'crlf': '%0d%0aX-Injected: header',
-            'hpp': 'id=1&id=2',
-            'graphql': '__schema',
-        }
+        defaults = {'sql': "' OR 1=1--", 'nosql': '{"$ne": "invalid"}', 'xss': '<svg/onload=alert(1)>', 'ssti': '${7*7}', 'ssrf': 'http://169.254.169.254/latest/meta-data/', 'ldap': '*))(&(objectClass=*', 'xxe': "<?xml version='1.0'?><!DOCTYPE t [<!ENTITY x SYSTEM 'file:///etc/passwd'>]><t>&x;</t>", 'cmdi': '; id;', 'jsonp': 'callback=alert(1)', 'path': '../../../../etc/passwd%00', 'crlf': '%0d%0aX-Injected: header', 'hpp': 'id=1&id=2', 'graphql': '__schema'}
         p = payload or defaults.get(attack_type, '1')
-
         parsed = urlparse.urlparse(test_url)
         domain = parsed.netloc or parsed.hostname or ''
         base = test_url.split('?', 1)[0]
         param_candidates = ['q', 'query', 'search', 'id', 'user', 'name', 'title', 'email', 'filter', 'where', 'sort', 'order', 'page', 'limit', 'offset', 'code', 'token', 'redirect', 'next', 'return', 'ref']
-
         try:
             self._throttle(domain)
             tried_any = False
-
             if method in ('auto', 'GET'):
                 tried_any = True
                 if parsed.query:
@@ -423,7 +595,6 @@ class SafeConsumptionAuditor:
                         if self._is_injection_successful(r, attack_type, payload=p):
                             self._log(f'Possible {attack_type.upper()} injection', attack_url, 'Critical', payload=p, response=r)
                             return
-
             if method in ('auto', 'POST'):
                 tried_any = True
                 form = {k: p for k in param_candidates[:5]}
@@ -431,28 +602,22 @@ class SafeConsumptionAuditor:
                 if self._is_injection_successful(r, attack_type, payload=p):
                     self._log(f'Possible {attack_type.upper()} injection', base + ' (form)', 'Critical', payload=p, response=r)
                     return
-
             json_body = {k: p for k in param_candidates[:5]}
             r = self.session.post(base, json=json_body, timeout=(3, max(self.timeout, 10)), allow_redirects=False)
             if self._is_injection_successful(r, attack_type, payload=p):
                 self._log(f'Possible {attack_type.upper()} injection', base + ' (json)', 'Critical', payload=p, response=r)
                 return
-
             if '%7B' in test_url.lower() and '%7D' in test_url.lower():
                 attack_url = re.sub('%7B[^%]+%7D', urlparse.quote_plus(p), test_url, count=1, flags=re.I)
                 r = self.session.get(attack_url, timeout=(3, self.timeout), allow_redirects=False)
                 if self._is_injection_successful(r, attack_type, payload=p):
                     self._log(f'Possible {attack_type.upper()} injection', attack_url, 'Critical', payload=p, response=r)
                     return
-
             if not tried_any:
                 self._log('Injection test skipped (no method)', test_url, 'Info')
-
         except Exception as exc:
             self._log('Injection test failed', test_url, 'Info', extra={'error': str(exc), 'type': attack_type})
 
-
-    # ----------------------- Funtion _test_header_manipulation ----------------------------#
     def _test_header_manipulation(self, endpoint: str) -> None:
         if stop_requested.is_set():
             return
@@ -502,7 +667,7 @@ class SafeConsumptionAuditor:
                 r0 = self.session.get(endpoint, timeout=(3, self.timeout), allow_redirects=False)
             except Exception:
                 r0 = None
-            # ----------------------- Funtion _is_html ----------------------------#
+
             def _is_html(resp: requests.Response) -> bool:
                 ct = (resp.headers.get('Content-Type') or '').lower()
                 if 'text/html' in ct or 'application/xhtml+xml' in ct:
@@ -521,7 +686,7 @@ class SafeConsumptionAuditor:
                     loc = (r.headers.get('Location') or '').lower()
                     rewrote_to_admin = '/admin' in loc
                     poisoned_host = h == 'X-Forwarded-Host' and (v.lower() in loc or v.lower() in (r.text or '').lower())
-                    strong_signal = (h in {'X-Original-URL', 'X-Rewrite-URL'} and (admin_like or rewrote_to_admin)) or (h in {'X-Forwarded-For', 'X-Real-IP'} and became_allowed) or poisoned_host
+                    strong_signal = h in {'X-Original-URL', 'X-Rewrite-URL'} and (admin_like or rewrote_to_admin) or (h in {'X-Forwarded-For', 'X-Real-IP'} and became_allowed) or poisoned_host
                     if strong_signal:
                         self._log('Possible access control bypass via spoofed header', endpoint, 'High', extra={'header': f'{h}: {v}', 'baseline_status': getattr(r0, 'status_code', '-'), 'location': r.headers.get('Location', '')}, response=r)
                 except Exception as e:
@@ -557,8 +722,8 @@ class SafeConsumptionAuditor:
                     disp = (r.headers.get('Content-Disposition') or '').lower()
                     if status < 200 or status >= 300:
                         continue
-                    is_textual = ('application/json' in ctype) or ctype.startswith('text/') or ('application/xml' in ctype) or ('application/javascript' in ctype)
-                    is_static = ctype.startswith(('image/', 'video/', 'audio/', 'font/')) or ('application/octet-stream' in ctype) or ('application/pdf' in ctype) or ('filename=' in disp)
+                    is_textual = 'application/json' in ctype or ctype.startswith('text/') or 'application/xml' in ctype or ('application/javascript' in ctype)
+                    is_static = ctype.startswith(('image/', 'video/', 'audio/', 'font/')) or 'application/octet-stream' in ctype or 'application/pdf' in ctype or ('filename=' in disp)
                     if not is_textual or is_static:
                         continue
                     if acao == '*' and acac == 'true':
@@ -566,32 +731,24 @@ class SafeConsumptionAuditor:
                         continue
                     if acao == '*' or origin in acao:
                         sev = 'Medium' if acac == 'true' else 'Info'
-                        self._log('Broad CORS policy', endpoint, sev, extra={'origin': origin, 'acao': acao, 'acac': acac, 'content_type': ctype}, response=r)
+                        self._log('Broad CORS policy', endpoint, sev, extra={ 'origin': origin, 'acao': acao, 'acac': acac, 'content_type': ctype, 'vector':'cors' }, response=r)
                 except Exception as e:
                     sev = self.classify_transport_anomaly(endpoint, 'GET', e, 0.0)
                     self._log('CORS test failed', endpoint, sev, extra={'error': str(e), 'origin': origin})
         except Exception as e:
             self._log('Header manipulation test setup failed', endpoint, 'Medium', extra={'error': str(e)})
 
-   
-    
-    # ----------------------- Funtion _is_injection_successful ----------------------------#
-    def _is_injection_successful(self, response: requests.Response, attack_type: str, *, baseline_latency: float = 0.5, payload: str = '') -> bool:
+    def _is_injection_successful(self, response: requests.Response, attack_type: str, *, baseline_latency: float=0.5, payload: str='') -> bool:
         if response is None:
             return False
-
         try:
             status = int(getattr(response, 'status_code', 0))
         except Exception:
             status = 0
         text = response.text or ''
         low = text.lower()
-
-                                                                    
         if status in {400, 422} and self._is_parse_error(response):
             return False
-
-                                                                  
         if attack_type == 'sql':
             if self._has_sql_evidence(text):
                 return True
@@ -602,118 +759,70 @@ class SafeConsumptionAuditor:
             ctype = (response.headers.get('Content-Type') or '').lower()
             time_based = elapsed > max(1.5, baseline_latency * 5)
             if time_based:
-                                                                             
-                if status == 404 and 'text/html' in ctype and not self._has_sql_evidence(text):
+                if status == 404 and 'text/html' in ctype and (not self._has_sql_evidence(text)):
                     return False
                 return True
             return False
-
-                                                                            
         if status in self.GENERIC_4XX or self._looks_like_waf(response):
             return False
-
-                                          
         if status >= 500:
             if attack_type == 'nosql':
                 return any((k in low for k in self.NOSQL_ERROR_KEYWORDS)) or self._has_engine_marker(low, 'nosql')
             if attack_type in {'ssti', 'ldap', 'xxe'}:
                 return self._has_engine_marker(low, attack_type)
             return False
-
         if attack_type == 'nosql':
             specific = any((re.search(p, low) for p in ('mongo.*error', 'mongodb.*error', 'bson.*error')))
             keywords = any((k in low for k in self.NOSQL_ERROR_KEYWORDS))
             return specific or keywords or self._has_engine_marker(low, 'nosql')
-
         if attack_type == 'xss':
             if not payload or payload.lower() not in low:
                 return False
             return any((s in text for s in (f'="{payload}"', f'>{payload}<', f'({payload})')))
-
         if attack_type == 'ssti':
             specific = any((re.search(p, low) for p in ('template.*syntax.*error', 'jinja2.*exception', 'django.*template.*error', 'twig.*error', 'freemarker', 'mustache', 'thymeleaf')))
             code_exec = any((ind in low for ind in ('uid=', 'gid=', 'root:', '/etc/passwd')))
             return specific or code_exec or self._has_engine_marker(low, 'ssti')
-
         if attack_type == 'ssrf':
             meta_hits = any((ind in low for ind in ('/latest/meta-data', '169.254.169.254', 'instance-id', 'ami-id', 'availability-zone', 'computemetadata', 'metadata.google.internal', 'project-id')))
             return meta_hits
-
         if attack_type == 'ldap':
             specific = any((re.search(p, low) for p in ('ldap.*error.*\\d+', 'invalid.*credentials', 'bind.*failed')))
             return specific or any((k in low for k in self.LDAP_ERROR_KEYWORDS)) or self._has_engine_marker(low, 'ldap')
-
         if attack_type == 'xxe':
-                                                                            
             ctype = (response.headers.get('Content-Type') or '').lower()
             body = text or ''
             low = body.lower()
-
-                                                                               
             if self._is_generic_html_error(response) and 'xml' not in ctype:
                 return False
-
-                                                                                
             try:
                 _status = int(getattr(response, 'status_code', 0))
             except Exception:
                 _status = 0
             if 400 <= _status < 500 and 'text/html' in ctype:
-                                                                                           
                 pass
-
-            CONTENT_MARKERS = (
-                'root:x:0:0:',
-                'daemon:x:',
-                '/bin/bash',
-                'for 16-bit app support',
-                '[extensions]',
-            )
-            PATH_ONLY_MARKERS = (
-                '/etc/passwd',
-                '/etc/hosts',
-                '\\\\windows\\\\win.ini',
-                'file:///etc/passwd',
-                'file:///etc/hosts',
-            )
-
-                                                                                 
-            if any(ind in low for ind in CONTENT_MARKERS):
+            CONTENT_MARKERS = ('root:x:0:0:', 'daemon:x:', '/bin/bash', 'for 16-bit app support', '[extensions]')
+            PATH_ONLY_MARKERS = ('/etc/passwd', '/etc/hosts', '\\\\windows\\\\win.ini', 'file:///etc/passwd', 'file:///etc/hosts')
+            if any((ind in low for ind in CONTENT_MARKERS)):
                 if not ('text/html' in ctype and '<html' in low):
                     return True
-
-                                                 
-            if any(ind in low for ind in PATH_ONLY_MARKERS):
+            if any((ind in low for ind in PATH_ONLY_MARKERS)):
                 return False
-
-                                                                                           
-            blocked_patterns = (
-                r'doctype.*(disallowed|prohibit|not\\s+allowed)',
-                r'entity\\s+.*(not\\s+defined|cannot\\s+be\\s+resolved)',
-            )
+            blocked_patterns = ('doctype.*(disallowed|prohibit|not\\\\s+allowed)', 'entity\\\\s+.*(not\\\\s+defined|cannot\\\\s+be\\\\s+resolved)')
             if any((re.search(pat, low) for pat in blocked_patterns)):
                 return False
-
-                                                                         
-            specific = any((re.search(p, low) for p in (
-                r'xml.*parsing.*error',
-                r'entity.*reference',
-                r'doctype.*not.*allowed'
-            )))
+            specific = any((re.search(p, low) for p in ('xml.*parsing.*error', 'entity.*reference', 'doctype.*not.*allowed')))
             return specific or self._has_engine_marker(low, 'xxe')
-
         return False
 
-    # ----------------------- Funtion _is_false_positive ----------------------------#
     def _is_false_positive(self, response: requests.Response) -> bool:
-            content = (response.text or '').lower()
-            false_positive_indicators = ['cloudflare', 'akamai', 'waf', 'firewall', 'access denied', 'forbidden', 'security policy', 'page not found', 'error occurred', 'try again', 'not found', 'invalid request', 'bad request']
-            waf_patterns = ('cloudflare', 'akamaighost', 'imperva', 'barracuda', 'fortinet')
-            has_fp_indicator = any((indicator in content for indicator in false_positive_indicators))
-            has_waf_pattern = any((re.search(pattern, content) for pattern in waf_patterns))
-            return has_fp_indicator or has_waf_pattern
+        content = (response.text or '').lower()
+        false_positive_indicators = ['cloudflare', 'akamai', 'waf', 'firewall', 'access denied', 'forbidden', 'security policy', 'page not found', 'error occurred', 'try again', 'not found', 'invalid request', 'bad request']
+        waf_patterns = ('cloudflare', 'akamaighost', 'imperva', 'barracuda', 'fortinet')
+        has_fp_indicator = any((indicator in content for indicator in false_positive_indicators))
+        has_waf_pattern = any((re.search(pattern, content) for pattern in waf_patterns))
+        return has_fp_indicator or has_waf_pattern
 
-    # ----------------------- Funtion _detect_server_errors ----------------------------#
     def _detect_server_errors(self, endpoint: str) -> None:
         prov = getattr(self, 'server_log_provider', None)
         if callable(prov):
@@ -725,56 +834,42 @@ class SafeConsumptionAuditor:
                 if 'sql' in error.lower() and endpoint in error:
                     self._log('SQL error detected in server logs', endpoint, 'High', extra={'error': error})
 
-    # ----------------------- Funtion _test_basic_security ----------------------------#
     def _test_basic_security(self, endpoint: str) -> None:
         try:
             r = self.session.get(endpoint, timeout=(3, self.timeout), allow_redirects=False)
         except Exception as e:
-            self._log("Request failed (network/timeout)", endpoint, "Info", extra={"error": str(e)})
+            self._log('Request failed (network/timeout)', endpoint, 'Info', extra={'error': str(e)})
             return
-
         status = r.status_code
-        ctype = (r.headers.get("Content-Type") or "").lower()
-        is_textual = ("application/json" in ctype) or ctype.startswith("text/") or ("application/xml" in ctype) or ("application/javascript" in ctype)
-
+        ctype = (r.headers.get('Content-Type') or '').lower()
+        is_textual = 'application/json' in ctype or ctype.startswith('text/') or 'application/xml' in ctype or ('application/javascript' in ctype)
         if 200 <= status < 300:
             return
-
         if status in {401, 403}:
-            self._log("Auth required / forbidden (expected)", endpoint, "Info", response=r)
+            self._log('Auth required / forbidden (expected)', endpoint, 'Info', response=r)
             return
-
         if status in {404}:
-            self._log("Not found (expected)", endpoint, "Info", response=r)
+            self._log('Not found (expected)', endpoint, 'Info', response=r)
             return
-
         if status in {405}:
-            allow = r.headers.get("Allow")
-            self._log("Method not allowed (use correct verb)", endpoint, "Info", extra={"allow": allow} if allow else None, response=r)
+            allow = r.headers.get('Allow')
+            self._log('Method not allowed (use correct verb)', endpoint, 'Info', extra={'allow': allow} if allow else None, response=r)
             return
-
         if status in {422}:
-            self._log("Unprocessable entity (expected validation)", endpoint, "Info", response=r)
+            self._log('Unprocessable entity (expected validation)', endpoint, 'Info', response=r)
             return
-
         if 300 <= status < 400:
-            loc = r.headers.get("Location")
-            self._log("Redirect response", endpoint, "Info", extra={"location": loc} if loc else None, response=r)
+            loc = r.headers.get('Location')
+            self._log('Redirect response', endpoint, 'Info', extra={'location': loc} if loc else None, response=r)
             return
-
         if status >= 500:
-            self._log("Server error (5xx) observed", endpoint, "Info", extra={"content_type": ctype} if ctype else None, response=r)
+            self._log('Server error (5xx) observed', endpoint, 'Info', extra={'content_type': ctype} if ctype else None, response=r)
             return
-
         if 400 <= status < 500:
-            self._log("Client error without evidence", endpoint, "Info", response=r)
+            self._log('Client error without evidence', endpoint, 'Info', response=r)
             return
+        self._log('Unexpected response status', endpoint, 'Info', response=r)
 
-        self._log("Unexpected response status", endpoint, "Info", response=r)
-
-
-
-    # ----------------------- Funtion _test_crlf_injection ----------------------------#
     def _test_crlf_injection(self, endpoint: str) -> None:
         if stop_requested.is_set():
             return
@@ -802,7 +897,6 @@ class SafeConsumptionAuditor:
             variants = base_variants + extra_variants
             params_to_try = ['q', 'search', 'redirect', 'url', 'return', 'next']
 
-            # ----------------------- Funtion _all_headers ----------------------------#
             def _all_headers(resp: requests.Response) -> List[Tuple[str, str]]:
                 try:
                     return _headers_to_list(resp.raw.headers)
@@ -843,20 +937,17 @@ class SafeConsumptionAuditor:
         except Exception as e:
             self._log('CRLF test setup failed', endpoint, 'Medium', extra={'error': str(e)})
 
-    # ----------------------- Funtion _test_ssrf ----------------------------#
     def _test_ssrf(self, endpoint: str) -> None:
         return
 
-    # ----------------------- Funtion _is_ssrf_successful ----------------------------#
     def _is_ssrf_successful(self, response: requests.Response, payload: str) -> bool:
         return
-        
-    # ----------------------- Funtion generate_random_id ----------------------------#
+
     @staticmethod
+    #================funtion generate_random_id Utility: random ID ##########
     def generate_random_id(length: int=8) -> str:
         return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length))
 
-    # ----------------------- Funtion _test_graphql_introspection ----------------------------#
     def _test_graphql_introspection(self, endpoint: str) -> None:
         if stop_requested.is_set():
             return
@@ -875,7 +966,6 @@ class SafeConsumptionAuditor:
         except Exception as e:
             self._log('GraphQL test failed', endpoint, 'Info', extra={'error': str(e)})
 
-    # ----------------------- Funtion _test_hpp ----------------------------#
     def _test_hpp(self, endpoint: str) -> None:
         if stop_requested.is_set():
             return
@@ -907,7 +997,67 @@ class SafeConsumptionAuditor:
         except Exception as e:
             self._log('HPP test setup failed', endpoint, 'Info', extra={'error': str(e)})
 
-    # ----------------------- Funtion _test_docker_api ----------------------------#
+    def _test_directory_traversal(self, endpoint: str) -> None:
+        if stop_requested.is_set():
+            return
+        try:
+            parsed = urlparse.urlparse(endpoint)
+            domain = parsed.netloc or parsed.hostname or ''
+            repl_index = int(os.getenv('APISCAN_TRAV_REPLACE_INDEX', '-2'))
+            ins_before = int(os.getenv('APISCAN_TRAV_INSERT_BEFORE_INDEX', '-1'))
+            max_dot = int(os.getenv('APISCAN_TRAV_MAX_DOT', '4'))
+            max_ddot = int(os.getenv('APISCAN_TRAV_MAX_DDOT', '4'))
+            max_ellipsis = int(os.getenv('APISCAN_TRAV_MAX_ELLIPSIS', '4'))
+            rep_variants = build_traversal_variants_segment_replace(endpoint, repl_index, max_dot, max_ddot, max_ellipsis)
+            ins_variants = build_traversal_variants_insert_between(endpoint, ins_before, max_dot, max_ddot, max_ellipsis)
+            if self.fast_mode:
+                rep_variants = rep_variants[:min(6, len(rep_variants))]
+                ins_variants = ins_variants[:min(6, len(ins_variants))]
+            extra = []
+            for v in rep_variants + ins_variants:
+                pv = v if v.endswith('/') else v + '/'
+                extra.extend([pv + 'etc/passwd', pv + 'WEB-INF/web.xml', pv + 'index.php'])
+            sigs = ['Index of /', '<title>Index of', 'Parent Directory', 'Directory listing for', 'Directory of ', 'root:x:0:0:', '/etc/passwd', 'bin:x:', 'boot.ini', ':\\Windows\\', 'file not found', 'No such file or directory']
+
+            #================funtion looks_interesting Looks Interesting ##########
+            def looks_interesting(text: str) -> bool:
+                if not text:
+                    return False
+                low = text.lower()
+                return any((s.lower() in low for s in sigs))
+
+            #================funtion do_req Do Req ##########
+            def do_req(url, label):
+                try:
+                    self._throttle(domain)
+                    r = self.session.get(url, timeout=(3, self.timeout), allow_redirects=False)
+                    body = r.text or ''
+                    if r.status_code in (200, 206, 401, 403) and looks_interesting(body):
+                        self._log(f'Directory traversal ({label})', url, 'High', response=r, extra={'vector':'dirtrav','base_endpoint': endpoint})
+                    elif r.status_code in (200, 206):
+                        self._log(f'Directory traversal ({label})', url, 'Medium', response=r, extra={'vector':'dirtrav','base_endpoint': endpoint})
+                    elif r.status_code in (301, 302, 307, 308, 401, 403):
+                        self._log(f'Directory traversal ({label})', url, 'Low', response=r, extra={'vector':'dirtrav','base_endpoint': endpoint})
+                except Exception as e:
+                    self._log('Directory traversal request error', url, 'Info', extra={'error': str(e),'vector':'dirtrav','base_endpoint': endpoint})
+            variants = [('segment replace', u) for u in rep_variants] + [('segment insert', u) for u in ins_variants]
+            variants += [('suffix', u) for u in extra]
+            workers = min(16, max(1, len(variants)))
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = []
+                for label, u in variants:
+                    if stop_requested.is_set():
+                        break
+                    futures.append(executor.submit(do_req, u, label))
+                for f in concurrent.futures.as_completed(futures):
+                    try:
+                        f.result()
+                    except Exception:
+                        pass
+        except Exception as e:
+            self._log('Directory traversal test setup failed', endpoint, 'Info', extra={'error': str(e),'vector':'dirtrav','base_endpoint': endpoint})
+
     def _test_docker_api(self, endpoint: str) -> None:
         if stop_requested.is_set():
             return
@@ -923,7 +1073,6 @@ class SafeConsumptionAuditor:
         except Exception as e:
             self._log('Docker test failed', f'http://{host}:2375/version', 'Info', extra={'error': str(e)})
 
-    # ----------------------- Funtion _test_kubernetes_api ----------------------------#
     def _test_kubernetes_api(self, endpoint: str) -> None:
         if stop_requested.is_set():
             return
@@ -946,7 +1095,6 @@ class SafeConsumptionAuditor:
         except Exception as e:
             self._log('Kubernetes test setup failed', endpoint, 'Info', extra={'error': str(e)})
 
-    # ----------------------- Funtion _test_sensitive_data_exposure ----------------------------#
     def _test_sensitive_data_exposure(self, endpoint: str) -> None:
         if stop_requested.is_set():
             return
@@ -963,9 +1111,9 @@ class SafeConsumptionAuditor:
         except Exception as e:
             self._log('Sensitive data test failed', endpoint, 'Info', extra={'error': str(e), 'status_code': 0})
 
-    # ----------------------- Funtion test_endpoints ----------------------------#
+    #================funtion test_endpoints Run Safe Consumption test suite ##########
     def test_endpoints(self, endpoints: List[str]) -> List[Issue]:
-        MAX_WORKERS = min(128, max(16, (os.cpu_count() or 1) * 16))
+        MAX_WORKERS = self.max_workers
         print(f'{Fore.CYAN}[INFO] Starting full scan with {MAX_WORKERS} workers - Perry Mertens pamsniffer@gmail.com 2025 (C) {Style.RESET_ALL}')
         global stop_requested
         stop_requested.clear()
@@ -988,7 +1136,7 @@ class SafeConsumptionAuditor:
                         pbar.update(1)
         if stop_requested.is_set():
             return self.issues
-        num_core_tests = 7
+        num_core_tests = 8
         tests_per_endpoint = num_core_tests + len(self.INJECTION_PAYLOADS)
         total_tasks = len(reachable_endpoints) * tests_per_endpoint
         with tqdm(total=total_tasks, desc=f'Scanning endpoints ({len(reachable_endpoints)})') as pbar:
@@ -998,6 +1146,8 @@ class SafeConsumptionAuditor:
                     if stop_requested.is_set():
                         break
                     test_fns = [partial(self._test_basic_security, ep), partial(self._test_crlf_injection, ep), partial(self._test_hpp, ep), partial(self._test_sensitive_data_exposure, ep), partial(self._test_graphql_introspection, ep), partial(self._test_header_manipulation, ep)]
+                    if hasattr(self, '_test_directory_traversal'):
+                        test_fns.append(partial(self._test_directory_traversal, ep))
                     for t in self.INJECTION_PAYLOADS:
                         test_fns.append(partial(self._run_injection_tests_parallel, ep, t))
                     for fn in test_fns:
@@ -1018,9 +1168,19 @@ class SafeConsumptionAuditor:
                     finally:
                         pbar.update(1)
         print(f'{Fore.CYAN}[INFO] Scan completed. Found {len(self.issues)} issues.{Style.RESET_ALL}')
+        try:
+            summary = self.counts_by_category(include_info=False)
+            print(f'{Fore.CYAN}[SUMMARY] Findings by category (actionable):{Style.RESET_ALL}')
+            for k, v in summary.items():
+                print(f'  - {k}: {v}')
+            summary_all = self.counts_by_category(include_info=True)
+            print(f'{Fore.CYAN}[SUMMARY] Findings by category (all severities):{Style.RESET_ALL}')
+            for k, v in summary_all.items():
+                print(f'  - {k}: {v}')
+        except Exception:
+            pass
         return self.issues
 
-    # ----------------------- Funtion _has_sql_evidence ----------------------------#
     def _has_sql_evidence(self, body: str) -> bool:
         low = (body or '').lower()
         if any((k in low for k in self.SQL_ENGINE_MARKERS)):
@@ -1033,7 +1193,6 @@ class SafeConsumptionAuditor:
                 return True
         return False
 
-    # ----------------------- Funtion _run_injection_tests_parallel ----------------------------#
     def _run_injection_tests_parallel(self, endpoint: str, test_type: str) -> None:
         if stop_requested.is_set():
             return
@@ -1067,7 +1226,6 @@ class SafeConsumptionAuditor:
                 except Exception:
                     pass
 
-    # ----------------------- Funtion _is_endpoint_reachable ----------------------------#
     def _is_endpoint_reachable(self, endpoint: str) -> bool:
         try:
             domain = urlparse.urlparse(endpoint).netloc or ''
@@ -1080,7 +1238,15 @@ class SafeConsumptionAuditor:
         except requests.RequestException:
             return False
 
-    # ----------------------- Funtion _filter_issues ----------------------------#
+    
+        # Negative evidence phrases that frequently show up for benign NoSQL 'not found' outcomes.
+        # These should not, on their own, be treated as NoSQL injection evidence.
+        NOSQL_NEGATIVE_PATTERNS = (
+            'mongo: no documents in result',
+            'no documents in result',
+            'document not found',
+            'no such document',
+        )
     def _filter_issues(self) -> list[dict]:
         cleaned, seen = ([], set())
         IGNORE_TIMEOUTS = bool(getattr(self, 'IGNORE_NETWORK_TIMEOUTS', True))
@@ -1116,7 +1282,6 @@ class SafeConsumptionAuditor:
                 except Exception:
                     hdrs_map = {}
 
-            # ----------------------- Funtion _h ----------------------------#
             def _h(name: str) -> str:
                 return (hdrs_map.get(name) or hdrs_map.get(name.title()) or '').lower()
             ctype = _h('Content-Type')
@@ -1170,11 +1335,9 @@ class SafeConsumptionAuditor:
         self._dedupe_issues()
         return self.issues
 
-    # ----------------------- Funtion _filtered ----------------------------#
     def _filtered(self) -> list[dict]:
         return self._filter_issues()
 
-    # ----------------------- Funtion _looks_like_secret ----------------------------#
     def _looks_like_secret(self, text: str) -> bool:
         if not text:
             return False
@@ -1184,7 +1347,6 @@ class SafeConsumptionAuditor:
         prefixes = ('AKIA', 'ASIA', 'sk_live_', 'sk_test_', 'xoxb-', 'xoxp-', 'ghp_', 'gho_', 'ghu_', 'eyJ')
         has_prefix = any((p in t for p in prefixes))
 
-        # ----------------------- Funtion _entropy ----------------------------#
         def _entropy(s: str) -> float:
             from math import log2
             if not s:
@@ -1197,34 +1359,83 @@ class SafeConsumptionAuditor:
         high_entropy = any((_entropy(c) >= 3.0 for c in candidates if len(c) >= 24))
         return bool(candidates) or has_prefix or high_entropy
 
-    # ----------------------- Funtion generate_report ----------------------------#
+    def _category_of_issue(self, text: str) -> str:
+        t = (text or '').lower()
+        if 'sql injection' in t or 'sqli' in t:
+            return 'SQLi'
+        if 'nosql' in t:
+            return 'NoSQLi'
+        if 'directory traversal' in t:
+            return 'Directory Traversal'
+        if 'crlf' in t:
+            return 'CRLF'
+        if 'hpp' in t:
+            return 'HPP'
+        if 'sensitive data exposure' in t:
+            return 'Sensitive Data Exposure'
+        if 'graphql introspection' in t:
+            return 'GraphQL'
+        if 'host header' in t:
+            return 'Header Manipulation'
+        if 'access control bypass' in t:
+            return 'Access Control'
+        if 'cors' in t:
+            return 'CORS'
+        if 'docker remote api' in t:
+            return 'Docker API'
+        if 'kubernetes api' in t:
+            return 'Kubernetes API'
+        if 'smuggling' in t:
+            return 'Request Smuggling'
+        if 'xss' in t:
+            return 'XSS'
+        if 'open redirect' in t:
+            return 'Open Redirect'
+        if 'server error without sql evidence' in t:
+            return 'Server Errors'
+        if 'basic auth' in t or 'not found' in t or 'method not allowed' in t:
+            return 'Baseline'
+        return 'Other'
+
+    #================funtion counts_by_category Counts By Category ##########
+    def counts_by_category(self, include_info: bool=False) -> dict:
+        out = {}
+        for f in self.issues:
+            sev = str(f.get('severity', '')).lower()
+            if not include_info and sev == 'info':
+                continue
+            c = self._category_of_issue(f.get('issue', ''))
+            out[c] = out.get(c, 0) + 1
+        return dict(sorted(out.items(), key=lambda kv: kv[0].lower()))
+
+    #================funtion generate_report Generate Report ##########
     def generate_report(self) -> str:
         self._filter_issues()
         gen = ReportGenerator(issues=self.issues, scanner='SafeConsumption (API10)', base_url=self.base_url)
         return gen.generate_html()
 
-    # ----------------------- Funtion save_report ----------------------------#
+    #================funtion save_report Save Report ##########
     def save_report(self, path: str, fmt: str='html') -> None:
         ReportGenerator(issues=self._filter_issues(), scanner='SafeConsumption (API10)', base_url=self.base_url).save(path, fmt=fmt)
 
-    # ----------------------- Funtion xml_endpoints_from_openapi ----------------------------#
     @staticmethod
-    def xml_endpoints_from_openapi(spec: dict, base_url: str, sec_cfg: "OASSecurityConfig | None" = None) -> list[str]:
-        if not globals().get("_HAS_OAS_UNIVERSAL", False):
-            raise RuntimeError("openapi_universal is not available")
+    #================funtion xml_endpoints_from_openapi Xml Endpoints From Openapi ##########
+    def xml_endpoints_from_openapi(spec: dict, base_url: str, sec_cfg: 'OASSecurityConfig | None'=None) -> list[str]:
+        if not globals().get('_HAS_OAS_UNIVERSAL', False):
+            raise RuntimeError('openapi_universal is not available')
         eps: set[str] = set()
         for op in oas_iter_ops(spec):
-            rb = op.get("requestBody") or {}
-            content = (rb.get("content") or {}) if isinstance(rb, dict) else {}
+            rb = op.get('requestBody') or {}
+            content = rb.get('content') or {} if isinstance(rb, dict) else {}
             cts = {ct.lower() for ct in content.keys()} if isinstance(content, dict) else set()
-            accepts_xml = any(ct in cts for ct in ("application/xml", "text/xml", "application/soap+xml"))
+            accepts_xml = any((ct in cts for ct in ('application/xml', 'text/xml', 'application/soap+xml')))
             if not accepts_xml:
                 continue
             try:
                 req = oas_build_request(spec, base_url, op, sec_cfg)
-                url = req.get("url")
+                url = req.get('url')
                 if isinstance(url, str) and url:
-                    eps.add(url.rstrip("/"))
+                    eps.add(url.rstrip('/'))
             except Exception:
                 continue
         return sorted(eps)

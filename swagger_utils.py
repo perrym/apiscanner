@@ -1,9 +1,9 @@
-##############################################
-# APISCAN - API Security Scanner   2025      #
-# Licensed under the MIT License             #
-# Author: Perry Mertens pamsniffer@gmail.com #
-##############################################                                              
-                                           
+########################################################
+# APISCAN - API Security Scanner                       #
+# Licensed under the MIT License                       #
+# Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
+# version 2.2  2-11--2025                             #
+########################################################                                            
 from __future__ import annotations
 from typing import Any, Optional, Dict, List
 from urllib.parse import urljoin

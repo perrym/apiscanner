@@ -1,9 +1,9 @@
-
-##################################
-# APISCAN - API Security Scanner #
-# Licensed under the MIT License #
-# Author: Perry Mertens, 2025(c) #
-##################################                        
+########################################################
+# APISCAN - API Security Scanner                       #
+# Licensed under the MIT License                       #
+# Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
+# version 2.2  2-11--2025                              #
+########################################################                                                        
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Set
@@ -33,6 +33,7 @@ class SecurityConfig:
 HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
 
 
+#================funtion _infer_base_url_from_spec infer base URL from OpenAPI/Swagger servers/host ##########
 def _infer_base_url_from_spec(spec: Dict[str, Any]) -> str:
     servers = (spec or {}).get("servers") or []
     for s in servers:
@@ -50,6 +51,7 @@ def _infer_base_url_from_spec(spec: Dict[str, Any]) -> str:
     return ""
 
 
+#================funtion _coerce_list coerce value to list ##########
 def _coerce_list(x: Any) -> List[Any]:
     if x is None:
         return []
@@ -58,6 +60,7 @@ def _coerce_list(x: Any) -> List[Any]:
     return [x]
 
 
+#================funtion _iter_path_items iterate path items from spec ##########
 def _iter_path_items(spec: Dict[str, Any]) -> Iterable[Tuple[str, Dict[str, Any]]]:
     paths = spec.get("paths") or {}
     for p, item in paths.items():
@@ -66,6 +69,7 @@ def _iter_path_items(spec: Dict[str, Any]) -> Iterable[Tuple[str, Dict[str, Any]
         yield p, item
 
 
+#================funtion _merge_parameters merge path-level and op-level parameters ##########
 def _merge_parameters(path_level: List[Dict[str, Any]], op_level: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     merged: List[Dict[str, Any]] = []
     seen = set()
@@ -80,6 +84,7 @@ def _merge_parameters(path_level: List[Dict[str, Any]], op_level: List[Dict[str,
     return merged
 
 
+#================funtion _swagger2_request_body_from_params convert Swagger 2 params to requestBody ##########
 def _swagger2_request_body_from_params(params: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not params:
         return None
@@ -106,7 +111,8 @@ def _swagger2_request_body_from_params(params: List[Dict[str, Any]]) -> Optional
     return None
 
                                                                 
-# ----------------------- Funtion iter_operations ----------------------------#
+                                                                               
+#================funtion iter_operations yield normalized operations from spec ##########
 def iter_operations(spec: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
     for path, item in _iter_path_items(spec or {}):
         path_params = _coerce_list(item.get("parameters"))
@@ -135,6 +141,7 @@ def iter_operations(spec: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
             }
 
 
+#================funtion _example_for_type return example value by type/format ##########
 def _example_for_type(t: str, fmt: str = "") -> Any:
     t = (t or "string").lower()
     if t == "string":
@@ -156,6 +163,7 @@ def _example_for_type(t: str, fmt: str = "") -> Any:
     return "test"
 
 
+#================funtion _body_from_schema produce example body from JSON schema ##########
 def _body_from_schema(schema: Dict[str, Any]) -> Any:
     if not isinstance(schema, dict):
         return {}
@@ -183,7 +191,8 @@ def _body_from_schema(schema: Dict[str, Any]) -> Any:
         return [_body_from_schema(item_schema)]
     return _example_for_type(t or "string", schema.get("format", ""))
 
-# ----------------------- Funtion build_request ----------------------------#
+                                                                             
+#================funtion build_request construct HTTP request dict from operation ##########
 def build_request(spec: dict, base_url: str | None, op: dict, cfg: "SecurityConfig | None" = None) -> dict:
     base = (base_url or _infer_base_url_from_spec(spec) or "").strip().rstrip("/")
     if not base or base in ("", "/", "//"):
@@ -200,6 +209,7 @@ def build_request(spec: dict, base_url: str | None, op: dict, cfg: "SecurityConf
     cookies: dict[str, str] = {}
 
              
+    #================funtion _pick_example function ##########
     def _pick_example(p: dict) -> object:
         schema = (p.get("schema") or {})
         if not schema and p.get("type"):
@@ -311,7 +321,7 @@ def build_request(spec: dict, base_url: str | None, op: dict, cfg: "SecurityConf
         req["data"] = data_body
     if files:
         req["files"] = files
-    # apply security config after building request parts
+                                                        
     if cfg is not None:
         try:
             req = apply_security(req, cfg)
@@ -321,7 +331,8 @@ def build_request(spec: dict, base_url: str | None, op: dict, cfg: "SecurityConf
     return req
 
 
-# ----------------------- Funtion apply_security ----------------------------#
+                                                                              
+#================funtion apply_security apply security config to request ##########
 def apply_security(req: Dict[str, Any], cfg: SecurityConfig) -> Dict[str, Any]:
     out = dict(req)
     out.setdefault("headers", {})
@@ -341,7 +352,8 @@ def apply_security(req: Dict[str, Any], cfg: SecurityConfig) -> Dict[str, Any]:
     return out
 
 
-# ----------------------- Funtion load_spec ----------------------------#
+                                                                         
+#================funtion load_spec load JSON/YAML spec and inject base URL ##########
 def load_spec(source, inject_base_url: str | None = None) -> dict:
     import os, json
     from copy import deepcopy

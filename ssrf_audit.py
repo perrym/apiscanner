@@ -1,8 +1,9 @@
-##################################
-# APISCAN - API Security Scanner #
-# Licensed under the MIT License #
-# Author: Perry Mertens 2025(C)  #
-##################################
+########################################################
+# APISCAN - API Security Scanner                       #
+# Licensed under the MIT License                       #
+# Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
+# version 2.2  2-11--2025                              #
+########################################################                                  
 from __future__ import annotations
 
 import base64
@@ -34,6 +35,7 @@ Endpoint = Dict[str, Any]
 Issue = Dict[str, Any]
 
 
+#================funtion _headers_to_list normalize headers to list of tuples ##########
 def _headers_to_list(hdrs):
     if hasattr(hdrs, "getlist"):
         return [(k, v) for k in hdrs for v in hdrs.getlist(k)]
@@ -43,6 +45,7 @@ def _headers_to_list(hdrs):
         return []
 
 
+#================funtion _safe_body safe body extract with size limit ##########
 def _safe_body(resp: Optional[requests.Response], limit: int = 2048) -> str:
     if not resp:
         return ""
@@ -58,6 +61,7 @@ def _safe_body(resp: Optional[requests.Response], limit: int = 2048) -> str:
         return ""
 
 
+#================funtion _abs_url resolve relative path to absolute URL ##########
 def _abs_url(base_url: str, rel: str) -> str:
     if rel.startswith(("http://", "https://")):
         return rel
@@ -65,7 +69,8 @@ def _abs_url(base_url: str, rel: str) -> str:
 
 
 class SSRFConfig:
-    # ----------------------- Funtion __init__ ----------------------------#
+                                                                            
+    #================funtion __init__ initialize configuration or auditor ##########
     def __init__(self):
         self.timeout = 6
         self.max_concurrency = 10
@@ -135,7 +140,8 @@ class SSRFAuditor:
         + OAST_PAYLOADS
         + PROTOCOL_PAYLOADS
     )
-    # ----------------------- Funtion __init__ ----------------------------#
+                                                                            
+    #================funtion __init__ initialize configuration or auditor ##########
     def __init__(
         self,
         *args,
@@ -176,8 +182,9 @@ class SSRFAuditor:
         self._tested_payloads: set[Tuple[str, str]] = set()
     
 
-    # ----------------------- Funtion endpoints_from_swagger ----------------------------#
+                                                                                          
     @staticmethod
+    #================funtion endpoints_from_swagger parse Swagger/OpenAPI to endpoint list ##########
     def endpoints_from_swagger(swagger_path: str | Path, *, default_base: str = "") -> List[Endpoint]:
         try:
             p = Path(swagger_path)
@@ -212,12 +219,14 @@ class SSRFAuditor:
                 out.append(ep)
         return out
 
+    #================funtion _tw tqdm-safe write helper ##########
     def _tw(self, msg: str) -> None:
         if self.show_progress:
             tqdm.write(msg)
         else:
             print(msg)
 
+    #================funtion _pace simple rate limiting between requests ##########
     def _pace(self) -> None:
         with self._lock:
             now = time.perf_counter()
@@ -227,7 +236,8 @@ class SSRFAuditor:
                 time.sleep(wait)
             self._last_ts = time.perf_counter()
 
-    # ----------------------- Funtion _encode_payload ----------------------------#
+                                                                                   
+    #================funtion _encode_payload encode SSRF payload using chosen scheme ##########
     def _encode_payload(self, payload: str, encoding_type: str = "default") -> str:
         if encoding_type == "double_url":
             return quote_plus(quote_plus(payload))
@@ -240,7 +250,8 @@ class SSRFAuditor:
         else:
             return quote_plus(payload)
 
-    # ----------------------- Funtion test_endpoints ----------------------------#
+                                                                                  
+    #================funtion test_endpoints run SSRF scans across endpoints ##########
     def test_endpoints(self, endpoints: List[Endpoint]) -> List[Issue]:
         self._issues.clear()
         with ThreadPoolExecutor(max_workers=self.concurrency) as ex:
@@ -253,7 +264,8 @@ class SSRFAuditor:
                     pass
         return self._issues
 
-    # ----------------------- Funtion _scan_endpoint ----------------------------#
+                                                                                  
+    #================funtion _scan_endpoint enumerate params and dispatch probes ##########
     def _scan_endpoint(self, ep: Endpoint) -> None:
         method = (ep.get("method") or "GET").upper()
         path = ep.get("path") or ""
@@ -287,7 +299,8 @@ class SSRFAuditor:
                         encoded_payload = self._encode_payload(payload, encoding)
                         self._probe_params(ep, url_base, method, param, encoded_payload, encoding)
 
-    # ----------------------- Funtion _probe_params ----------------------------#
+                                                                                 
+    #================funtion _probe_params send probes in query, body, headers, and path ##########
     def _probe_params(
         self,
         ep: Endpoint,
@@ -351,7 +364,8 @@ class SSRFAuditor:
             path_url = base_url.replace(f"{{{param}}}", payload)
             self._probe(ep, path_url, method, payload=payload, param=param, encoding=encoding)
 
-    # ----------------------- Funtion _probe ----------------------------#
+                                                                          
+    #================funtion _probe perform single HTTP request and analyze response ##########
     def _probe(
         self,
         ep: Endpoint,
@@ -435,7 +449,8 @@ class SSRFAuditor:
                 response_cookies=resp.cookies.get_dict(),
             )
 
-    # ----------------------- Funtion _calculate_confidence ----------------------------#
+                                                                                         
+    #================funtion _calculate_confidence classify confidence based on evidence ##########
     def _calculate_confidence(self, latency: float, response_body: str) -> str:
         if "root:x:" in response_body or "169.254.169.254" in response_body:
             return "High"
@@ -443,7 +458,8 @@ class SSRFAuditor:
             return "Medium"
         return "Low"
 
-    # ----------------------- Funtion _record_issue ----------------------------#
+                                                                                 
+    #================funtion _record_issue record a single SSRF finding ##########
     def _record_issue(
         self,
         ep: Endpoint,
@@ -492,7 +508,8 @@ class SSRFAuditor:
                     )
                 self._issues.append(issue)
 
-    # ----------------------- Funtion _filtered_findings ----------------------------#
+                                                                                      
+    #================funtion _filtered_findings deduplicate issues for reporting ##########
     def _filtered_findings(self) -> List[dict]:
         src = getattr(self, "_issues", getattr(self, "issues", []))
         out: List[dict] = []
@@ -511,7 +528,8 @@ class SSRFAuditor:
             out.append(i)
         return out
 
-    # ----------------------- Funtion generate_report ----------------------------#
+                                                                                   
+    #================funtion generate_report build HTML/Markdown report ##########
     def generate_report(self, fmt: str = "html") -> str:
         issues = self._filtered_findings()
         if not issues:
@@ -530,7 +548,8 @@ class SSRFAuditor:
         gen = ReportGenerator(issues, scanner="SSRF (API8)", base_url=self.base_url)
         return gen.generate_html() if fmt == "html" else gen.generate_markdown()
 
-    # ----------------------- Funtion save_report ----------------------------#
+                                                                               
+    #================funtion save_report persist report to disk ##########
     def save_report(self, path: str, fmt: str = "html") -> None:
         issues = self._filtered_findings()
         ReportGenerator(issues, scanner="SSRF (API8)", base_url=self.base_url).save(path, fmt=fmt)

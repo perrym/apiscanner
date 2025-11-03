@@ -1,11 +1,10 @@
-##################################
-# APISCAN - API Security Scanner #
-# Licensed under the MIT License #
-# Author: Perry Mertens, 2025    #
-##################################
-                                
+########################################################
+# APISCAN - API Security Scanner                       #
+# Licensed under the MIT License                       #
+# Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
+# version 2.2  2-11--2025                              #
+########################################################                                               
 from __future__ import annotations
-
 import json
 import logging
 import random
@@ -39,6 +38,7 @@ Endpoint = Dict[str, Any]
 Finding  = Dict[str, Any]
 
 
+#================funtion _headers_to_list normalize headers mapping to list of tuples ##########
 def _headers_to_list(hdrs):
     if hasattr(hdrs, "getlist"):
         return [(k, v) for k in hdrs for v in hdrs.getlist(k)]
@@ -55,6 +55,7 @@ class MisconfigurationAuditorPro:
     RATE_LIMIT_AFTER_ERRORS = 10
     RANDOM_SLEEP_AFTER_REQUESTS = 50
 
+    #================funtion __init__ initialize configuration and state ##########
     def __init__(
         self,
         *args,
@@ -107,8 +108,84 @@ class MisconfigurationAuditorPro:
 
         self.spec: Dict[str, Any] = swagger_spec or kwargs.get("spec") or {}
 
+        # Set up logging
+        logging.basicConfig(level=logging.DEBUG if debug else logging.INFO)
+        self.logger = logging.getLogger(__name__)
+
+    #================funtion _tw logging wrapper ##########
+    def _tw(self, message: str, level: str = "info") -> None:
+        if self.show_progress:
+            tqdm.write(f"[{level.upper()}] {message}")
+        else:
+            if level == "error":
+                self.logger.error(message)
+            elif level == "warn":
+                self.logger.warning(message)
+            elif level == "debug":
+                self.logger.debug(message)
+            else:
+                self.logger.info(message)
+
+    #================funtion _is_api_json check if response is API JSON ##########
+      
+    def _is_api_json(self, response) -> bool:
+        try:
+            ctype = (response.headers.get("Content-Type", "") or "").lower()
+        except Exception:
+            ctype = ""
+        if "application/json" in ctype or "problem+json" in ctype:
+            return True
+        try:
+            txt = getattr(response, "text", "") or ""
+            if not txt or len(txt) > 4096:
+                return False
+            import json as _json
+            _json.loads(txt)
+            return True
+        except Exception:
+            return False
+
+    #================funtion _stringify_body safe body extraction/pretty-print ##########
+    def _stringify_body(self, response) -> str:
+        try:
+            ctype = (response.headers.get("Content-Type", "") or "").lower()
+        except Exception:
+            ctype = ""
+
+        try:
+            txt = getattr(response, "text", None)
+        except Exception:
+            txt = None
+
+        if txt:
+            if "application/json" in ctype:
+                try:
+                    import json as _json
+                    return _json.dumps(_json.loads(txt), indent=2, ensure_ascii=False)[:4096]
+                except Exception:
+                    return txt[:4096]
+            return txt[:4096]
+
+        try:
+            data = getattr(response, "content", b"") or b""
+        except Exception:
+            data = b""
+
+        if not data:
+            return "[empty body]"
+
+        try:
+            return data[:512].decode("utf-8", errors="replace")
+        except Exception:
+            return f"[binary {len(data)} bytes]"
+
+
+    #================funtion _filter_findings filter findings ##########
+    def _filter_findings(self) -> List[Finding]:
+        return self._filter_issues()
                                                                                
-    # ----------------------- Funtion endpoints_from_spec_universal ----------------------------#
+                                                                                                 
+    #================funtion endpoints_from_spec_universal build endpoints from OpenAPI (universal) ##########
     def endpoints_from_spec_universal(self) -> List[Endpoint]:
         if not self.spec or not (oas_iter_ops and oas_build_request):
             return []
@@ -124,12 +201,14 @@ class MisconfigurationAuditorPro:
                     "operationId": op.get("operationId", ""),
                     "parameters": op.get("parameters", []),
                 })
-        except Exception:
+        except Exception as e:
+            self._tw(f"Error building endpoints from spec: {e}", "error")
             return []
         return endpoints
 
-    # ----------------------- Funtion endpoints_from_swagger ----------------------------#
+                                                                                          
     @classmethod
+    #================funtion endpoints_from_swagger parse Swagger/OpenAPI file to endpoints ##########
     def endpoints_from_swagger(cls, swagger_path: str) -> List[Endpoint]:
         try:
             spec = json.loads(Path(swagger_path).read_text(encoding="utf-8"))
@@ -155,6 +234,7 @@ class MisconfigurationAuditorPro:
         except Exception as e:
             raise ValueError(f"Failed to parse Swagger file: {str(e)}")
 
+    #================funtion _default_payloads return shuffled misconfiguration probe payloads ##########
     def _default_payloads(self) -> Iterable[str]:
         base = [
             "http://127.0.0.1/",
@@ -189,7 +269,9 @@ class MisconfigurationAuditorPro:
         random.shuffle(all_payloads)
         return all_payloads
 
-    # ----------------------- Funtion _build_finding ----------------------------#
+                                                                                  
+    #================funtion _build_finding construct a finding dict from response ##########
+  
     def _build_finding(
         self,
         endpoint: Endpoint,
@@ -199,25 +281,67 @@ class MisconfigurationAuditorPro:
         description: str,
         severity: str,
     ) -> Finding:
+        method_used = str(
+            getattr(getattr(response, "request", None), "method", endpoint.get("method", "GET"))
+        ).upper()
+
+        ctype = (response.headers.get("Content-Type", "") or "").lower()
+        clen = response.headers.get("Content-Length")
+
+        # Get body bytes safely
+        try:
+            body_bytes = bytes(getattr(response, "content", b"") or b"")
+        except Exception:
+            txt = getattr(response, "text", "")
+            enc = getattr(response, "encoding", None) or "utf-8"
+            body_bytes = txt.encode(enc, errors="replace")
+
+        # Decide display
+        if not body_bytes:
+            if method_used in ("HEAD", "OPTIONS") or response.status_code in (204, 304) or (
+                clen is not None and str(clen).strip() == "0"
+            ):
+                body_display = f"<no body> ({method_used} {response.status_code}; Content-Length={clen or 0})"
+            else:
+                body_display = "<empty response body>"
+        else:
+            if ("application/json" in ctype) or ("text/" in ctype) or ("xml" in ctype) or ("javascript" in ctype):
+                if "json" in ctype:
+                    try:
+                        body_display = json.dumps(response.json(), indent=2)[:8192]
+                    except Exception:
+                        enc = getattr(response, "encoding", None) or "utf-8"
+                        body_display = (getattr(response, "text", "") or body_bytes.decode(enc, errors="replace"))[:8192]
+                else:
+                    enc = getattr(response, "encoding", None) or "utf-8"
+                    body_display = (getattr(response, "text", "") or body_bytes.decode(enc, errors="replace"))[:8192]
+            else:
+                hex_preview = body_bytes[:64].hex()
+                body_display = f"[binary {len(body_bytes)} bytes, content-type={ctype}]\nhex-preview: {hex_preview}"
+
+        sample_display = body_display[:500] if body_display is not None else None
+
         return {
-            "name":         f"{endpoint['method']} {endpoint['path']}",
-            "endpoint":     f"{endpoint['method']} {endpoint['path']}",
+            "name": f"{endpoint['method']} {endpoint['path']}",
+            "endpoint": f"{endpoint['method']} {endpoint['path']}",
             "operation_id": endpoint.get("operationId", ""),
-            "payload":      payload,
-            "status_code":  response.status_code,
+            "payload": payload,
+            "status_code": response.status_code,
             "response_time": duration,
-            "description":  description,
-            "severity":     severity,
+            "description": description,
+            "severity": severity,
             "response_headers": _headers_to_list(getattr(response.raw, "headers", {})) or _headers_to_list(response.headers),
-            "response_body":    (response.text[:2048] if getattr(response, "text", None) else ""),
-            "response_body_sample": (response.text[:500] if getattr(response, "text", None) else None),
+            "response_body": body_display,
+            "response_body_sample": sample_display,
             "response_cookies": response.cookies.get_dict(),
-            "request_headers":  _headers_to_list(getattr(getattr(response, "request", None), "headers", {})) if getattr(response, "request", None) else [],
-            "request_body":     getattr(getattr(response, "request", None), "body", None),
-            "request_cookies":  self.session.cookies.get_dict(),
-            "timestamp":        datetime.now().isoformat(),
+            "request_headers": _headers_to_list(getattr(getattr(response, "request", None), "headers", {})) if getattr(response, "request", None) else [],
+            "request_body": getattr(getattr(response, "request", None), "body", None),
+            "request_cookies": self.session.cookies.get_dict(),
+            "timestamp": datetime.now().isoformat(),
         }
 
+
+    #================funtion _enforce_rate_limit throttle outbound requests ##########
     def _enforce_rate_limit(self):
         now = time.time()
         elapsed = now - self._last_request_time
@@ -227,7 +351,8 @@ class MisconfigurationAuditorPro:
         self._last_request_time = time.time()
 
                                                                                
-    # ----------------------- Funtion _test_single_endpoint ----------------------------#
+                                                                                         
+    #================funtion _test_single_endpoint probe one endpoint and run analyzers ##########
     def _test_single_endpoint(self, ep: Endpoint, pbar: Optional[tqdm] = None) -> None:
         try:
             method = ep["method"]
@@ -264,7 +389,7 @@ class MisconfigurationAuditorPro:
                     self._request_counter += 1
                 except requests.RequestException as e:
                     self._error_count += 1
-                    self._tw(f"[ERROR] {m} failed for {method} {path}: {e}", "error")
+                    self._tw(f"{m} failed for {method} {path}: {e}", "error")
                     continue
 
                 if not host_already_reported:
@@ -283,7 +408,7 @@ class MisconfigurationAuditorPro:
                         if f:
                             self._record_finding(f)
                     except Exception as ex:
-                        self._tw(f"[ERROR] Analyzer {analyzer.__name__} on {m} {path}: {ex}", "error")
+                        self._tw(f"Analyzer {analyzer.__name__} on {m} {path}: {ex}", "error")
 
             if method not in ("HEAD", "OPTIONS"):
                 probe_names = getattr(self, "PARAM_PROBE_NAMES", [
@@ -318,20 +443,21 @@ class MisconfigurationAuditorPro:
 
                         except requests.RequestException as e:
                             self._error_count += 1
-                            self._tw(f"[ERROR] Param probe failed ({name}={val}) on {method} {path}: {e}", "error")
+                            self._tw(f"Param probe failed ({name}={val}) on {method} {path}: {e}", "error")
                             if self._error_count >= self.RATE_LIMIT_AFTER_ERRORS:
-                                self._tw("[WARN] Many errors, cooling down 1s", "warn")
+                                self._tw("Many errors, cooling down 1s", "warn")
                                 time.sleep(1.0)
                                 self._error_count = 0
 
         except Exception as e:
-            self._tw(f"[ERROR] Unexpected test error at {ep.get('method')} {ep.get('path')}: {e}", "error")
+            self._tw(f"Unexpected test error at {ep.get('method')} {ep.get('path')}: {e}", "error")
         finally:
             if pbar:
                 pbar.update(1)
 
                                                                                
-    # ----------------------- Funtion _security_header_analyzer ----------------------------#
+                                                                                             
+    #================funtion _security_header_analyzer detect missing security headers ##########
     def _security_header_analyzer(self, ep, payload, resp, dur):
                                                                 
         if self._is_api_json(resp):
@@ -368,7 +494,8 @@ class MisconfigurationAuditorPro:
             "Low",
         )
 
-    # ----------------------- Funtion _cors_analyzer ----------------------------#
+                                                                                  
+    #================funtion _cors_analyzer analyze CORS exposure ##########
     def _cors_analyzer(self, ep, payload, resp, dur):
         hdrs = resp.headers or {}
         acao = (hdrs.get("Access-Control-Allow-Origin", "") or "").strip()
@@ -387,12 +514,14 @@ class MisconfigurationAuditorPro:
         desc = f"ACAO={acao}, ACAC={acac or 'false'}"
         return self._build_finding(ep, payload, resp, dur, desc, sev)
 
-    # ----------------------- Funtion _server_error_analyzer ----------------------------#
+                                                                                          
+    #================funtion _server_error_analyzer flag 5xx server errors ##########
     def _server_error_analyzer(self, ep, payload, resp, dur):
         if 500 <= resp.status_code < 600:
             return self._build_finding(ep, payload, resp, dur, f"{resp.status_code} on baseline/probe", "Medium")
 
-    # ----------------------- Funtion _verbose_error_analyzer ----------------------------#
+                                                                                           
+    #================funtion _verbose_error_analyzer detect verbose error disclosures ##########
     def _verbose_error_analyzer(self, ep, payload, resp, dur):
         body = (resp.text or "")
         low = body.lower()
@@ -400,10 +529,12 @@ class MisconfigurationAuditorPro:
         if any(m in low for m in markers):
             return self._build_finding(ep, payload, resp, dur, "Response body contains implementation stack/error markers", "High")
 
+    #================funtion _http_method_analyzer placeholder for HTTP method analysis ##########
     def _http_method_analyzer(self, ep, payload, resp, dur):
         return None
 
                                                                                
+    #================funtion _record_finding deduplicate and record finding ##########
     def _record_finding(self, finding: Finding) -> None:
         with self._lock:
             key = (finding["endpoint"], finding["description"])
@@ -422,13 +553,15 @@ class MisconfigurationAuditorPro:
                     tqdm.write(f"[ISSUE] {finding['severity']}: {finding['description']} @ {finding['endpoint']}")
 
     
+    #================funtion _title_for compose display title for endpoint ##########
     def _title_for(self, ep: Dict[str, Any], resp: requests.Response) -> str:
         ep_method = str(ep.get("method", "GET")).upper()
         path = ep.get("path") or ""
         return f"{ep_method} {path}"
 
             
-    # ----------------------- Funtion _filter_issues ----------------------------#
+                                                                                  
+    #================funtion _filter_issues filter noise and deduplicate issues ##########
     def _filter_issues(self) -> list[dict]:
         cleaned, seen = ([], set())
 
@@ -481,12 +614,7 @@ class MisconfigurationAuditorPro:
                 if not any(m in body_low for m in VERBOSE_5XX_KEEP):
                     i["severity"] = "Info"
 
-            key = (
-                i.get("endpoint"),
-                i.get("issue"),
-                str(status),
-                str(i.get("description") or "")[:120],
-            )
+            key = (i.get("endpoint"), i.get("description"), str(status), str(i.get("description") or "")[:120],)
             if key in seen:
                 continue
             seen.add(key)
@@ -500,7 +628,8 @@ class MisconfigurationAuditorPro:
         return self.issues
      
    
-    # ----------------------- Funtion test_endpoints ----------------------------#
+                                                                                  
+    #================funtion test_endpoints run scan across endpoints with concurrency ##########
     def test_endpoints(self, endpoints: List[Endpoint]) -> List[Finding]:
         if not endpoints and getattr(self, "spec", None):
             endpoints = self.endpoints_from_spec_universal()
@@ -518,15 +647,17 @@ class MisconfigurationAuditorPro:
 
         return self._filter_issues()
 
-    # ----------------------- Funtion generate_report ----------------------------#
+                                                                                   
+    #================funtion generate_report render report via ReportGenerator ##########
     def generate_report(self, fmt: str = "markdown") -> str:
         scanner = "Enhanced Misconfiguration Auditor (API08)"
-        filtered = self._filter_findings()
+        filtered = self._filter_issues()  # Fixed: was _filter_findings
         gen = ReportGenerator(filtered, scanner=scanner, base_url=self.base_url)
         return gen.generate_markdown() if fmt == "markdown" else gen.generate_json()
 
-    # ----------------------- Funtion save_report ----------------------------#
+                                                                               
+    #================funtion save_report persist report to disk ##########
     def save_report(self, path: str, fmt: str = "markdown"):
         scanner = "Enhanced Misconfiguration Auditor (API08)"
-        filtered = self._filter_findings()
+        filtered = self._filter_issues()
         ReportGenerator(filtered, scanner=scanner, base_url=self.base_url).save(path, fmt=fmt)

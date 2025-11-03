@@ -1,22 +1,22 @@
-# APISCAN OWASP API Security Scanner by Perry Mertens pamsniffer@gmail.com 2025 (c)
+# APISCAN OWASP APIscanner by Perry Mertens pamsniffer@gmail.com 2025 (c)
 <meta content="VvYq2k5BFp5dpIL6JpQhoe90sWEXZTEBbaynlEKCWRE" name="google-site-verification">
 
 ---
 
-**Version:** 2.0 (Release)  
+**Version:** 2.2 (Release)  
 **Author:** Perry Mertens ([pamsniffer@gmail.com](mailto:pamsniffer@gmail.com))  
 **License:** MIT
 
 [![GitHub](https://img.shields.io/badge/GitHub-perrym%2Fapiscanner-0ea5e9?logo=github)](https://github.com/perrym/apiscanner)
 [![Medium](https://img.shields.io/badge/Medium-Article-black?logo=medium)](https://medium.com/@PerryPM/apiscan-a-practical-approach-to-api-security-testing-by-perry-mertens-96b5e676c071)
 
-APISCAN is a free, extensible scanner for the **OWASP API Security Top 10 (2023)**. It understands **OpenAPI/Swagger**, supports **multiauth**, offers a **plan/verify** workflow, **generic sanitizer/rewrites**, and writes **CSV/HTML** artifacts. This is the **generic**, customeragnostic documentation.
+APISCAN is a free, apiscanner for the **OWASP API Security Top 10 (2023)**. It understands **OpenAPI/Swagger**, supports **multiauth**, offers a **plan/verify** workflow, **generic sanitizer/rewrites**, and writes **CSV/HTML** artifacts. This is the **generic**, customeragnostic documentation.
 
 ---
 
 ## Disclaimer
 
-APISCAN is a private and proprietary API security tool, developed independently for internal use and research purposes.  
+APISCAN is a private and proprietary APIscanner , developed independently for internal use and research purposes.  
 It supports OWASP API Security Top 10 (2023) testing, OpenAPI-based analysis, active scanning, and multi-format reporting.  
 Redistribution is not permitted without explicit permission.  
 

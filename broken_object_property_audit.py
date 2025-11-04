@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the MIT License                       #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 2.2  2-11--2025                             #
+# version 2.2  2-11--2025                              #
 ########################################################
 from __future__ import annotations                                     
 import logging
@@ -16,7 +16,13 @@ from typing import List, Dict, Any, Optional, Set, Tuple
 from tqdm import tqdm
 import random
 import string
+import base64
 from report_utils import ReportGenerator
+
+try:
+    import jwt
+except Exception:
+    jwt = None
 from openapi_universal import (
     iter_operations as oas_iter_ops,
     build_request as oas_build_request,
@@ -31,6 +37,191 @@ def _headers_to_list(hdrs):
     return list(hdrs.items())
 
 class ObjectPropertyAuditor:
+
+    def _b64url(self, s: str) -> bytes:
+        if not isinstance(s, str):
+            return b""
+        pad = "=" * (-len(s) % 4)
+        try:
+            return base64.urlsafe_b64decode(s + pad)
+        except Exception:
+            return b""
+
+    def _jwt_segments(self, token: str):
+        parts = token.split(".")
+        return parts if len(parts) == 3 else None
+
+    def _jwt_cheap_checks(self, token: str):
+        parts = self._jwt_segments(token)
+        if not parts:
+            return False, "not a JWS (header.payload.signature)"
+        h_raw = self._b64url(parts[0]).decode("utf-8", "replace") or "{}"
+        try:
+            hdr = json.loads(h_raw)
+        except Exception:
+            hdr = {}
+        alg = str(hdr.get("alg", "")).upper()
+        if alg == "NONE":
+            return False, "alg none"
+        if parts[2] == "" or len(parts[2]) == 0:
+            return False, "empty signature"
+        if not self._b64url(parts[2]):
+            return False, "bad b64 signature"
+        return True, {"alg": alg, "kid": hdr.get("kid")}
+
+    def _jwks(self):
+        if not self.jwks_url or not jwt:
+            return None
+        try:
+            import time, requests as _rq
+            if not self._jwks_cache or (time.time() - self._jwks_loaded_at) > 300:
+                resp = _rq.get(self.jwks_url, timeout=5)
+                resp.raise_for_status()
+                self._jwks_cache = resp.json()
+                self._jwks_loaded_at = time.time()
+            return self._jwks_cache
+        except Exception:
+            return None
+
+    def _get_key_for_kid(self, kid: str):
+        if not jwt:
+            return None
+        jwks = self._jwks()
+        if not jwks:
+            return None
+        try:
+            for k in jwks.get("keys", []):
+                if k.get("kid") == kid:
+                    return jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(k))
+        except Exception:
+            return None
+        return None
+
+    def _verify_jwt(self, token: str, alg: str, kid: Optional[str]):
+        if not self.jwt_verify:
+            return None, "verification disabled"
+        if not jwt:
+            return None, "PyJWT not available"
+        try:
+            if alg.startswith("HS"):
+                if not self.jwt_shared_secret:
+                    return None, "no shared secret"
+                claims = jwt.decode(
+                    token,
+                    key=self.jwt_shared_secret,
+                    algorithms=[alg],
+                    audience=self.jwt_expected_audience,
+                    issuer=self.jwt_expected_issuer,
+                    options={"require": ["exp"], "verify_signature": True},
+                    leeway=60,
+                )
+                return True, claims
+            else:
+                key = self._get_key_for_kid(kid) if kid else None
+                if not key:
+                    # allow alg-only verification if single key issuer (rare)
+                    jwks = self._jwks()
+                    if jwks and jwks.get("keys"):
+                        try:
+                            key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(jwks["keys"][0]))
+                        except Exception:
+                            key = None
+                if not key:
+                    return None, "signing key not found"
+                claims = jwt.decode(
+                    token,
+                    key=key,
+                    algorithms=[alg],
+                    audience=self.jwt_expected_audience,
+                    issuer=self.jwt_expected_issuer,
+                    options={"require": ["exp"], "verify_signature": True},
+                    leeway=60,
+                )
+                return True, claims
+        except jwt.ExpiredSignatureError:
+            return False, "expired"
+        except jwt.InvalidAudienceError:
+            return False, "aud mismatch"
+        except jwt.InvalidIssuerError:
+            return False, "iss mismatch"
+        except Exception as e:
+            return False, str(e)
+
+    def _extract_jwts_from_text(self, text: str):
+        pat = self.SENSITIVE_PATTERNS.get("jwt")
+        if not pat:
+            return []
+        tokens = re.findall(pat, text or "", flags=re.IGNORECASE)
+        # normalize: regex may capture partials; filter plausible lengths
+        out = []
+        for tok in tokens:
+            tok = tok.strip()
+            if tok.count(".") == 2 and len(tok) > 80:
+                out.append(tok)
+        # dedupe
+        return list(dict.fromkeys(out))
+
+    def _scan_data_for_jwts(self, data):
+        found = []
+        def _walk(x):
+            if isinstance(x, dict):
+                for v in x.values():
+                    _walk(v)
+            elif isinstance(x, list):
+                for i in x: _walk(i)
+            elif isinstance(x, str):
+                for t in self._extract_jwts_from_text(x):
+                    found.append(t)
+        _walk(data)
+        return list(dict.fromkeys(found))
+
+    def _check_and_log_jwt(self, token: str, endpoint: dict, response):
+        ok, meta = self._jwt_cheap_checks(token)
+        if not ok:
+            self._log_issue(
+                endpoint["url"],
+                "JWT Missing/Invalid Signature",
+                f"{meta}",
+                "High",
+                {"token_sample": token[:32] + "..."},
+                response=response,
+                request_payload=None
+            )
+            return
+        alg = meta.get("alg", "")
+        kid = meta.get("kid")
+        if self.jwt_expected_algs and alg not in self.jwt_expected_algs:
+            self._log_issue(
+                endpoint["url"],
+                "JWT Unexpected alg",
+                f"alg={alg} not in {self.jwt_expected_algs}",
+                "Medium",
+                {"token_alg": alg},
+                response=response,
+                request_payload=None
+            )
+            return
+        verified, detail = self._verify_jwt(token, alg, kid)
+        if verified is False:
+            self._log_issue(
+                endpoint["url"],
+                "JWT Invalid Signature",
+                str(detail),
+                "High",
+                {"token_alg": alg, "kid": kid},
+                response=response,
+                request_payload=None
+            )
+        elif verified is None and self.jwt_verify:
+            self._log_issue(
+                endpoint["url"],
+                "JWT Verification Skipped",
+                str(detail),
+                "Low",
+                {"token_alg": alg, "kid": kid},
+                response=response,
+                request_payload=None
+            )
                                             
     SENSITIVE_FIELDS = [
         "password", "token", "secret", "api_key", "credit_card", "ssn",
@@ -53,7 +244,7 @@ class ObjectPropertyAuditor:
 
                                                                              
     #================funtion __init__ initialize auditor and index OpenAPI ops ##########
-    def __init__(self, base_url: str, session: Optional[requests.Session] = None, *, show_progress: bool = True, test_user_id: Optional[str] = None, test_admin_id: Optional[str] = None, swagger_spec: Optional[dict] = None, security_config: Optional[OASSecurityConfig] = None):
+    def __init__(self, base_url: str, session: Optional[requests.Session] = None, *, show_progress: bool = True, test_user_id: Optional[str] = None, test_admin_id: Optional[str] = None, swagger_spec: Optional[dict] = None, security_config: Optional[OASSecurityConfig] = None, jwt_verify: bool = False, jwks_url: Optional[str] = None, jwt_expected_issuer: Optional[str] = None, jwt_expected_audience: Optional[str] = None, jwt_expected_algs: Optional[list] = None, jwt_shared_secret: Optional[str] = None):
         self.base_url = base_url.rstrip("/")
         self.session = session or requests.Session()
         self.issues: List[Dict[str, Any]] = []
@@ -62,7 +253,15 @@ class ObjectPropertyAuditor:
         self.test_admin_id = test_admin_id or "9999"
         self.tested_endpoints: Set[str] = set()
 
-    
+        self.jwt_verify = bool(jwt_verify)
+        self.jwks_url = jwks_url
+        self.jwt_expected_issuer = jwt_expected_issuer
+        self.jwt_expected_audience = jwt_expected_audience
+        self.jwt_expected_algs = jwt_expected_algs or ["RS256", "ES256", "HS256"]
+        self.jwt_shared_secret = jwt_shared_secret
+        self._jwks_cache = None
+        self._jwks_loaded_at = 0.0
+
         self.swagger_spec = swagger_spec
         self.security_config = security_config
         self._op_index = {}
@@ -214,6 +413,7 @@ class ObjectPropertyAuditor:
 
                                                                                         
     #================funtion _test_data_exposure detect sensitive field or pattern exposure ##########
+
     def _test_data_exposure(self, endpoint):
         url = self._build_url(endpoint["url"], endpoint.get("test_object", {}))
         try:
@@ -222,12 +422,21 @@ class ObjectPropertyAuditor:
                 data = self._safe_json(response)
                 sensitive_fields = []
                 pattern_matches = []
-                
                 if isinstance(data, (dict, list)):
                     sensitive_fields = self._find_sensitive_fields(data)
                     pattern_matches = self._find_pattern_exposure(response.text)
-                
                 if sensitive_fields or pattern_matches:
+                    # JWT checks in body text and JSON (best-effort)
+                    try:
+                        tokens = []
+                        if isinstance(data, (dict, list)):
+                            tokens.extend(self._scan_data_for_jwts(data))
+                        tokens.extend(self._extract_jwts_from_text(response.text or ""))
+                        tokens = list(dict.fromkeys(tokens))
+                        for tok in tokens[:5]:
+                            self._check_and_log_jwt(tok, endpoint, response)
+                    except Exception:
+                        pass
                     self._log_issue(
                         endpoint["url"], "Excessive Data Exposure",
                         f"Sensitive fields in response: {', '.join(sensitive_fields)}. "
@@ -238,15 +447,13 @@ class ObjectPropertyAuditor:
                             "pattern_matches": pattern_matches,
                             "response_sample": data
                         },
-                        response=response, 
+                        response=response,
                         request_payload=None
                     )
         except Exception as e:
             logging.error(f"Error testing data exposure on {url}: {e}")
-            self._log_issue(endpoint["url"], "Test Error", str(e), "Low")
 
-                                                                                          
-    #================funtion _test_mass_assignment attempt to set restricted fields ##########
+
     def _test_mass_assignment(self, endpoint):
         if endpoint["method"] not in ["POST", "PUT", "PATCH"]:
             return
@@ -605,6 +812,17 @@ class ObjectPropertyAuditor:
     #================funtion _send_request build and send HTTP request (OAS aware) ##########
     def _send_request(self, method, url, endpoint=None, **kwargs):
         headers = kwargs.pop('headers', {}) or {}
+
+        # Inspect Authorization headers for Bearer JWTs when present (no logging here; verification happens on responses)
+        try:
+            hdrs_lower = {k.lower(): v for k, v in headers.items()} if headers else {}
+            auth = hdrs_lower.get("authorization") or ""
+            if auth.lower().startswith("bearer "):
+                # no-op here; we verify tokens that come back in responses to avoid leaking secrets
+                pass
+        except Exception:
+            pass
+
         try:
             if self.swagger_spec and isinstance(endpoint, dict) and endpoint.get('op'):
                 try:

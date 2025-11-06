@@ -396,34 +396,87 @@ class BOLAAuditor:
 
     #================funtion _generate_test_values generate test cases for parameters ##########
     def _generate_test_values(self, parameters: List[Dict[str, Any]]) -> Dict[str, Dict[str, str]]:
-        base_values = {
-            "valid": "1",
-            "other_user": "2",
-            "string": "testuser",
-            "empty": "",
-            "null": "null",
-            "urlenc_null": "%00",
-            "urlenc_dotdot": "%2e%2e%2f",
-            "unicode_homoglyph": "\\u13B0\\u13B1",
-            "sqlish": '" OR "1"="1"--',
-            "non_existent": "99999",
-            "random_uuid": "550e8400-e29b-41d4-a716-446655440000",
-            "admin_user": "admin",
-            "high_value": "1000000"
-        }
-        type_vals = {
-            "integer": {"negative": "-1", "zero": "0", "large": "2147483647"},
-            "string": {"long": "A" * 1000, "special_chars": "!@#$%^&*()"}
-        }
+        seeds = getattr(self, "param_seeds", {}) or {}
+
+        def is_id_like(n: str) -> bool:
+            n = (n or "").lower()
+            return any(k in n for k in ("id", "_id", "uuid", "key", "account", "user", "order"))
+
+        def pick_valid_for(p: dict) -> str:
+            name = p.get("name", "")
+            schema = p.get("schema", {}) or {}
+            fmt = (schema.get("format") or "").lower()
+            ptype = (schema.get("type") or "string").lower()
+            if seeds.get(name):
+                return str(seeds[name][0])
+            for k in ("example", "default"):
+                if schema.get(k) not in (None, ""):
+                    return str(schema[k])
+            if schema.get("enum"):
+                return str(schema["enum"][0])
+            if fmt == "uuid":
+                return "550e8400-e29b-41d4-a716-446655440000"
+            if ptype == "integer":
+                return "1"
+
+            return "testuser"
+        per_param_valid = {p["name"]: pick_valid_for(p) for p in (parameters or [])}
+
+        def as_int(s: str) -> Optional[int]:
+            try:
+                return int(s)
+            except Exception:
+                return None
+
         cases: Dict[str, Dict[str, str]] = {}
-        for n, v in base_values.items():
-            cases[n] = {p["name"]: v for p in parameters}
-        for p in parameters:
-            ptype = p.get("type", "string")
-            if ptype in type_vals:
-                for n, v in type_vals[ptype].items():
-                    cname = f"{ptype}_{n}"
-                    cases[cname] = {q["name"]: (v if q.get("type") == ptype else base_values["valid"]) for q in parameters}
+        cases["valid"] = dict(per_param_valid)
+        other = {}
+        for p in parameters or []:
+            name = p["name"]
+            val = per_param_valid[name]
+            if as_int(val) is not None:
+                other[name] = str(as_int(val) + 1)
+            elif is_id_like(name):
+                other[name] = "other-user"
+            else:
+                other[name] = "testuser2"
+        cases["other_user"] = other
+        nonexist = {}
+        for p in parameters or []:
+            name = p["name"]
+            schema = p.get("schema", {}) or {}
+            fmt = (schema.get("format") or "").lower()
+            if (schema.get("type") or "").lower() == "integer":
+                nonexist[name] = "99999999"
+            elif fmt == "uuid":
+                nonexist[name] = "00000000-0000-0000-0000-000000000000"
+            else:
+                nonexist[name] = "does-not-exist"
+        cases["non_existent"] = nonexist
+        for p in parameters or []:
+            name = p["name"]
+            ptype = (p.get("schema", {}) or {}).get("type", "string").lower()
+            if ptype == "integer":
+                for key, v in {"integer_negative": "-1", "integer_zero": "0", "integer_large": "2147483647"}.items():
+                    c = dict(per_param_valid); c[name] = v; cases[key] = c
+            else:
+                for key, v in {"string_long": "A" * 1000, "string_special": "!@#$%^&*()"}.items():
+                    c = dict(per_param_valid); c[name] = v; cases[key] = c
+        inj_vals = [
+            ("urlenc_null", "%00"),
+            ("urlenc_dotdot", "%2e%2e%2f"),
+            ("unicode_homoglyph", "\\u13B0\\u13B1"),
+            ("sqlish", "\" OR \"1\"=\"1\"--"),
+        ]
+        for label, val in inj_vals:
+            c = dict(per_param_valid)
+            for p in parameters or []:
+                schema = p.get("schema", {}) or {}
+                ptype = (schema.get("type") or "string").lower()
+                if ptype != "integer" and is_id_like(p.get("name","")):
+                    c[p["name"]] = val
+            cases[label] = c
+
         return cases
 
     #================funtion _build_req_from_op construct request from OpenAPI operation ##########
@@ -503,12 +556,18 @@ class BOLAAuditor:
         return results
 
     #================funtion _test_object_access single test case executor for object access ##########
+      
     def _test_object_access(self, endpoint: dict, name: str, vals: dict) -> TestResult:
         method = endpoint["method"]
+
         try:
             req = self._build_req_from_op(method, endpoint["path"])
         except KeyError:
-            req = {"method": method, "url": self._abs_url(endpoint["path"]), "headers": {"User-Agent": "APISecurityScanner/2.1"}}
+            req = {
+                "method": method.upper(),
+                "url": self._abs_url(endpoint["path"]),
+                "headers": {"User-Agent": "APISecurityScanner/2.1"},
+            }
 
         req = self._apply_param_values(req, endpoint, vals)
 
@@ -525,8 +584,14 @@ class BOLAAuditor:
         is_vuln = status_code == 200 and (true_pos or large_body) if status_code != 0 else False
 
         effective_url = getattr(getattr(resp, "request", None), "url", req.get("url"))
-        req_headers = dict(getattr(getattr(resp, "request", None), "headers", req.get("headers", {}))) if resp else dict(req.get("headers", {}))
-        req_body = getattr(getattr(resp, "request", None), "body", None) if resp else (req.get("json") or req.get("data"))
+        req_headers = (
+            dict(getattr(getattr(resp, "request", None), "headers", {}) or {})
+            if resp else dict(req.get("headers", {}))
+        )
+        req_body = (
+            getattr(getattr(resp, "request", None), "body", None)
+            if resp else (req.get("json") or req.get("data"))
+        )
         if isinstance(req_body, (bytes, bytearray)):
             try:
                 req_body = req_body.decode("utf-8", errors="replace")
@@ -557,6 +622,7 @@ class BOLAAuditor:
         )
         tr.fingerprint = self._fingerprint(tr.method, tr.url, tr.status_code, body_text or tr.response_sample)
         return tr
+
 
     #================funtion _sanitize_response redact secrets and trim body sample ##########
     def _sanitize_response(self, text: str, max_length: int = 200) -> str:

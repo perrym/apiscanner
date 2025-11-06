@@ -2,14 +2,17 @@
 Version:2.2 release 3-11-2025
 Author: Perry Mertens pamsniffer@gmail.com
 
-I’m excited to announce the first official release of APISCAN (v2.0) – a private API security tool.
 
 New 
 3-11-2025
-- Directory traversel is working
-- beter error handeling, but still a lot to do. 
-- modules are beter
-
+- The tool isn’t perfect yet, but improves with every version.
+- Directory traversal detection is working.
+- Error handling improved; more work planned.
+- Modules refined and more stable.
+- Ongoing improvements each release, still not feature-complete.
+- Directory traversal checks are now reliable and covered by tests.
+- Error handling is stronger (fewer crashes, clearer messages); further hardening planned.
+- Modules cleaned up and stabilized (fewer side effects, clearer interfaces).
 
 18-10-2025
 - Beter error handeling, but still need some extra work to do, working on a new version that use a sqlite database for all scan results, is now in Beta

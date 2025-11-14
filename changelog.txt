@@ -2,11 +2,13 @@
 Version:2.2 release 3-11-2025
 Author: Perry Mertens pamsniffer@gmail.com
 
+feature
+- working on a new version that include sqlite database.
 
 New 
-3-11-2025
+14-11-2025
 - The tool isn’t perfect yet, but improves with every version.
-- Directory traversal detection is working.
+- Directory traversal detection is working and in the body
 - Error handling improved; more work planned.
 - Modules refined and more stable.
 - Ongoing improvements each release, still not feature-complete.

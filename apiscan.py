@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the MIT License                       #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 2.2  2-11--2025                              #
+# version 2.2  14-11--2025                              #
 ########################################################
 
 """APISCAN is a private and proprietary API security tool, developed independently for internal use and research purposes.
@@ -11,14 +11,11 @@ Redistribution is not permitted without explicit permission.
 Important: Testing with APISCAN is only permitted on systems and APIs for which you have explicit authorization.
 Unauthorized testing is strictly prohibited.
 """
-
 from __future__ import annotations
 try:
     from urllib3.util.retry import Retry
 except Exception:
     Retry = None
-
-
 import argparse
 import builtins
 import json
@@ -35,7 +32,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
 import requests
-import urllib3
+from tqdm import tqdm
+import math
 try:
     from colorama import Fore, Style, init as _colorama_init
     _colorama_init()
@@ -48,11 +46,7 @@ except Exception:
     Style = _Dummy()
 from requests.adapters import HTTPAdapter
 from tqdm import tqdm
-
-# Disable SSL warnings
-# TLS warnings will be disabled at runtime only when --insecure is used
-
-# Import audit modules
+                   
 try:
     from bola_audit import BOLAAuditor
     from broken_auth_audit import AuthAuditor
@@ -80,7 +74,7 @@ except ImportError as e:
     print("Please ensure all audit modules are available in the Python path.")
     sys.exit(1)
 
-# Initialize colorama for Windows compatibility
+                                               
 try:
     import colorama
     colorama.just_fix_windows_console()
@@ -88,12 +82,12 @@ try:
 except Exception:
     pass
 
-# Global constants
+                  
 OUT_DIR: Path | None = None
 MAX_THREADS = 20
 DUMMY_MODE = False
 
-# Manual file mapping for reports
+                                 
 manual_file_map = {
     "BOLA": "bola",
     "BrokenAuth": "broken_auth",
@@ -107,17 +101,18 @@ manual_file_map = {
     "UnsafeConsumption": "unsafe_consumption",
 }
 
-# Global ID map for parameter substitution
+                                          
 _ID_MAP = {}
 
-# Regular expressions
+                     
 MISSING_RE = _re.compile(r"(missing|require[sd])\s+['\"]?([A-Za-z0-9_]+)['\"]?", _re.I)
 
-# Configure logger
+                  
 logger = logging.getLogger("apiscan")
 
+#================funtion _guess_fill_for_key function =============
 def _guess_fill_for_key(k):
-    """Guess appropriate fill value for a parameter key."""
+
     kl = (k or "").lower()
     if kl.endswith("id") or kl in ("id","user_id","order_id","vehicle_id","post_id"):
         v = _pool_pick(kl, None)
@@ -134,13 +129,15 @@ def _guess_fill_for_key(k):
 
 
 
+#================funtion _pool_pick function =============
 def _pool_pick(key, default=None):
-    """Pick a value from pool - placeholder implementation."""
-    # This would typically look up from a pool of known values
+
+                                                              
     return default
 
+#================funtion _augment_body_missing_field_from_error function =============
 def _augment_body_missing_field_from_error(body, rtext):
-    """Augment body with missing fields based on error response."""
+
     if not isinstance(body, dict):
         return body
     added = False
@@ -152,8 +149,9 @@ def _augment_body_missing_field_from_error(body, rtext):
             added = True
     return body
 
+#================funtion _normalize_version_in_url function =============
 def _normalize_version_in_url(u: str) -> str:
-    """Normalize version numbers in URLs."""
+
     try:
         def repl(m):
             major = m.group(1)
@@ -164,8 +162,9 @@ def _normalize_version_in_url(u: str) -> str:
     except Exception:
         return u
 
+#================funtion _sec_from_args function =============
 def _sec_from_args(args) -> OASSecurityConfig:
-    """Create security configuration from command line arguments."""
+
     api_key_val = getattr(args, 'apikey', None)
     api_key_name = getattr(args, 'apikey_header', 'X-API-Key')
     return OASSecurityConfig(
@@ -175,8 +174,9 @@ def _sec_from_args(args) -> OASSecurityConfig:
         bearer_token=getattr(args, 'token', None),
     )
 
+#================funtion _endpoints_from_universal function =============
 def _endpoints_from_universal(spec: dict) -> list[dict]:
-    """Extract endpoints from OpenAPI specification using universal parser."""
+
     eps = []
     try:
         for op in oas_iter_ops(spec):
@@ -190,8 +190,9 @@ def _endpoints_from_universal(spec: dict) -> list[dict]:
         logger.debug(f"Universal endpoint extraction failed: {e}")
     return eps
 
+#================funtion extract_endpoints_from_paths function =============
 def extract_endpoints_from_paths(spec):
-    """Extract endpoints from OpenAPI paths section (fallback method)."""
+
     endpoints = []
     paths = (spec or {}).get("paths", {})
     for path, ops in paths.items():
@@ -208,8 +209,9 @@ def extract_endpoints_from_paths(spec):
                 })
     return endpoints
 
+#================funtion styled_print function =============
 def styled_print(message: str, status: str = "info") -> None:
-    """Print styled messages with colors."""
+
     symbols = {"info": "Info:", "ok": "OK:", "warn": "WARNING:", "fail": "FAIL:", "run": "->", "done": "Done"}
     colors = {
         "info": Fore.BLUE,
@@ -222,32 +224,37 @@ def styled_print(message: str, status: str = "info") -> None:
     reset = Style.RESET_ALL
     print(f"{colors.get(status, '')}{symbols.get(status, '')} {message}{reset}")
 
+#================funtion normalize_url function =============
 def normalize_url(url: str) -> str:
-    """Ensure URL has proper scheme."""
+
     return url if url.startswith(("http://", "https://")) else "http://" + url
 
+#================funtion create_output_directory function =============
 def create_output_directory(base_url: str) -> Path:
-    """Create output directory for scan results."""
+
     clean = base_url.replace("https://", "").replace("http://", "").replace("/", "_").replace(":", "_")
     timestamp = datetime.now().strftime("%d-%m-%Y_%H%M%S")
     out_dir = Path(f"audit_{clean}_{timestamp}")
     out_dir.mkdir(exist_ok=True)
     return out_dir
 
+#================funtion save_html_report function =============
 def save_html_report(issues, risk_key: str, url: str, output_dir: Path) -> None:
-    """Save HTML report for specific risk category."""
+
     html_report = HTMLReportGenerator(issues=issues, scanner=RISK_INFO[risk_key]["title"], base_url=url)
     filename = f"api_{manual_file_map[risk_key]}_report.html"
     html_report.save(output_dir / filename)
 
+#================funtion _canonical_path_min function =============
 def _canonical_path_min(p: str) -> str:
-    """Create canonical path representation."""
+
     import re as _re
     p = "/" + (p or "").lstrip("/")
     return _re.sub(r"\{[^}]+\}", "{}", p)
 
+#================funtion _json_shape_min function =============
 def _json_shape_min(text: str) -> str:
-    """Create normalized JSON shape for fingerprinting."""
+
     if not text:
         return ""
     try:
@@ -280,8 +287,9 @@ def _json_shape_min(text: str) -> str:
         import re as _re
         return _re.sub(r"\s+", " ", text).strip()[:4096]
 
+#================funtion _is_sensitive_body_min function =============
 def _is_sensitive_body_min(body: str) -> bool:
-    """Check if response body contains sensitive information."""
+
     if not body:
         return False
     import re as _re
@@ -293,8 +301,9 @@ def _is_sensitive_body_min(body: str) -> bool:
         return True
     return False
 
+#================funtion _filter_auth_issues_min function =============
 def _filter_auth_issues_min(issues):
-    """Filter and deduplicate authentication issues."""
+
     if not issues:
         return []
     out = []
@@ -335,7 +344,7 @@ def _filter_auth_issues_min(issues):
         it["fingerprint"] = fp
         out.append(it)
     
-    # Deduplicate issues
+                        
     dedup = {}
     for it in out:
         fp = it.get("fingerprint")
@@ -354,8 +363,9 @@ def _filter_auth_issues_min(issues):
             dedup[fp] = it
     return list(dedup.values())
 
+#================funtion check_api_reachable function =============
 def check_api_reachable(url: str, session: requests.Session, retries: int = 3, delay: int = 3) -> None:
-    """Check if API endpoint is reachable."""
+
     for attempt in range(1, retries + 1):
         try:
             print("APISCAN by Perry Mertens pamsniffer@gmail.com (2025)")
@@ -379,8 +389,9 @@ def check_api_reachable(url: str, session: requests.Session, retries: int = 3, d
             print(f"ERROR: Cannot connect to {url} after {retries} attempts.")
             sys.exit(1)
 
+#================funtion load_id_map function =============
 def load_id_map(path: str | None):
-    """Load ID mapping file for parameter substitution."""
+
     global _ID_MAP
     _ID_MAP = {}
     if not path:
@@ -394,15 +405,17 @@ def load_id_map(path: str | None):
         styled_print(f"Could not read ids-file: {e}", "warn")
         _ID_MAP = {}
 
+#================funtion _id_lookup function =============
 def _id_lookup(name: str) -> str | None:
-    """Look up ID value from mapping."""
+
     if not name:
         return None
     key = name.strip()
     return str(_ID_MAP.get(key)) if key in _ID_MAP else None
 
+#================funtion _apply_rewrites function =============
 def _apply_rewrites(full_url, rewrites):
-    """Apply URL rewrite rules."""
+
     if not rewrites:
         return full_url
     original = full_url
@@ -419,8 +432,9 @@ def _apply_rewrites(full_url, rewrites):
             print(f"[rewrite] invalid regex {pat!r}: {e}")
     return full_url
 
+#================funtion _normalize_path_generic function =============
 def _normalize_path_generic(path: str) -> str:
-    """Normalize URL path."""
+
     import re
     if not isinstance(path, str) or not path:
         return "/"
@@ -433,8 +447,9 @@ def _normalize_path_generic(path: str) -> str:
         path = path[:-1]
     return path
 
+#================funtion _sanitize_url function =============
 def _sanitize_url(url: str, rewrites: list[str] | None = None) -> str:
-    """Sanitize and normalize URL."""
+
     if not isinstance(url, str) or not url:
         return url
     from urllib.parse import urlsplit, urlunsplit
@@ -444,8 +459,9 @@ def _sanitize_url(url: str, rewrites: list[str] | None = None) -> str:
     out = _apply_rewrites(out, rewrites)
     return out
 
+#================funtion _sanitize_url2 function =============
 def _sanitize_url2(url: str, rewrites: list[str] | None = None, disable: bool = False) -> str:
-    """Alternative URL sanitization with disable option."""
+
     if not isinstance(url, str) or not url:
         return url
     if disable:
@@ -457,8 +473,9 @@ def _sanitize_url2(url: str, rewrites: list[str] | None = None, disable: bool = 
     out = _apply_rewrites(out, rewrites)
     return out
 
+#================funtion _merge_header_overrides function =============
 def _merge_header_overrides(args) -> dict:
-    """Merge header overrides from command line arguments."""
+
     overrides = {}
     def put(name, value):
         if not name or value is None:
@@ -492,8 +509,9 @@ def _merge_header_overrides(args) -> dict:
 
     return overrides
 
+#================funtion _parse_success_codes function =============
 def _parse_success_codes(spec_str: str):
-    """Parse success code ranges from string specification."""
+
     parts = [p.strip() for p in (spec_str or "").split(",") if p.strip()]
     ranges = []
     singles = set()
@@ -521,8 +539,9 @@ def _parse_success_codes(spec_str: str):
         return False
     return ok
 
+#================funtion _plan_sample_for function =============
 def _plan_sample_for(name: str) -> str:
-    """Generate sample value for parameter name."""
+
     v = _id_lookup(name)
     if v is not None:
         return v
@@ -539,13 +558,15 @@ def _plan_sample_for(name: str) -> str:
         return '2025-01-01'
     return 'sample'
 
+#================funtion _plan_fill_path_params function =============
 def _plan_fill_path_params(url: str) -> str:
-    """Fill path parameters with sample values."""
+
     import re as _re
     return _re.sub(r'{([^}]+)}', lambda m: _plan_sample_for(m.group(1)), url)
 
+#================funtion _plan_build_example_from_schema function =============
 def _plan_build_example_from_schema(schema: dict):
-    """Build example from JSON schema."""
+
     if not isinstance(schema, dict): 
         return {}
     t = schema.get('type')
@@ -563,8 +584,9 @@ def _plan_build_example_from_schema(schema: dict):
         return 'string'
     return {}
 
+#================funtion _plan_body_from_requestbody function =============
 def _plan_body_from_requestbody(op: dict):
-    """Extract request body from operation."""
+
     rb = (op or {}).get('requestBody') or {}
     content = rb.get('content') or {}
     mt = 'application/json' if 'application/json' in content else (next(iter(content.keys()), None))
@@ -609,8 +631,9 @@ def _plan_body_from_requestbody(op: dict):
     as_json = ('json' in (mt or '').lower()) and isinstance(ex, (dict, list))
     return mt, ex, as_json
 
+#================funtion plan_requests function =============
 def plan_requests(spec, base_url, csv_path=None, rewrites=None, disable_sanitize: bool = False, normalize_version: bool = False):
-    """Plan API requests from OpenAPI specification."""
+
     if csv_path is None:
         try:
             csv_path = str(OUT_DIR / "apiscan-plan.csv")
@@ -683,8 +706,9 @@ def plan_requests(spec, base_url, csv_path=None, rewrites=None, disable_sanitize
         print(f'[PLAN] CSV write failed: {e}')
     return count
 
+#================funtion verify_plan function =============
 def verify_plan(args, session, spec: dict, base_url: str, csv_path: str = None, rewrites=None, disable_sanitize: bool = False):
-    """Verify API plan by executing requests."""
+
     if csv_path is None:
         try:
             csv_path = str(OUT_DIR / "apiscan-verify.csv")
@@ -794,22 +818,23 @@ def verify_plan(args, session, spec: dict, base_url: str, csv_path: str = None, 
         print(f"[VERIFY] CSV write failed: {e}")
     return oks, fails, total
 
+#================funtion main function =============
 def main() -> None:
-    """Main function for APISCAN."""
+
     parser = argparse.ArgumentParser(description=f"APISCAN {__version__} - API Security Scanner")
     
-    # Core arguments
+                    
     parser.add_argument("--url", required=True, help="Base URL of the API to scan")
     parser.add_argument("--swagger", required=True, help="Path to Swagger/OpenAPI JSON file")
     parser.add_argument("--threads", type=int, default=16, help="Number of concurrent threads to use (default: 16)")
     
-    # Planning and verification
+                               
     parser.add_argument('--plan-only', action='store_true', help='Build all requests and write apiscan-plan.csv, do not send')
     parser.add_argument('--plan-then-scan', action='store_true', help='First build full plan (CSV), then perform the scan')
     parser.add_argument('--verify-plan', action='store_true', help='After planning, actually send each planned request and expect success')
     parser.add_argument('--success-codes', default='200-299', help='Comma list of codes or ranges, e.g., 200-299,302')
     
-    # Authentication
+                    
     parser.add_argument("--flow",
         choices=["none","token","client","basic","ntlm","auth"],
         default="none",
@@ -825,7 +850,7 @@ def main() -> None:
     parser.add_argument("--client-key", help="Path to private key file (PEM, used for mTLS)")
     parser.add_argument("--cert-password", help="Password for client certificate private key (if encrypted)")
     
-    # OAuth2 specific
+                     
     parser.add_argument("--client-id", help="OAuth2 Client ID (for --flow client or auth)")
     parser.add_argument("--client-secret", help="OAuth2 Client Secret (for --flow client or auth)")
     parser.add_argument("--token-url", help="OAuth2 Token endpoint URL (for --flow client or auth)")
@@ -833,13 +858,13 @@ def main() -> None:
     parser.add_argument("--redirect-uri", help="Redirect URI for OAuth2 Authorization Code flow")
     parser.add_argument("--scope", help="OAuth2 scope(s), space-separated")
     
-    # Security and performance
+                              
     parser.add_argument("--insecure", action="store_true",help="Disable TLS certificate validation (DANGEROUS, use only for testing)")
     parser.add_argument("--timeout", type=int, default=5.0, help="Request timeout in seconds")
     parser.add_argument("--retry500", type=int, default=1, help="adaptive retries on HTTP 5xx for POST/PUT/PATCH")
     parser.add_argument("--no-retry-500", dest="retry500", action="store_const", const=0, help="disable adaptive 5xx retries")
     
-    # Debug and output
+                      
     parser.add_argument("--debug", action="store_true", help="Enable debug output (verbose logging)")
     parser.add_argument("--dummy", action="store_true", help="Use dummy data for request bodies and parameters")
     parser.add_argument("--export_vars", metavar="PATH", help="Export variables template YAML if .yml/.yaml else JSON")
@@ -849,12 +874,12 @@ def main() -> None:
     parser.add_argument("--rewrite", action="append", default=[], help="Regex=>replacement rewrite applied to each URL (can be repeated)")
     parser.add_argument("--no-sanitize", action="store_true", help="Disable built-in URL normalization; only apply explicit --rewrite rules")
     
-    # API selection
+                   
     parser.add_argument("--api11", action="store_true", help="Run AI-assisted OWASP Top 10 analysis")
     for i in range(1, 11):
         parser.add_argument(f"--api{i}", action="store_true", help=f"Run only API{i} audit")
     
-    # Version normalization
+                           
     group_nv = parser.add_mutually_exclusive_group()
     group_nv.add_argument(
         "--normalize-version",
@@ -872,15 +897,15 @@ def main() -> None:
 
     args = parser.parse_args()
     
-    # Set global builtins args for other modules
+                                                
     builtins.args = args
     
-    # Normalize URL
+                   
     if args.url and "://" not in args.url:
         args.url = "http://" + args.url
     args.url = normalize_url(args.url)
     
-    # Enable dummy mode if requested
+                                    
     if getattr(args, "dummy", False):
         try:
             enable_dummy_mode(True)
@@ -890,25 +915,25 @@ def main() -> None:
         except Exception:
             pass
 
-    # Load ID mapping
+                     
     load_id_map(getattr(args, 'ids_file', None))
 
-    # Configure logging
+                       
     builtins.debug_mode = args.debug
     if args.debug:
         logging.basicConfig(level=logging.DEBUG, format="[DEBUG] %(message)s")
     else:
         logging.basicConfig(level=logging.INFO, format="[INFO] %(message)s")
 
-    # Select APIs to scan
+                         
     selected_apis = [11] if args.api11 else [i for i in range(1, 11) if getattr(args, f"api{i}")] or list(range(1, 11))
 
-    # Create output directory
+                             
     output_dir = create_output_directory(args.url)
     global OUT_DIR
     OUT_DIR = output_dir
     
-    # Setup logging to file
+                           
     log_dir = output_dir / "log"
     log_dir.mkdir(exist_ok=True)
     logfile = log_dir / f"apiscan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
@@ -923,14 +948,14 @@ def main() -> None:
     logger = logging.getLogger("apiscan")
     logger.propagate = False
 
-    # Configure authentication session
+                                      
     sess = configure_authentication(args)
     try:
         sess.verify = not args.insecure
     except Exception:
         pass
 
-    # Only silence TLS warnings when explicitly requested
+                                                         
     try:
         if args.insecure:
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -939,7 +964,7 @@ def main() -> None:
     except Exception:
         pass
     
-    # Configure proxy if specified
+                                  
     if getattr(args, 'proxy', None):
         pr = args.proxy if "://" in args.proxy else f"http://{args.proxy}"
         sess.proxies.update({
@@ -953,15 +978,15 @@ def main() -> None:
         except Exception:
             print(banner)
 
-    # Configure HTTP adapter for connection pooling
+                                                   
     adapter = HTTPAdapter(pool_connections=args.threads * 4, pool_maxsize=args.threads * 4, max_retries=3)
     sess.mount("http://", adapter)
     sess.mount("https://", adapter)
 
-    # Check if API is reachable
+                               
     check_api_reachable(args.url, sess)
 
-    # Load and validate Swagger/OpenAPI specification
+                                                     
     try:
         swagger_path = Path(args.swagger).resolve()
         if not swagger_path.exists():
@@ -976,7 +1001,7 @@ def main() -> None:
 
         spec = oas_load_spec(str(swagger_path), inject_base_url=args.url)
 
-        # Extract endpoints
+                           
         bola = BOLAAuditor(session=sess, base_url=args.url, swagger_spec=spec)
         endpoints = bola.get_object_endpoints(spec) or []
         uni_eps = _endpoints_from_universal(spec)
@@ -1007,7 +1032,7 @@ def main() -> None:
         styled_print("Unexpected error during Swagger parsing", "fail")
         sys.exit(1)
 
-    # Handle planning modes
+                           
     base = args.url
     if getattr(args, 'plan_only', False) or getattr(args, 'plan_then_scan', False):
         plan_requests(spec, base, csv_path=None, rewrites=getattr(args, 'rewrite', []), 
@@ -1016,7 +1041,7 @@ def main() -> None:
             styled_print('Plan-only mode: done.', 'ok')
             return
 
-    # Verify plan if requested
+                              
     if getattr(args, 'verify_plan', False):
         oks, fails, total = verify_plan(args, sess, spec, base, csv_path=None, 
                                        rewrites=getattr(args, 'rewrite', []), 
@@ -1026,7 +1051,7 @@ def main() -> None:
         elif fails == 0:
             styled_print('Verify passed: all planned requests succeeded', 'ok')
 
-    # Export variables if requested
+                                   
     if args.export_vars:
         try:
             vars_doc = extract_variables(spec)
@@ -1037,10 +1062,10 @@ def main() -> None:
             styled_print(f"FAIL exporting variables: {e}", "fail")
             sys.exit(1)
 
-    # Track vulnerabilities for summary
+                                       
     vulnerability_summary = {}
 
-    # API1: BOLA (Broken Object Level Authorization)
+                                                    
     if 1 in selected_apis:
         tqdm.write(f"{Fore.CYAN}[API1] Starting BOLA (threads={args.threads}){Style.RESET_ALL}")
         logger.info("Running API1 - BOLA")
@@ -1087,7 +1112,7 @@ def main() -> None:
         save_html_report(bola.issues, "BOLA", args.url, output_dir)
         styled_print(msg, "done")
 
-    # API2: Broken Authentication
+                                 
     if 2 in selected_apis:
         tqdm.write(f"{Fore.CYAN}API2 - Broken Authentication{Style.RESET_ALL}")
         logger.info("Running API2 - Broken Authentication")
@@ -1115,7 +1140,7 @@ def main() -> None:
         save_html_report(auth_issues, "BrokenAuth", args.url, output_dir)
         styled_print(f"API2 complete - {len(auth_issues)} issues", "done")
 
-    # API3: Property-level Authorization (Object Property)
+                                                          
     if 3 in selected_apis:
         tqdm.write(f"{Fore.CYAN}API3 - Property-level Authorization{Style.RESET_ALL}")
         logger.info("Running API3 - Property-level Authorization")
@@ -1130,7 +1155,7 @@ def main() -> None:
         save_html_report(prop_issues, "Property", args.url, output_dir)
         styled_print(f"API3 complete - {len(prop_issues)} issues", "done")
 
-    # API4: Resource Consumption
+                                
     if 4 in selected_apis:
         tqdm.write(f"{Fore.CYAN}API4 - Resource Consumption{Style.RESET_ALL}")
         logger.info("Running API4 - Resource Consumption")
@@ -1142,7 +1167,7 @@ def main() -> None:
         save_html_report(res_issues, "Resource", args.url, output_dir)
         styled_print(f"API4 complete - {len(res_issues)} issues", "done")
 
-    # API5: Function-level Authorization
+                                        
     if 5 in selected_apis:
         tqdm.write(f"{Fore.CYAN}API5 - Function-level Authorization{Style.RESET_ALL}")
         logger.info("Running API5 - Function-level Authorization")
@@ -1158,7 +1183,7 @@ def main() -> None:
         save_html_report(authz_issues, "AdminAccess", args.url, output_dir)
         styled_print(f"API5 complete - {len(authz_issues)} issues", "done")
 
-    # API6: Sensitive Business Flows
+                                    
     if 6 in selected_apis:
         print("API6 - Sensitive Business Flows")
         logger.info("Running API6 - Sensitive Business Flows")
@@ -1177,7 +1202,7 @@ def main() -> None:
         save_html_report(biz_issues, "BusinessFlows", args.url, output_dir)
         styled_print(f"API6 complete - {len(biz_issues)} issues", "done")
 
-    # API7: SSRF
+                
     if 7 in selected_apis:
         tqdm.write(f"{Fore.CYAN}API7 - SSRF{Style.RESET_ALL}")
         logger.info("Running API7 - SSRF")
@@ -1193,7 +1218,7 @@ def main() -> None:
             styled_print("No SSRF endpoints found", "warn")
             vulnerability_summary["SSRF"] = 0
 
-    # API8: Security Misconfiguration
+                                     
     if 8 in selected_apis:
         tqdm.write(f"{Fore.CYAN}API8 - Security Misconfiguration{Style.RESET_ALL}")
         logger.info("Running API8 - Security Misconfiguration")
@@ -1209,7 +1234,7 @@ def main() -> None:
             styled_print("No misconfiguration endpoints found", "warn")
             vulnerability_summary["Misconfiguration"] = 0
 
-    # API9: Improper Inventory Management
+                                         
     if 9 in selected_apis:
         print("API9 - Improper Inventory Management")
         logger.info("Running API9 - Improper Inventory Management")
@@ -1225,31 +1250,44 @@ def main() -> None:
         save_html_report(inv_issues, "Inventory", args.url, output_dir)
         styled_print(f"API9 complete - {len(inv_issues)} issues", "done")
 
-    # API10: Safe Consumption of 3rd-Party APIs
+                              
+      
     if 10 in selected_apis:
         print("API10 - Safe Consumption of 3rd-Party APIs")
         logger.info("Running API10 - Safe Consumption")
-        
-        safe_eps = SafeConsumptionAuditor.endpoints_from_swagger(args.swagger)
-        for ep in safe_eps:
-            print(f"-> Safe API consumption check {ep}")
-        
-        sc = SafeConsumptionAuditor(base_url=args.url, session=sess)
-        safe_issues = sc.test_endpoints(safe_eps)
-        sc._dump_raw_issues(output_dir / "log")
-        sc._filter_issues()
-        sc._dedupe_issues()
-        
-        vulnerability_summary["Unsafe Consumption"] = len(safe_issues)
-        save_html_report(safe_issues, "UnsafeConsumption", args.url, output_dir)
-        styled_print(f"API10 complete - {len(safe_issues)} issues", "done")
 
-    # API11: AI-assisted OWASP analysis
+        safe_eps = SafeConsumptionAuditor.endpoints_from_swagger(args.swagger)
+        print(f"[DEBUG] Parsed {len(safe_eps)} endpoints from swagger")
+        for e in safe_eps[:5]:
+            print(" ", e)
+
+        sc = SafeConsumptionAuditor(base_url=args.url, session=sess)
+
+        if not safe_eps:
+            styled_print("No API10 endpoints found", "warn")
+            vulnerability_summary["Unsafe Consumption"] = 0
+        else:
+            raw_issues = sc.test_endpoints(safe_eps)
+
+            sc._dump_raw_issues(output_dir / "log")
+            sc._filter_issues()
+            sc._dedupe_issues()
+
+            safe_issues = sc.issues
+            vulnerability_summary["Unsafe Consumption"] = len(safe_issues)
+
+            save_html_report(safe_issues, "UnsafeConsumption", args.url, output_dir)
+            styled_print(f"API10 complete - {len(safe_issues)} issues", "done")
+  
+   
+
+
+                                       
     if 11 in selected_apis:
         styled_print("API11 - AI-assisted OWASP analysis", "info")
         logger.info("Running API11 - AI-assisted audit")
 
-        # Check required LLM environment variables
+                                                  
         required = ["LLM_PROVIDER", "LLM_MODEL", "LLM_API_KEY"]
         missing = [v for v in required if not os.getenv(v)]
         if missing:
@@ -1281,7 +1319,7 @@ def main() -> None:
             styled_print(f"AI analysis failed: {e}", "fail")
             logger.exception("AI analysis exception")
 
-    # Generate vulnerability summary
+                                    
     total_vulnerabilities = sum(vulnerability_summary.values())
 
     print("\n" + "="*50)
@@ -1299,7 +1337,7 @@ def main() -> None:
 
     styled_print("Scan complete. All results and logs have been saved.", "ok")
 
-    # Generate combined HTML report
+                                   
     html_files = sorted(str(f) for f in output_dir.glob("api_*_report.html"))
     if not html_files:
         styled_print("No HTML reports to combine, skipping.", "info")

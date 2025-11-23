@@ -1,5 +1,5 @@
 ---
-title: APISCAN v2.2 AI-Aware OWASP APIScanner by Perry Mertens
+title: APISCAN v2.2 AI-Aware OWASP APIScanner by Perry Mertens license AGPL-3.0 
 description: Free and open-source APIscanner built in Python with AI support, multi-auth, and rich reporting.
 ---
 <meta content="VvYq2k5BFp5dpIL6JpQhoe90sWEXZTEBbaynlEKCWRE" name="google-site-verification">

@@ -5,7 +5,7 @@
 
 **Version:** 2.2 (Release)  
 **Author:** Perry Mertens ([pamsniffer@gmail.com](mailto:pamsniffer@gmail.com))  
-**License:** MIT
+**License:**  GNU Affero General Public
 
 [![GitHub](https://img.shields.io/badge/GitHub-perrym%2Fapiscanner-0ea5e9?logo=github)](https://github.com/perrym/apiscanner)
 [![Medium](https://img.shields.io/badge/Medium-Article-black?logo=medium)](https://medium.com/@PerryPM/apiscan-a-practical-approach-to-api-security-testing-by-perry-mertens-96b5e676c071)

@@ -5,7 +5,10 @@
 
 **Version:** 2.2 (Release)  
 **Author:** Perry Mertens ([pamsniffer@gmail.com](mailto:pamsniffer@gmail.com))  
-**License:**  GNU Affero General Public
+## License
+APISCAN is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
+If you modify APISCAN and make it available as a hosted service (for example as an API, SaaS platform, or web UI),you must make the complete corresponding source code available under the same license.
+
 
 [![GitHub](https://img.shields.io/badge/GitHub-perrym%2Fapiscanner-0ea5e9?logo=github)](https://github.com/perrym/apiscanner)
 [![Medium](https://img.shields.io/badge/Medium-Article-black?logo=medium)](https://medium.com/@PerryPM/apiscan-a-practical-approach-to-api-security-testing-by-perry-mertens-96b5e676c071)

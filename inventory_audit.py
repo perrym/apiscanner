@@ -1,6 +1,6 @@
 ########################################################
 # APISCAN - API Security Scanner                       #
-# Licensed under the AGPL-V3.0 License                       #
+# Licensed under AGPL-V3.0                             #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
 # version 2.2  2-11--2025                             #
 ########################################################                                 

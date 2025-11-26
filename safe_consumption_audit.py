@@ -1,9 +1,9 @@
 ########################################################
 # APISCAN - API Security Scanner                       #
-# Licensed under  AGPL-3.0 License                       #
+# Licensed under the AGPL-V3.0 License                       #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 2.2  14-11--2025                             #
-########################################################                                                        
+# version 3.0 26-11-2025                               #
+########################################################                                                 
 from __future__ import annotations
 import concurrent.futures
 import json

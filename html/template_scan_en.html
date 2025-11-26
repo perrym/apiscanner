@@ -1,0 +1,1194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>APISCAN - Findings Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f3f4f6;
+      color: #111827;
+    }
+
+    body {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .page-header {
+      padding: 10px 16px;
+      background: #1d4ed8;
+      color: #e5e7eb;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+    }
+
+    .page-header h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 600;
+    }
+
+    .page-header .meta {
+      font-size: 12px;
+      opacity: 0.8;
+    }
+
+    .page-header-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-left: 12px;
+    }
+
+    .page-header-actions button {
+      padding: 4px 10px;
+      font-size: 12px;
+      border-radius: 999px;
+      border: 1px solid #1e40af;
+      background: #1d4ed8;
+      color: #e5e7eb;
+      cursor: pointer;
+    }
+
+    .page-header-actions button:hover {
+      background: #1e40af;
+    }
+
+    .layout {
+      flex: 1;
+      display: flex;
+      min-height: 0;
+      padding: 10px 14px 0 14px;
+      gap: 10px;
+    }
+
+    .sidebar {
+      width: 260px;
+      min-width: 220px;
+      max-width: 300px;
+      background: #ffffff;
+      border-radius: 10px;
+      padding: 10px;
+      box-shadow: 0 1px 3px rgba(15,23,42,0.12);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .sidebar h2 {
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #6b7280;
+      margin: 0 0 4px 0;
+    }
+
+    .tree {
+      font-size: 13px;
+      border-radius: 6px;
+      border: 1px solid #e5e7eb;
+      padding: 6px;
+      background: #f9fafb;
+    }
+
+    .tree-item {
+      padding: 4px 6px;
+      border-radius: 4px;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 4px;
+      color: #111827;
+    }
+
+    .tree-item:hover {
+      background: #e5e7eb;
+    }
+
+    .tree-item.active {
+      background: #1d4ed8;
+      color: #f9fafb;
+    }
+
+    .tree-item .label {
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .tree-item .count {
+      font-size: 11px;
+      opacity: 0.8;
+    }
+
+    .severity-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-top: 4px;
+    }
+
+    .sev-pill {
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: 999px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .sev-pill.active {
+      border-color: #1d4ed8;
+      box-shadow: 0 0 0 1px #1d4ed8;
+    }
+
+    .sev-pill.inactive {
+      opacity: 0.4;
+    }
+
+    .sev-pill span {
+      font-weight: 600;
+    }
+
+    .sev-pill[data-sev="critical"] { background: #fef2f2; border-color: #fecaca; color: #b91c1c; }
+    .sev-pill[data-sev="high"] { background: #fff7ed; border-color: #fed7aa; color: #c2410c; }
+    .sev-pill[data-sev="medium"] { background: #ecfdf3; border-color: #bbf7d0; color: #15803d; }
+    .sev-pill[data-sev="low"] { background: #eff6ff; border-color: #bfdbfe; color: #1d4ed8; }
+
+    .sev-pill.all {
+      background: #1d4ed8;
+      border-color: #1d4ed8;
+      color: #f9fafb;
+    }
+
+    .sev-pill.inactive {
+      opacity: 0.6;
+    }
+
+    .main {
+      flex: 1;
+      min-width: 0;
+      display: grid;
+      grid-template-rows: minmax(0, 55%) minmax(0, 45%);
+      gap: 8px;
+    }
+
+    .card {
+      background: #ffffff;
+      border-radius: 10px;
+      box-shadow: 0 1px 3px rgba(15,23,42,0.12);
+      padding: 8px 10px 10px 10px;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 6px;
+    }
+
+    .card-header h2 {
+      font-size: 14px;
+      font-weight: 600;
+      margin: 0;
+    }
+
+    .card-header .hint {
+      font-size: 11px;
+      color: #6b7280;
+    }
+
+    .table-container {
+      flex: 1;
+      min-height: 0;
+      max-height: 320px;
+      overflow-y: auto;
+      overflow-x: auto;
+      border-radius: 6px;
+      border: 1px solid #e5e7eb;
+      background: #fafafa;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      table-layout: fixed;
+    }
+
+    thead {
+      position: sticky;
+      top: 0;
+      background: #f9fafb;
+      z-index: 5;
+    }
+
+    th, td {
+      padding: 4px 6px;
+      border-bottom: 1px solid #e5e7eb;
+      text-align: left;
+      vertical-align: top;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    th:nth-child(2),
+    td:nth-child(2) {
+      min-width: 260px;
+    }
+
+    tr.selected {
+      background: #fffbeb;
+    }
+
+    tr.selected td:first-child {
+      position: relative;
+    }
+
+    tr.selected td:first-child::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 5px;
+      background: #d97706;
+      z-index: 10;
+    }
+
+    tr:hover {
+      background: #e5e7eb;
+      cursor: pointer;
+    }
+
+    .sev-chip {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 52px;
+      font-size: 11px;
+      padding: 1px 6px;
+      border-radius: 999px;
+      color: #fff;
+    }
+
+    .sev-critical { background: #b91c1c; }
+    .sev-high { background: #c2410c; }
+    .sev-medium { background: #15803d; }
+    .sev-low { background: #1d4ed8; }
+    .sev-info { background: #4b5563; }
+
+    .details {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      border-radius: 10px;
+      box-shadow: 0 1px 3px rgba(15,23,42,0.12);
+      background: #ffffff;
+    }
+
+    .details-header {
+      padding: 8px 10px 0 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .details-header h2 {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 4px;
+      padding: 6px 10px 0 10px;
+      border-bottom: 1px solid #e5e7eb;
+      font-size: 12px;
+    }
+
+    .tab {
+      padding: 4px 8px;
+      border-radius: 999px 999px 0 0;
+      border: 1px solid #cbd5e1;
+      border-bottom: none;
+      cursor: pointer;
+      background: #e5e7eb;
+      color: #374151;
+    }
+
+    .tab.active {
+      background: #ffffff;
+      border-color: #000000;
+      border-bottom: 2px solid #ffffff;
+      color: #000000;
+      font-weight: 600;
+    }
+
+    .tab-content {
+      flex: 1;
+      min-height: 0;
+      padding: 8px 10px 10px 10px;
+      overflow: auto;
+      font-size: 12px;
+      max-height: calc(100% - 36px);
+    }
+
+    .meta-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      font-size: 11px;
+      margin-bottom: 4px;
+      color: #4b5563;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 1px 6px;
+      border-radius: 999px;
+      background: #e5e7eb;
+      font-size: 11px;
+      margin-right: 4px;
+    }
+
+    .pill.status-pending { background: #fef3c7; color: #92400e; }
+    .pill.status-confirmed { background: #ecfdf5; color: #047857; }
+
+    .risk-block {
+      margin-top: 6px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      background: #f9fafb;
+      border: 1px solid #e5e7eb;
+    }
+
+    .risk-block h3 {
+      margin: 0 0 4px 0;
+      font-size: 13px;
+    }
+
+    .risk-block p {
+      margin: 0 0 4px 0;
+    }
+
+    .riskinfo-container {
+      margin-top: 6px;
+      padding: 6px 8px;
+      border-radius: 8px;
+      background: #ffffff;
+      border: 1px solid #d1d5db;
+      max-height: 200px;
+      display: none;
+    }
+
+    .riskinfo-scroll {
+      overflow-y: auto;
+      max-height: 170px;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    pre {
+      background: #f3f4f6;
+      color: #111827;
+      padding: 6px;
+      border-radius: 6px;
+      font-size: 11px;
+      border: 1px solid #e5e7eb;
+      overflow: auto;
+      max-height: 260px;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    .inventory-block {
+      margin: 12px 14px 14px 14px;
+      padding-top: 10px;
+      border-top: 1px solid #cfd8dc;
+    }
+
+    .inventory-block h2 {
+      font-size: 14px;
+      margin: 0 0 6px 0;
+    }
+
+    .inventory-scroll {
+      border-radius: 8px;
+      border: 1px solid #e5e7eb;
+      background: #ffffff;
+      max-height: 320px;
+      overflow-y: auto;
+      overflow-x: auto;
+    }
+
+    .inventory-scroll table {
+      font-size: 11px;
+    }
+
+    .inventory-scroll thead {
+      position: sticky;
+      top: 0;
+      background: #f9fafb;
+      z-index: 4;
+    }
+
+    .status-ok { color: #047857; }
+    .status-fail { color: #b91c1c; }
+
+    .card + .details {
+      border-top: 3px solid #1d4ed8;
+      box-shadow: 0 -2px 4px rgba(0,0,0,0.15);
+    }
+
+    .sidebar,
+    .card,
+    .details,
+    .table-container {
+      border: 2px solid #9ca3af;
+    }
+
+    @media (max-width: 960px) {
+      .layout {
+        flex-direction: column;
+      }
+      .sidebar {
+        width: 100%;
+        max-width: none;
+      }
+      .main {
+        grid-template-rows: minmax(0, 52%) minmax(0, 48%);
+      }
+    }
+  #inventory-root{display:none !important;}
+    </style>
+</head>
+<body>
+  <header class="page-header">
+    <h1>APISCAN - Findings dashboard - APISCAN BY PERRY MERTENS 2025 (Copyright) - </h1>
+    <div style="display:flex; align-items:center; gap:10px;">
+      <div class="meta" id="meta-info"></div>
+      <div class="page-header-actions">
+        <button type="button" onclick="openCombinedReport()">Open combined report</button>
+        <button type="button" onclick="printCombinedReport()">Print combined report</button>
+      </div>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <div>
+        <h2>Navigation</h2>
+        <div class="tree" id="tree-root"></div>
+      </div>
+      <div>
+        <h2>Filter by severity</h2>
+        <div class="severity-legend" id="sev-legend"></div>
+      </div>
+    </aside>
+
+    <section class="main">
+      <div class="card">
+        <div class="card-header">
+          <h2 id="list-title">Findings</h2>
+          <div class="hint" id="list-stats"></div>
+        </div>
+        <div class="table-container">
+          <table id="issues-table">
+            <thead>
+              <tr>
+                <th>Severity</th>
+                <th>Title</th>
+                <th>Method</th>
+                <th>Endpoint</th>
+                <th>Status</th>
+                <th>Category</th>
+                <th>Last status</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="riskinfo-container" id="riskinfo-container">
+          <h3>Risk information</h3>
+          <div class="riskinfo-scroll" id="riskinfo-scroll"></div>
+        </div>
+      </div>
+
+      <div class="details">
+        <div class="details-header">
+          <h2 id="detail-title">Details</h2>
+        </div>
+        <div class="tabs">
+          <button class="tab active" data-tab="summary">Summary</button>
+          <button class="tab" data-tab="request">Request</button>
+          <button class="tab" data-tab="response">Response</button>
+        </div>
+        <div class="tab-content" id="tab-summary"></div>
+        <div class="tab-content" id="tab-request" style="display:none;"></div>
+        <div class="tab-content" id="tab-response" style="display:none;"></div>
+      </div>
+    </section>
+  </div>
+
+  <div id="inventory-root"></div>
+
+  <script id="data" type="application/json">
+  </script>
+
+  <script>
+    const RISK_INFO = {
+       "Authentication": {
+        "title": "Authentication",
+        "description": "Authentication weaknesses occur when an API does not correctly validate the identity of the requester. This can allow attackers to obtain valid tokens, reuse expired or stolen credentials, bypass login flows, or impersonate legitimate users. Poor session handling, weak password policies, or missing protections for MFA can all contribute to unauthorized access through compromised authentication ",
+        "recommendation": [
+          "Enforce strong authentication mechanisms, preferably using industry standards such as OAuth 2.0 or OpenID Connect.",
+          "Ensure proper session management, including short-lived tokens and secure refresh token handling.",
+          "Validate tokens server-side and reject expired, malformed, or reused tokens.",
+          "TLS 1.3",
+          "HTTPS secure cipher versions"
+        ]
+	  }, 
+      "BOLA": {
+        "title": "API1:2023 - Broken Object Level Authorization",
+        "description": "APIs often expose object identifiers such as user IDs or document IDs within request paths or parameters. If proper authorization checks are not implemented, attackers can modify these identifiers to access data that does not belong to them. This leads to unauthorized access or data leakage. The risk is especially high in RESTful APIs where object references are part of the URL structure.",
+        "recommendation": [
+          "Implement object-level authorization checks on every request.",
+          "Use unpredictable IDs, for example UUIDs, instead of sequential integers.",
+          "Verify that the requester has ownership or access rights for each object.",
+          "Centralize authorization logic.",
+          "Log and alert on failed authorization attempts."
+        ]
+      },
+      "BrokenAuth": {
+        "title": "API2:2023 - Broken Authentication",
+        "description": "Authentication mechanisms that are poorly designed or misconfigured allow attackers to compromise tokens, bypass login flows or hijack user sessions. This includes flaws in token generation, session expiration, credential storage or password reset logic. The impact can range from unauthorized access to full account takeover.",
+        "recommendation": [
+          "Use multi-factor authentication for sensitive actions.",
+          "Work with short-lived, cryptographically signed tokens.",
+          "Secure password and token recovery flows.",
+          "Temporarily lock accounts after too many failed attempts.",
+          "Never expose credentials in URLs or error messages."
+        ]
+      },
+      "Property": {
+        "title": "API3:2023 - Broken Object Property Level Authorization",
+        "description": "APIs that expose internal object properties without proper access control allow clients to view or manipulate data they should not have access to. This includes over-sharing in API responses and accepting unexpected or sensitive fields in client submissions, also known as mass assignment. Attackers can exploit this to alter read-only or admin-level fields.",
+        "recommendation": [
+          "Explicitly define which fields are visible or editable per role.",
+          "Validate request and response payloads with schemas.",
+          "Filter sensitive fields server-side before sending responses.",
+          "Use different data transfer objects for different access levels.",
+          "Strictly separate public and private properties."
+        ]
+      },
+      "Resource": {
+        "title": "API4:2023 - Unrestricted Resource Consumption",
+        "description": "Lack of proper resource management allows attackers to overload the system with excessive requests, large payloads or expensive operations. This can lead to denial of service, service degradation or increased operational costs. APIs that allow unlimited requests, nested queries or unbounded filters are particularly vulnerable.",
+        "recommendation": [
+          "Implement rate limiting and quotas.",
+          "Set maximum payload sizes.",
+          "Use pagination or partial responses.",
+          "Monitor abnormal consumption patterns.",
+          "Cache expensive operations where possible."
+        ]
+      },
+      "AdminAccess": {
+        "title": "API5:2023 - Broken Function Level Authorization",
+        "description": "APIs may expose administrative or privileged operations without enforcing strict access control. Attackers can escalate privileges by calling hidden or undocumented functions. These issues often stem from complex role hierarchies, inconsistent policy enforcement or a lack of centralized authorization checks.",
+        "recommendation": [
+          "Use role-based or attribute-based access control with deny-by-default.",
+          "Centralize authorization logic.",
+          "Thoroughly test all admin functions.",
+          "Require step-up authentication for critical actions.",
+          "Document and protect sensitive admin flows."
+        ]
+      },
+      "BusinessFlows": {
+        "title": "API6:2023 - Unrestricted Access to Sensitive Business Flows",
+        "description": "APIs that expose key business processes such as financial transactions, bookings or account changes are attractive targets for abuse. If such flows lack business logic validation or abuse protection, for example rate limiting or anomaly detection, they may be exploited through automation, leading to financial loss or fraud.",
+        "recommendation": [
+          "Add business context validations, for example balance checks and limits.",
+          "Use CAPTCHA and rate limiting against bots where appropriate.",
+          "Detect and block abnormal usage patterns.",
+          "Require step-up authentication for risky actions.",
+          "Monitor critical business flows in real time."
+        ]
+      },
+      "SSRF": {
+        "title": "API7:2023 - Server Side Request Forgery",
+        "description": "If an API accepts URLs or user-defined targets and then performs server-side requests, attackers may exploit this functionality to access internal services, scan the network or retrieve sensitive metadata. SSRF can also be used as a pivot point in multi-stage attacks against internal infrastructure or cloud metadata endpoints.",
+        "recommendation": [
+          "Validate and sanitize all provided URLs.",
+          "Use an allow-list of permitted domains.",
+          "Do not follow redirects or limit the number of hops.",
+          "Segment internal networks and block unnecessary outgoing requests.",
+          "Apply strict egress firewall rules."
+        ]
+      },
+      "Misconfiguration": {
+        "title": "API8:2023 - Security Misconfiguration",
+        "description": "Misconfigured HTTP headers, CORS policies, verbose error messages and leftover debug endpoints are common in APIs and can be exploited to gain insight into backend systems or bypass protections. Misconfigurations may also lead to data exposure, unauthorized access or weakened transport security.",
+        "recommendation": [
+          "Harden systems according to security baselines.",
+          "Disable unnecessary HTTP methods.",
+          "Remove debug and test endpoints in production.",
+          "Set strict CORS policies.",
+          "Regularly review and patch configurations."
+        ]
+      },
+      "Inventory": {
+        "title": "API9:2023 - Improper Inventory Management",
+        "description": "Organizations often lose track of API versions, staging or test environments and undocumented endpoints. These shadow or zombie APIs may be exposed to the internet and remain unprotected. Without proper inventory, you cannot assess security posture, enforce updates or manage deprecations effectively.",
+        "recommendation": [
+          "Maintain an up-to-date inventory of all endpoints.",
+          "Carefully deprecate and remove old versions.",
+          "Document each endpoint with purpose and owner.",
+          "Implement a clear versioning strategy.",
+          "Proactively scan for undocumented APIs."
+        ]
+      },
+      "UnsafeConsumption": {
+        "title": "API10:2023 - Unsafe Consumption of APIs",
+        "description": "Trusting third-party or upstream APIs without proper validation introduces significant risks. These include injection attacks, unexpected responses and business logic flaws. If these dependencies are not handled defensively, they can cause data corruption, denial of service or unauthorized access to internal systems.",
+        "recommendation": [
+          "Validate and sanitize all data from third-party APIs.",
+          "Set time limits and retries for outbound calls.",
+          "Fail safely and handle external errors gracefully.",
+          "Keep third-party credentials secret and rotate them regularly.",
+          "Continuously monitor external service behavior."
+        ]
+      }
+    };
+
+    const DATA_ELEMENT = document.getElementById("data");
+    let ITEMS = [];
+
+    try {
+      const raw = DATA_ELEMENT.textContent || DATA_ELEMENT.innerText || "[]";
+      ITEMS = JSON.parse(raw);
+    } catch (e) {
+      console.error("Failed to parse items:", e);
+      ITEMS = [];
+    }
+
+    const treeRoot = document.getElementById("tree-root");
+    const sevLegend = document.getElementById("sev-legend");
+    const issuesTableBody = document.querySelector("#issues-table tbody");
+    const listTitleEl = document.getElementById("list-title");
+    const listStatsEl = document.getElementById("list-stats");
+    const detailTitleEl = document.getElementById("detail-title");
+
+    let currentSelectedRow = null;
+
+    const tabSummary = document.getElementById("tab-summary");
+    const tabRequest = document.getElementById("tab-request");
+    const tabResponse = document.getElementById("tab-response");
+
+    let currentTreeFilter = { type: "all" };
+    let currentSevFilter = "all";
+    let filteredItems = [];
+
+    function normalizeSeverity(sev) {
+      if (!sev) return "info";
+      return String(sev).toLowerCase();
+    }
+
+    function buildMeta() {
+      const metaEl = document.getElementById("meta-info");
+      if (!metaEl) return;
+      const total = ITEMS.length;
+      const bySev = { critical: 0, high: 0, medium: 0, low: 0 };
+      for (const it of ITEMS) {
+        const s = normalizeSeverity(it.severity);
+        if (bySev[s] !== undefined) bySev[s] += 1;
+      }
+      metaEl.textContent =
+        "Total findings: " + total +
+        " | Critical " + bySev.critical +
+        " | High " + bySev.high +
+        " | Medium " + bySev.medium +
+        " | Low " + bySev.low;
+    }
+
+    function buildTree() {
+      const allCount = ITEMS.length;
+      const byCategory = {};
+      for (const it of ITEMS) {
+        const cat = it.category || "Other";
+        byCategory[cat] = (byCategory[cat] || 0) + 1;
+      }
+
+      treeRoot.innerHTML = "";
+
+      const allNode = document.createElement("div");
+      allNode.className = "tree-item active";
+      allNode.dataset.key = "all";
+      allNode.innerHTML = "<span class=\"label\">All findings</span><span class=\"count\">" + allCount + "</span>";
+      allNode.addEventListener("click", function () {
+        setActiveTree(allNode);
+        currentTreeFilter = { type: "all" };
+        applyFilters();
+      });
+      treeRoot.appendChild(allNode);
+
+      const catHeader = document.createElement("div");
+      catHeader.style.marginTop = "6px";
+      catHeader.style.fontSize = "11px";
+      catHeader.style.textTransform = "uppercase";
+      catHeader.style.letterSpacing = "0.06em";
+      catHeader.style.color = "#9ca3af";
+      catHeader.textContent = "By category";
+      treeRoot.appendChild(catHeader);
+
+      Object.entries(byCategory)
+        .sort(function (a, b) { return b[1] - a[1]; })
+        .forEach(function (entry) {
+          const cat = entry[0];
+          const count = entry[1];
+          const el = document.createElement("div");
+          el.className = "tree-item";
+          el.dataset.key = "cat:" + cat;
+          el.innerHTML = "<span class=\"label\">" + cat + "</span><span class=\"count\">" + count + "</span>";
+          el.addEventListener("click", function () {
+            setActiveTree(el);
+            currentTreeFilter = { type: "category", value: cat };
+            applyFilters();
+          });
+          treeRoot.appendChild(el);
+        });
+
+      const sevHeader = document.createElement("div");
+      sevHeader.style.marginTop = "6px";
+      sevHeader.style.fontSize = "11px";
+      sevHeader.style.textTransform = "uppercase";
+      sevHeader.style.letterSpacing = "0.06em";
+      sevHeader.style.color = "#9ca3af";
+      sevHeader.textContent = "By severity";
+      treeRoot.appendChild(sevHeader);
+
+      const sevMap = { critical: 0, high: 0, medium: 0, low: 0 };
+      for (const it of ITEMS) {
+        const s = normalizeSeverity(it.severity);
+        if (sevMap[s] !== undefined) sevMap[s] += 1;
+      }
+
+      Object.entries(sevMap)
+        .sort(function (a, b) {
+          const order = { critical: 0, high: 1, medium: 2, low: 3 };
+          return order[a[0]] - order[b[0]];
+        })
+        .forEach(function (entry) {
+          const sev = entry[0];
+          const count = entry[1];
+          const el = document.createElement("div");
+          el.className = "tree-item";
+          el.dataset.key = "sev:" + sev;
+          el.innerHTML = "<span class=\"label\">" + sev.toUpperCase() + "</span><span class=\"count\">" + count + "</span>";
+          el.addEventListener("click", function () {
+            setActiveTree(el);
+            currentTreeFilter = { type: "sev-only", value: sev };
+            applyFilters();
+          });
+          treeRoot.appendChild(el);
+        });
+    }
+
+    function setActiveTree(el) {
+      const nodes = treeRoot.querySelectorAll(".tree-item");
+      nodes.forEach(function (n) { n.classList.remove("active"); });
+      el.classList.add("active");
+    }
+
+    function buildSeverityLegend() {
+      const counts = { critical: 0, high: 0, medium: 0, low: 0 };
+      for (const it of ITEMS) {
+        const s = normalizeSeverity(it.severity);
+        if (counts[s] !== undefined) counts[s] += 1;
+      }
+
+      sevLegend.innerHTML = "";
+
+      const allBtn = document.createElement("button");
+      allBtn.type = "button";
+      allBtn.className = "sev-pill all";
+      allBtn.dataset.sev = "all";
+      allBtn.innerHTML = "<span>ALL</span><span>" + ITEMS.length + "</span>";
+      allBtn.addEventListener("click", function () {
+        currentSevFilter = "all";
+        updateSevLegend();
+        applyFilters();
+      });
+      sevLegend.appendChild(allBtn);
+
+      const order = ["critical", "high", "medium", "low"];
+      const labels = {
+        critical: "CRITICAL",
+        high: "HIGH",
+        medium: "MEDIUM",
+        low: "LOW"
+      };
+      order.forEach(function (sev) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "sev-pill";
+        btn.dataset.sev = sev;
+        btn.innerHTML = "<span>" + labels[sev] + "</span><span>" + counts[sev] + "</span>";
+        btn.addEventListener("click", function () {
+          currentSevFilter = sev;
+          updateSevLegend();
+          applyFilters();
+        });
+        sevLegend.appendChild(btn);
+      });
+    }
+
+    function updateSevLegend() {
+      const pills = sevLegend.querySelectorAll(".sev-pill");
+      pills.forEach(function (p) {
+        const sev = p.dataset.sev;
+        const isActive =
+          (currentSevFilter === "all" && sev === "all") ||
+          (currentSevFilter !== "all" && currentSevFilter === sev);
+
+        p.classList.toggle("active", isActive);
+        p.classList.toggle("inactive", !isActive);
+      });
+    }
+
+    function applyFilters() {
+      filteredItems = ITEMS.slice();
+
+      if (currentTreeFilter.type === "category") {
+        filteredItems = filteredItems.filter(function (it) {
+          return (it.category || "Other") === currentTreeFilter.value;
+        });
+      } else if (currentTreeFilter.type === "sev-only") {
+        const s = currentTreeFilter.value;
+        filteredItems = filteredItems.filter(function (it) {
+          return normalizeSeverity(it.severity) === s;
+        });
+      }
+
+      if (currentSevFilter !== "all") {
+        filteredItems = filteredItems.filter(function (it) {
+          return normalizeSeverity(it.severity) === currentSevFilter;
+        });
+      }
+
+      filteredItems.sort(function (a, b) {
+        const order = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+        const sa = order[normalizeSeverity(a.severity)] || 99;
+        const sb = order[normalizeSeverity(b.severity)] || 99;
+        if (sa !== sb) return sa - sb;
+        return String(b.date || "").localeCompare(String(a.date || ""));
+      });
+
+      renderTable();
+    }
+
+    function renderTable() {
+      issuesTableBody.innerHTML = "";
+      currentSelectedRow = null;
+
+      const total = filteredItems.length;
+      const sevMap = { critical: 0, high: 0, medium: 0, low: 0 };
+      filteredItems.forEach(function (it) {
+        const s = normalizeSeverity(it.severity);
+        if (sevMap[s] !== undefined) sevMap[s] += 1;
+      });
+
+      let scopeDesc = "All findings";
+      if (currentTreeFilter.type === "category") {
+        scopeDesc = "Category: " + currentTreeFilter.value;
+      } else if (currentTreeFilter.type === "sev-only") {
+        scopeDesc = "Severity cluster: " + currentTreeFilter.value.toUpperCase();
+      }
+
+      listTitleEl.textContent = scopeDesc;
+      listStatsEl.textContent =
+        total + " items | critical " + sevMap.critical +
+        ", high " + sevMap.high +
+        ", medium " + sevMap.medium +
+        ", low " + sevMap.low;
+
+      filteredItems.forEach(function (it, idx) {
+        const tr = document.createElement("tr");
+        tr.dataset.index = String(idx);
+
+        const sev = normalizeSeverity(it.severity);
+        const sevTd = document.createElement("td");
+        const chip = document.createElement("span");
+        chip.className = "sev-chip sev-" + sev;
+        chip.textContent = sev.toUpperCase();
+        sevTd.appendChild(chip);
+        tr.appendChild(sevTd);
+
+        const titleTd = document.createElement("td");
+        titleTd.textContent = it.title || "";
+        tr.appendChild(titleTd);
+
+        const methodTd = document.createElement("td");
+        methodTd.textContent = it.method || "";
+        tr.appendChild(methodTd);
+
+        const endpointTd = document.createElement("td");
+        endpointTd.textContent = it.endpoint || it.url || "";
+        tr.appendChild(endpointTd);
+
+        const statusTd = document.createElement("td");
+        statusTd.textContent = it.status || "";
+        tr.appendChild(statusTd);
+
+        const catTd = document.createElement("td");
+        catTd.textContent = it.category || "";
+        tr.appendChild(catTd);
+
+        const lastStatusTd = document.createElement("td");
+        lastStatusTd.textContent = (it.response && it.response.status) || "";
+        tr.appendChild(lastStatusTd);
+
+        tr.addEventListener("click", function () {
+          if (currentSelectedRow) {
+            currentSelectedRow.classList.remove("selected");
+          }
+          tr.classList.add("selected");
+          currentSelectedRow = tr;
+          showDetails(it);
+        });
+
+        issuesTableBody.appendChild(tr);
+      });
+
+      if (filteredItems.length > 0) {
+        const firstRow = issuesTableBody.querySelector("tr");
+        if (firstRow) {
+          firstRow.classList.add("selected");
+          currentSelectedRow = firstRow;
+        }
+        showDetails(filteredItems[0]);
+      } else {
+        detailTitleEl.textContent = "Details";
+        tabSummary.textContent = "No items match the current filters.";
+        tabRequest.textContent = "";
+        tabResponse.textContent = "";
+      }
+    }
+
+    function escapeHtml(str) {
+      if (str == null) return "";
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    }
+
+    function formatSignals(it) {
+      if (!Array.isArray(it.signals) || !it.signals.length) return "";
+      return it.signals
+        .map(function (s) { return "<span class=\"pill\">" + escapeHtml(s) + "</span>"; })
+        .join(" ");
+    }
+
+    
+    function autoRiskKey(category) {
+      if (!category) return "";
+      const map = {
+        Misconfiguration: "Misconfig",
+        BusinessFlows: "BusinessFlows",
+        AdminAccess: "AdminAccess",
+        Resource: "Resource",
+        Property: "Property",
+        BrokenAuth: "BrokenAuth",
+        BOLA: "BOLA",
+        Inventory: "Inventory",
+        UnsafeConsumption: "UnsafeConsumption",
+		Authentication: "Authentication",
+        SSRF: "SSRF"
+      };
+      return map[category] || "";
+    }
+
+    function showDetails(it) {
+      if (!it) return;
+      const sev = normalizeSeverity(it.severity);
+      const sevLabel = sev.toUpperCase();
+
+      detailTitleEl.textContent = it.title || "Details";
+
+      const status = it.status || "pending";
+      const statusClass = status === "confirmed" ? "status-confirmed" : "status-pending";
+
+      const riskKey = it.risk_key || autoRiskKey(it.category);
+      const riskInfo = RISK_INFO[riskKey] || null;
+
+      const signalsHtml = formatSignals(it);
+      const metaBlocks = [];
+
+      if (it.method || it.endpoint || it.url) {
+        const ep = it.endpoint || it.url || "";
+        metaBlocks.push(
+          "<div><strong>" + escapeHtml(it.method || "") + "</strong> " + escapeHtml(ep) + "</div>"
+        );
+      }
+
+      const statusLabel = escapeHtml(status);
+      metaBlocks.push(
+        "<div>Severity: <span class=\"pill sev-" + sev + "\">" + sevLabel + "</span> " +
+        "Status: <span class=\"pill " + statusClass + "\">" + statusLabel + "</span></div>"
+      );
+
+      if (it.date) {
+        metaBlocks.push("<div>Date: " + escapeHtml(it.date) + "</div>");
+      }
+
+      let summaryHtml = "<div class=\"meta-row\">" + metaBlocks.join("") + "</div>";
+      if (signalsHtml) {
+        summaryHtml += "<div class=\"meta-row\">" + signalsHtml + "</div>";
+      }
+
+      const desc = it.description || "";
+      if (desc) {
+        summaryHtml += "<div class=\"risk-block\"><h3>Finding summary</h3>" +
+          "<p>" + escapeHtml(desc).replace(/\n/g, "<br>") + "</p></div>";
+      }
+
+      tabSummary.innerHTML = summaryHtml;
+
+      const endpoint = it.endpoint || it.url || "";
+      const lastStatus = (it.response && it.response.status) || "";
+      const methodLabel = escapeHtml(it.method || "");
+      const endpointLabel = escapeHtml(endpoint);
+      const lastStatusLabel = escapeHtml(lastStatus);
+
+      const reqHeaders = (it.request && it.request.headers) || "";
+      const reqBody = (it.request && it.request.body) || "";
+      tabRequest.innerHTML =
+        "<h4>Request</h4>" +
+        "<div class=\"meta-row\"><div><strong>" + methodLabel + " " + endpointLabel + "</strong>" +
+        (lastStatus ? " . Last status: " + lastStatusLabel : "") +
+        "</div></div>" +
+        "<pre>" + escapeHtml(reqHeaders) + "</pre>" +
+        "<pre>" + escapeHtml(reqBody) + "</pre>";
+
+      const resHeaders = (it.response && it.response.headers) || "";
+      const resBody = (it.response && it.response.body) || "";
+      tabResponse.innerHTML =
+        "<h4>Response</h4>" +
+        "<div class=\"meta-row\"><div><strong>" + methodLabel + " " + endpointLabel + "</strong>" +
+        (lastStatus ? " . Last status: " + lastStatusLabel : "") +
+        "</div></div>" +
+        "<pre>" + escapeHtml(resHeaders) + "</pre>" +
+        "<pre>" + escapeHtml(resBody) + "</pre>";
+
+      const riskContainer = document.getElementById("riskinfo-container");
+      const riskScroll = document.getElementById("riskinfo-scroll");
+      if (riskContainer && riskScroll) {
+        if (riskInfo) {
+          riskContainer.style.display = "block";
+          let riskHtml = "<strong>" + escapeHtml(riskInfo.title) + "</strong><br><br>";
+          riskHtml += "<div>" + escapeHtml(riskInfo.description) + "</div>";
+          if (Array.isArray(riskInfo.recommendation) && riskInfo.recommendation.length) {
+            riskHtml += "<br><ul>";
+            riskInfo.recommendation.forEach(function (rec) {
+              riskHtml += "<li>" + escapeHtml(rec) + "</li>";
+            });
+            riskHtml += "</ul>";
+          }
+          riskScroll.innerHTML = riskHtml;
+        } else {
+          riskContainer.style.display = "none";
+          riskScroll.innerHTML = "";
+        }
+      }
+    }
+
+    (function setupTabs() {
+      const tabs = document.querySelectorAll(".tab");
+      function activateTab(name) {
+        tabs.forEach(function (t) {
+          const isActive = t.dataset.tab === name;
+          t.classList.toggle("active", isActive);
+        });
+        tabSummary.style.display = name === "summary" ? "block" : "none";
+        tabRequest.style.display = name === "request" ? "block" : "none";
+        tabResponse.style.display = name === "response" ? "block" : "none";
+      }
+      tabs.forEach(function (t) {
+        t.addEventListener("click", function () {
+          activateTab(t.dataset.tab);
+        });
+      });
+      activateTab("summary");
+    })();
+
+    function init() {
+      buildMeta();
+      buildTree();
+      buildSeverityLegend();
+      updateSevLegend();
+      applyFilters();
+    }
+
+    init();
+  </script>
+
+  <script>
+    function openCombinedReport() {
+      try {
+        const win = window.open("combined_report.html", "_blank");
+        if (!win) {
+          alert("Cannot open combined_report.html. Please allow pop-ups or open the file manually from the report folder.");
+        }
+      } catch (e) {
+        console.error("Failed to open combined_report.html:", e);
+        alert("Failed to open combined_report.html. Check the browser console for details.");
+      }
+    }
+
+    function printCombinedReport() {
+      try {
+        const win = window.open("combined_report.html", "_blank");
+        if (!win) {
+          alert("Cannot open combined_report.html for printing. Please allow pop-ups or print the file manually.");
+          return;
+        }
+        win.onload = function () {
+          try {
+            win.focus();
+            win.print();
+          } catch (e) {
+            console.error("Print failed:", e);
+            alert("Printing failed. Try printing combined_report.html manually from the browser.");
+          }
+        };
+      } catch (e) {
+        console.error("Error during printCombinedReport:", e);
+        alert("Error while printing combined_report.html. Check the browser console for details.");
+      }
+    }
+  </script>
+</body>
+
+</html>

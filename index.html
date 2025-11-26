@@ -4,13 +4,13 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta content="VvYq2k5BFp5dpIL6JpQhoe90sWEXZTEBbaynlEKCWRE" name="google-site-verification">
-  <meta name="description" content="APISCAN v2.2 – AI-enhanced OWASP APIscanner by Perry Mertens" />
-  <meta property="og:title" content="APISCAN v2.2 – OWASP APIScanner by Perry Mertens license AGPL-3.0" />
-  <meta property="og:description" content="Extensible, AI-aware apiscanner for OWASP API Security Top 10 with Swagger/OpenAPI support, multi‑auth flows, and rich HTML reporting." />
+  <meta name="description" content="APISCAN v3.0  AI-enhanced OWASP APIscanner by Perry Mertens" />
+  <meta property="og:title" content="APISCAN v3.0  OWASP APIScanner by Perry Mertens license AGPL-v3.0" />
+  <meta property="og:description" content="Extensible, AI-aware apiscanner for OWASP API Security Top 10 with Swagger/OpenAPI support, multiauth flows, and rich HTML reporting." />
   <meta property="og:type" content="website" />
   <meta property="og:image" content="./apiscan_logo.jpg" />
   <meta name="theme-color" content="#0ea5e9" />
-  <title>APISCAN v2.2 – OWASP APIScanner</title>
+  <title>APISCAN v3.0 is an OWASP API scanner designed to detect API vulnerabilities</title>
   <style>
     :root{
       --bg: #0b1220;
@@ -89,7 +89,7 @@
     <div class="nav container">
       <div class="brand">
         <div class="logo-badge">A</div>
-        <h1>APISCAN · OWASP APIscanner by Perry Mertens license AGPL-3.0</h1>
+        <h1>APISCAN  OWASP APIscanner by Perry Mertens license AGPL-V3.0</h1>
       </div>
       <div class="actions">
         <a class="btn" href="https://github.com/perrym/apiscanner" target="_blank" rel="noopener">GitHub</a>
@@ -101,30 +101,36 @@
   <main class="container">
     <section class="hero">
       <div>
-        <span class="pill">AI-aware · Swagger/OpenAPI · HTML reports</span>
-        <h2>APISCAN v2.2 – AI-enhanced OWASP API Security Scanner. </h2>
-        <p>An APIscanner aligned with the OWASP API Security Top 10 (2023), using OpenAPI/Swagger as input, supports OAuth 2.0, Bearer, mTLS, and API key authentication, generates realistic requests, runs scans in parallel, and offers optional AI-assisted review.</p>
+        <span class="pill">AI-aware  Swagger/OpenAPI  HTML reports</span>
+        <h2>APISCAN v3.0  AI-enhanced OWASP API Security Scanner. </h2>
+        <p>APIscan is an API vulnerability scanner that proactively identifies security risks by testing against the OWASP API Security Top 10 (2023). It uses your OpenAPI/Swagger specification to generate realistic attack payloads and detect issues such as Broken Object Level Authorization (BOLA), Broken Authentication, Excessive Data Exposure, and other critical API vulnerabilities. APIscan supports OAuth 2.0, Bearer, mTLS, and API key authentication, generates realistic requests, runs scans in parallel, and offers optional AI-assisted review.</p>
         <div class="cta">
-          <a class="btn primary" href="https://github.com/perrym/apiscanner" target="_blank" rel="noopener">⭐ Star on GitHub</a>
+          <a class="btn primary" href="https://github.com/perrym/apiscanner" target="_blank" rel="noopener"> Star on GitHub</a>
           <a class="btn" href="#whatsnew">What's new</a>
-          <span class="pill">Version 2.2 · MIT</span>
+          <span class="pill">Version 3.0</span>
         </div>
       </div>
       <div class="hero-logo">
-        <img src="apiscan_logo.jpg" alt="APISCAN logo" />
+        <img src="apiscan_logo.jpg"
+             style="border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,0.35);max-width:520px;width:100%;">
       </div>
     </section>
 
     <section id="whatsnew">
-      <h2>What's new in v2.2</h2>
+      <h2>What's new in v3.0</h2>
+      <div style="margin:1rem 0 2rem;display:flex;justify-content:center;">
+        <img src="apiscan_v3_dashboard.jpg"
+             alt="APISCAN v3.0 findings dashboard"
+             style="max-width:100%;border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,0.35);">
+      </div>
       <div class="grid features">
         <article class="card">
           <h3>Generic Sanitizer</h3>
-          <p>No customer hardcodes. Collapses duplicate path segments, normalizes <code>/vN</code> → <code>/vN.00</code>, trims trailing slashes. Toggle with <code>--no-sanitize</code> and refine with <code>--rewrite "pat=&gt;rep"</code>.</p>
+          <p>No customer hardcodes. Collapses duplicate path segments, normalizes <code>/vN</code>  <code>/vN.00</code>, trims trailing slashes. Toggle with <code>--no-sanitize</code> and refine with <code>--rewrite "pat=&gt;rep"</code>.</p>
         </article>
         <article class="card">
           <h3>Header Overrides</h3>
-          <p>Universal header model: <code>--flow token --token</code>, <code>--apikey --apikey-header</code>, <code>--extra-header</code>, <code>--headers-file</code>. Spec <em>examples/defaults</em> are auto‑applied too.</p>
+          <p>Universal header model: <code>--flow token --token</code>, <code>--apikey --apikey-header</code>, <code>--extra-header</code>, <code>--headers-file</code>. Spec <em>examples/defaults</em> are autoapplied too.</p>
         </article>
         <article class="card">
           <h3>IDs &amp; Samples</h3>
@@ -648,12 +654,12 @@ python apiscan.py --url https://api.example.com --swagger ./openapi.json --plan-
     <section id="links">
       <h2>Links</h2>
       <p>Repository: <a href="https://github.com/perrym/apiscanner" target="_blank" rel="noopener">perrym/apiscanner</a></p>
-      <p>Medium: <a href="https://medium.com/@PerryPM/apiscan-a-practical-approach-to-api-security-testing-by-perry-mertens-96b5e676c071" target="_blank" rel="noopener">APISCAN – a practical approach</a></p>
+      <p>Medium: <a href="https://medium.com/@PerryPM/apiscan-a-practical-approach-to-api-security-testing-by-perry-mertens-96b5e676c071" target="_blank" rel="noopener">APISCAN  a practical approach</a></p>
       <p>Contact: <a href="mailto:pamsniffer@gmail.com">pamsniffer@gmail.com</a></p>
     </section>
 
     <footer>
-      <p>&copy; <span id="year"></span> Perry Mertens. Released under the MIT License.</p>
+      <p>&copy; <span id="year"></span> Perry Mertens. Released under the AGPL-v3.0 License.</p>
     </footer>
   </main>
 

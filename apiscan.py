@@ -1,6 +1,6 @@
 ########################################################
 # APISCAN - API Security Scanner                       #
-# Licensed under AGPL-V3.0                             #
+# Licensed under the MIT License                       #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
 # version 3.0 26-11-2025                               #
 ########################################################
@@ -169,7 +169,42 @@ class EvidenceDatabase:
             rows.append((self.run_id, category, title, desc, category, str(sev).capitalize(), str(status), method, endpoint, _json.dumps(req_headers, ensure_ascii=False) if not isinstance(req_headers, str) else req_headers, _json.dumps(req_body, ensure_ascii=False) if isinstance(req_body, (dict, list)) else str(req_body), _json.dumps(res_headers, ensure_ascii=False) if not isinstance(res_headers, str) else res_headers, _json.dumps(res_body, ensure_ascii=False) if isinstance(res_body, (dict, list)) else str(res_body), sc if isinstance(sc, int) else None, now))
         cur = self.conn.cursor()
         cur.executemany('INSERT INTO finding(run_id, risk_key, title, description, category, severity, status, method, endpoint, req_headers, req_body, res_headers, res_body, res_status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', rows)
-        self.conn.commit()
+# Update endpoint.max_severity based on inserted findings for this category + run
+        try:
+            cur.execute("""
+                SELECT method, endpoint, MAX(
+                    CASE LOWER(severity)
+                        WHEN 'critical' THEN 4
+                        WHEN 'high' THEN 3
+                        WHEN 'medium' THEN 2
+                        WHEN 'low' THEN 1
+                        WHEN 'info' THEN 0
+                        ELSE -1
+                    END
+                ) AS max_rank
+                FROM finding
+                WHERE run_id = ? AND category = ?
+                GROUP BY method, endpoint
+            """, (self.run_id, category))
+            rows2 = cur.fetchall()
+            rank_to_sev = {4: 'Critical', 3: 'High', 2: 'Medium', 1: 'Low', 0: 'Info'}
+            for mth, ep, max_rank in rows2:
+                if max_rank is None:
+                    continue
+                try:
+                    mr = int(max_rank)
+                except Exception:
+                    continue
+                if mr < 0:
+                    continue
+                sev2 = rank_to_sev.get(mr)
+                if not sev2:
+                    continue
+                self.record_endpoint(str(mth).upper(), str(ep), run_id=self.run_id, severity=sev2)
+        except Exception:
+            pass
+
+            self.conn.commit()
 
     #================funtion close close =============
     def close(self) -> None:
@@ -866,6 +901,12 @@ def main() -> None:
     parser.add_argument('--api11', action='store_true', help='Run AI-assisted OWASP Top 10 analysis')
     for i in range(1, 11):
         parser.add_argument(f'--api{i}', action='store_true', help=f'Run only API{i} audit')
+    # API3 (property-level) ACTIVE mode controls
+    parser.add_argument('--api3-active', action='store_true', help='Enable API3 ACTIVE tests (may send write requests).')
+    parser.add_argument('--api3-active-ok', choices=['YES'], help='Required acknowledgment for API3 ACTIVE tests: specify YES.')
+    parser.add_argument('--api3-test-user-id', default='1001', help='API3 test user id used in some probes (default: 1001)')
+    parser.add_argument('--api3-test-admin-id', default='9999', help='API3 test admin id used in some probes (default: 9999)')
+    parser.add_argument('--api3-active-header', default='', help='Optional marker header for ACTIVE mode, format Name:Value')
     group_nv = parser.add_mutually_exclusive_group()
     group_nv.add_argument('--normalize-version', dest='normalize_version', action='store_true', help='Normalize version segments in URLs like /v2.00/ -> /v2.0/ during planning and verify.')
     group_nv.add_argument('--no-normalize-version', dest='normalize_version', action='store_false', help='Disable version normalization in URLs (default).')
@@ -1056,7 +1097,7 @@ def main() -> None:
             tqdm.write(f'{Fore.RED}[API1][ERR] report generation failed: {e}{Style.RESET_ALL}')
         found = sum((1 for r in bola_results if getattr(r, 'is_vulnerable', False)))
         vulnerability_summary['BOLA'] = found
-        msg = f'{Fore.GREEN}API1 complete - {found} vulnerabilities found{Style.RESET_ALL}' if found == 0 else f'{Fore.YELLOW}API1 complete - {found} vulnerabilities found{Style.RESET_ALL}' if found < 5 else f'{Fore.RED}API1 complete - {found} vulnerabilities found{Style.RESET_ALL}'
+        msg = f'{Fore.GREEN}API1 complete -  vulnerabilities found{Style.RESET_ALL}' if found == 0 else f'{Fore.YELLOW}API1 complete -vulnerabilities found{Style.RESET_ALL}' if found < 5 else f'{Fore.RED}API1 complete - vulnerabilities found{Style.RESET_ALL}'
         save_html_report(bola.issues, 'BOLA', args.url, output_dir)
         if db is not None:
             db.store_issues('BOLA', bola.issues, base_url=args.url)
@@ -1090,7 +1131,16 @@ def main() -> None:
     if 3 in selected_apis:
         tqdm.write(f'{Fore.CYAN}API3 - Property-level Authorization{Style.RESET_ALL}')
         logger.info('Running API3 - Property-level Authorization')
-        pa = ObjectPropertyAuditor(base_url=args.url, session=sess, show_progress=True)
+        pa = ObjectPropertyAuditor(
+            base_url=args.url,
+            session=sess,
+            show_progress=True,
+            active_mode=bool(getattr(args, 'api3_active', False)),
+            active_ok=(getattr(args, 'api3_active_ok', None) == 'YES'),
+            active_header=str(getattr(args, 'api3_active_header', '') or ''),
+            test_user_id=str(getattr(args, 'api3_test_user_id', '1001')),
+            test_admin_id=str(getattr(args, 'api3_test_admin_id', '9999')),
+        )
         prop_issues = pa.test_object_properties(endpoints)
         for issue in prop_issues:
             tqdm.write(f"-> Property issue: {issue.get('description', 'Unknown')} @ {issue.get('endpoint', 'Unknown')}")
@@ -1211,7 +1261,14 @@ def main() -> None:
         else:
             raw_issues = sc.test_endpoints(safe_eps)
             sc._dump_raw_issues(output_dir / 'log')
-            sc._filter_issues()
+            # Use public helper if available (prevents AttributeError when implementation changes)
+            try:
+                if hasattr(sc, 'filter_issues') and callable(getattr(sc, 'filter_issues')):
+                    sc.issues = sc.filter_issues() or sc.issues
+                elif hasattr(sc, '_filter_issues') and callable(getattr(sc, '_filter_issues')):
+                    sc.issues = sc._filter_issues() or sc.issues
+            except Exception:
+                pass
             sc._dedupe_issues()
             safe_issues = sc.issues
             vulnerability_summary['Unsafe Consumption'] = len(safe_issues)

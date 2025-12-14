@@ -1,8 +1,14 @@
 # APISCAN - CHANGELOG
-Version:2.2 release 3-11-2025
+Version:3.01 release 14-12-2025
 Author: Perry Mertens pamsniffer@gmail.com
 
-feature
+14-12-2025
+- change a lot of code
+- problems in reporting working on it.
+- beter scanner 
+
+26-11-2025
+- using sqlite database
 - working on a new version that include sqlite database.
 
 New 

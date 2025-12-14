@@ -1,12 +1,11 @@
 ########################################################
 # APISCAN - API Security Scanner                       #
-# Licensed under AGPL-V3.0                             #
+# Licensed under the MIT License                       #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 2.2  2-11--2025                             #
-########################################################                                
-                             
-from __future__ import annotations
+# version 3.1 14-12-2025                               #
+########################################################
 
+from __future__ import annotations
 import base64
 import json
 import logging
@@ -21,7 +20,7 @@ from urllib.parse import urljoin, urlparse
 from openapi_universal import (
     iter_operations as oas_iter_ops,
     build_request as oas_build_request,
-    SecurityConfig,              
+    SecurityConfig,
 )
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -29,6 +28,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 Issue = Dict[str, Any]
 
 
+#================funtion _headers_to_list description =============
 def _headers_to_list(hdrs) -> List[Tuple[str, str]]:
     if hasattr(hdrs, "getlist"):
         return [(k, v) for k in hdrs for v in hdrs.getlist(k)]
@@ -36,7 +36,8 @@ def _headers_to_list(hdrs) -> List[Tuple[str, str]]:
 
 
 class AuthorizationAuditor:
-    # ----------------------- Funtion __init__ ----------------------------#
+
+    #================funtion __init__ description =============
     def __init__(
         self,
         base_url: str,
@@ -58,24 +59,24 @@ class AuthorizationAuditor:
         self.base_url = base_url.rstrip("/") + "/"
         self.flow = (flow or "none").lower()
 
-                                                                               
+
         self._respect_session_auth = True
         self._forbid_local_auth_headers = True
-        self.strip_auth_on_auth_endpoints = True                                                       
+        self.strip_auth_on_auth_endpoints = True
 
-                        
+
         self.authz_issues: List[Dict[str, Any]] = []
         self.roles: Dict[str, Dict[str, Any]] = {"anonymous": {}, "user": {}, "admin": {}}
         self.request_templates: Dict[str, Any] = self._default_request_templates()
 
-                                                                                               
+
         self.swagger_data: Dict[str, Any] = spec or {}
         if self.swagger_data:
             self.discovered_endpoints: List[Dict[str, Any]] = self._parse_swagger_data()
         else:
             self.discovered_endpoints: List[Dict[str, Any]] = self._discover_endpoints()
 
-                                                                                          
+
         self._op_index: Dict[Tuple[str, str], dict] = {}
         for _op in oas_iter_ops(self.swagger_data or {}):
             self._op_index[(_op["method"], _op["path"])] = _op
@@ -84,7 +85,7 @@ class AuthorizationAuditor:
         for (m, p), op in self._op_index.items():
             self._op_shape_index[(m, self._canonical_path(p))] = op
 
-                                                                         
+
         self._global_security = self.swagger_data.get("security", None)
 
         self.logger.debug(
@@ -92,10 +93,10 @@ class AuthorizationAuditor:
             self.base_url, len(self.discovered_endpoints), self.flow
         )
 
-                                                               
-    # ----------------------- Funtion _default_request_templates ----------------------------#
+
+    #================funtion _default_request_templates description =============
     def _default_request_templates(self) -> Dict[str, Any]:
-                                                                
+
         return {
             "login": {
                 "method": "POST",
@@ -114,12 +115,14 @@ class AuthorizationAuditor:
             "headers": {"Accept": "application/json", "User-Agent": "APISecurityScanner/2.1"},
         }
 
+    #================funtion add_role_token description =============
     def add_role_token(self, role: str, token: str) -> None:
         if role not in self.roles:
             self.roles[role] = {}
         self.roles[role]["token"] = token
 
-    # ----------------------- Funtion _parse_swagger_data ----------------------------#
+
+    #================funtion _parse_swagger_data description =============
     def _parse_swagger_data(self) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
         if not isinstance(self.swagger_data, dict):
@@ -146,7 +149,8 @@ class AuthorizationAuditor:
                 )
         return out
 
-    # ----------------------- Funtion _discover_endpoints ----------------------------#
+
+    #================funtion _discover_endpoints description =============
     def _discover_endpoints(self) -> List[Dict[str, Any]]:
         common_paths = [
             "/api/admin",
@@ -185,7 +189,8 @@ class AuthorizationAuditor:
             )
         return discovered
 
-    # ----------------------- Funtion _is_sensitive ----------------------------#
+
+    #================funtion _is_sensitive description =============
     def _is_sensitive(self, meta: Dict[str, Any], path: str = "") -> bool:
         indicators = (
             "admin",
@@ -212,18 +217,21 @@ class AuthorizationAuditor:
                 return True
         return False
 
-    # ----------------------- Funtion _canonical_path ----------------------------#
+
+    #================funtion _canonical_path description =============
     def _canonical_path(self, p: str) -> str:
         p = "/" + (p or "").lstrip("/")
         return re.sub(r"\{[^}]+\}", "{}", p)
 
-    # ----------------------- Funtion _abs_url ----------------------------#
+
+    #================funtion _abs_url description =============
     def _abs_url(self, path_or_url: str) -> str:
         if path_or_url.startswith(("http://", "https://")):
             return path_or_url
         return urljoin(self.base_url, path_or_url.lstrip("/"))
 
-    # ----------------------- Funtion _looks_like_auth_endpoint ----------------------------#
+
+    #================funtion _looks_like_auth_endpoint description =============
     def _looks_like_auth_endpoint(self, path: str) -> bool:
         u = path.lower()
         return any(x in u for x in [
@@ -231,7 +239,8 @@ class AuthorizationAuditor:
             "forget-password", "reset-password"
         ])
 
-    # ----------------------- Funtion _req_from_spec ----------------------------#
+
+    #================funtion _req_from_spec description =============
     def _req_from_spec(self, method: str, path_template: str) -> Dict[str, Any]:
         key = (method.upper(), path_template)
         op = self._op_index.get(key)
@@ -242,7 +251,8 @@ class AuthorizationAuditor:
             raise KeyError(f"Operation not found: {method} {path_template}")
         return oas_build_request(self.swagger_data, self.base_url, op, None)
 
-    # ----------------------- Funtion _op_requires_auth ----------------------------#
+
+    #================funtion _op_requires_auth description =============
     def _op_requires_auth(self, op: Optional[dict]) -> Optional[bool]:
         if not op:
             return None
@@ -255,7 +265,8 @@ class AuthorizationAuditor:
             return False
         return True
 
-    # ----------------------- Funtion _prepare_request_data ----------------------------#
+
+    #================funtion _prepare_request_data description =============
     def _prepare_request_data(self, endpoint: Dict[str, Any], method: str) -> Tuple[Optional[Dict], Optional[Dict]]:
         json_data = None
         form_data = None
@@ -266,7 +277,7 @@ class AuthorizationAuditor:
                 continue
             if template.get("path") and template["path"] in endpoint_path:
                 if "body" in template:
-                    json_data = json.loads(json.dumps(template["body"]))                
+                    json_data = json.loads(json.dumps(template["body"]))
                 template_found = True
                 break
         if not template_found and endpoint.get("request_body"):
@@ -278,7 +289,8 @@ class AuthorizationAuditor:
             return (None, None)
         return (json_data, form_data)
 
-    # ----------------------- Funtion _generate_example_from_schema ----------------------------#
+
+    #================funtion _generate_example_from_schema description =============
     def _generate_example_from_schema(self, schema: Dict[str, Any]) -> Dict[str, Any]:
         example = {}
         if "properties" in schema:
@@ -301,8 +313,8 @@ class AuthorizationAuditor:
                     example[prop_name] = ["item1", "item2"]
         return example
 
-                                                                 
-    # ----------------------- Funtion test_authorization ----------------------------#
+
+    #================funtion test_authorization description =============
     def test_authorization(self, show_progress: bool = True) -> List[Dict[str, Any]]:
         endpoints = self.discovered_endpoints or []
         if not endpoints:
@@ -317,8 +329,12 @@ class AuthorizationAuditor:
             self._test_endpoint(ep)
         return self._filtered_issues()
 
-    # ----------------------- Funtion _test_endpoint ----------------------------#
+
+    #================funtion _test_endpoint description =============
     def _test_endpoint(self, ep: Dict[str, Any]) -> None:
+        path = ep.get("path") or urlparse(ep.get("url", "")).path or "/"
+        if self._looks_like_auth_endpoint(path):
+            return
         for verb in ep.get("methods", ["GET"]):
             self._do_request(ep, verb, role="anonymous", should_access=not ep.get("sensitive", False))
             if "user" in self.roles:
@@ -326,11 +342,12 @@ class AuthorizationAuditor:
             if "admin" in self.roles:
                 self._do_request(ep, verb, role="admin", should_access=True)
 
-    # ----------------------- Funtion _request_for_role ----------------------------#
+
+    #================funtion _request_for_role description =============
     def _request_for_role(self, req: Dict[str, Any], role: str, *, suppress_auth: bool = False) -> Dict[str, Any]:
         out = dict(req)
         out["headers"] = dict(req.get("headers") or {})
-                                                           
+
         if suppress_auth:
             out["headers"].pop("Authorization", None)
             return out
@@ -340,25 +357,32 @@ class AuthorizationAuditor:
                 out["headers"].setdefault("Authorization", f"Bearer {tok}")
         return out
 
-    # ----------------------- Funtion _do_request ----------------------------#
+
+    #================funtion _do_request description =============
     def _do_request(self, ep: Dict[str, Any], verb: str, role: str, should_access: bool) -> None:
         method = verb.upper()
         path = ep.get("path") or urlparse(ep.get("url", "")).path or "/"
         path = "/" + path.lstrip("/")
 
-                                             
+
+        if role in ("user", "admin"):
+            tok = self.roles.get(role, {}).get("token")
+            if not tok:
+                return
+
+
         try:
             req = self._req_from_spec(method, path)
         except KeyError:
             req = {"method": method, "url": self._abs_url(path), "headers": dict(self.request_templates.get("headers", {}))}
 
-                             
+
         base_hdrs = self.request_templates.get("headers", {"User-Agent": "APISecurityScanner/2.1", "Accept": "application/json"})
         req.setdefault("headers", {})
         for k, v in base_hdrs.items():
             req["headers"].setdefault(k, v)
 
-                          
+
         json_data, form_data = self._prepare_request_data(ep, verb)
         if method != "GET":
             if json_data is not None:
@@ -369,19 +393,26 @@ class AuthorizationAuditor:
         is_auth_ep = self._looks_like_auth_endpoint(path)
         rreq = self._request_for_role(req, role, suppress_auth=is_auth_ep)
 
-                                                                                                           
-        if is_auth_ep and self.strip_auth_on_auth_endpoints and "Authorization" in getattr(self.session, "headers", {}):
+        if role == "anonymous":
+            rreq.get("headers", {}).pop("Authorization", None)
             tmp = requests.Session()
             tmp.verify = getattr(self.session, "verify", True)
             tmp.trust_env = getattr(self.session, "trust_env", True)
             tmp.proxies = getattr(self.session, "proxies", {})
-            try:
-                tmp.cookies.update(self.session.cookies.get_dict())
-            except Exception:
-                pass
             ses = tmp
         else:
-            ses = self.session
+            if is_auth_ep and self.strip_auth_on_auth_endpoints and "Authorization" in getattr(self.session, "headers", {}):
+                tmp = requests.Session()
+                tmp.verify = getattr(self.session, "verify", True)
+                tmp.trust_env = getattr(self.session, "trust_env", True)
+                tmp.proxies = getattr(self.session, "proxies", {})
+                try:
+                    tmp.cookies.update(self.session.cookies.get_dict())
+                except Exception:
+                    pass
+                ses = tmp
+            else:
+                ses = self.session
 
         try:
             r = ses.request(**rreq, timeout=self.timeout)
@@ -389,7 +420,7 @@ class AuthorizationAuditor:
             if r.status_code in (400, 404):
                 return
 
-                                                             
+
             op = self._op_index.get((method, path)) or self._op_shape_index.get((method, self._canonical_path(path)))
             exp = self._op_requires_auth(op)
             if exp is None:
@@ -415,9 +446,8 @@ class AuthorizationAuditor:
         except Exception as exc:
             self._log_issue(url=rreq.get("url", ep["url"]), description=f"Request error - {method} as {role}: {exc}", severity="Low", details={"method": method, "role": role})
 
-                                                                 
-    # ----------------------- Funtion _filtered_issues ----------------------------#
-        
+
+    #================funtion _filtered_issues description =============
     def _filtered_issues(self) -> List[Dict[str, Any]]:
             if not self.authz_issues:
                 return []
@@ -437,12 +467,12 @@ class AuthorizationAuditor:
                 path = str(it.get("endpoint") or "")
                 desc = (it.get("description") or "").lower()
                 body = it.get("response_body") or ""
-                
+
                 sensitive_flag = False
                 if ".env" in path or "exposed" in desc or "sensitive" in desc:
                     sensitive_flag = True
                 else:
-                   
+
                     import re, json
                     if re.search(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", body, flags=re.I):
                         sensitive_flag = True
@@ -452,7 +482,7 @@ class AuthorizationAuditor:
                         sensitive_flag = True
 
                 if code == 200 and not sensitive_flag:
-                   
+
                     generic = False
                     try:
                         data = json.loads(body)
@@ -467,12 +497,13 @@ class AuthorizationAuditor:
                     if generic:
                         continue
 
-                
+
                 try:
                     canon = self._canonical_path(path)
                 except Exception:
                     canon = path
 
+                #================funtion _shape description =============
                 def _shape(text: str) -> str:
                     if not text:
                         return ""
@@ -482,6 +513,7 @@ class AuthorizationAuditor:
                     except Exception:
                         import re
                         return re.sub(r"\s+", " ", text).strip()[:4096]
+                    #================funtion norm description =============
                     def norm(v):
                         if isinstance(v, dict):
                             return {k: norm(val) for k,val in sorted(v.items(), key=lambda x: x[0]) if k not in {"timestamp","time","date","requestId","request_id"}}
@@ -508,7 +540,7 @@ class AuthorizationAuditor:
 
                 it["fingerprint"] = fp
                 out.append(it)
-           
+
             dedup: Dict[str, Dict[str, Any]] = {}
             for it in out:
                 fp = it.get("fingerprint")
@@ -527,7 +559,8 @@ class AuthorizationAuditor:
                     dedup[fp] = it
             return list(dedup.values())
 
-        # ----------------------- Funtion _log_issue ----------------------------#
+
+    #================funtion _log_issue description =============
     def _log_issue(
         self,
         url: str,
@@ -572,13 +605,15 @@ class AuthorizationAuditor:
                 entry[k] = v
         self.authz_issues.append(entry)
 
-        # ----------------------- Funtion generate_report ----------------------------#
+
+    #================funtion generate_report description =============
     def generate_report(self, fmt: str = "html") -> str:
         issues = self._filtered_issues()
         gen = ReportGenerator(issues, scanner="Authorization", base_url=self.base_url)
         return gen.generate_html() if fmt == "html" else gen.generate_markdown()
 
-    # ----------------------- Funtion save_report ----------------------------#
+
+    #================funtion save_report description =============
     def save_report(self, path: str, fmt: str = "html") -> None:
         issues = self._filtered_issues()
         ReportGenerator(issues, scanner="Authorization", base_url=self.base_url).save(path, fmt=fmt)

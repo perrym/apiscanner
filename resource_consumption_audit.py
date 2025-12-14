@@ -1,8 +1,8 @@
 ########################################################
 # APISCAN - API Security Scanner                       #
-# Licensed under AGPL-V3.0                             #
+# Licensed under the MIT License                       #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 3.0  26-11--2025                              #
+# version 3.1 14-12-2025                               #
 ########################################################
 from __future__ import annotations
 import re
@@ -42,6 +42,29 @@ class ResourceConsumptionAuditor:
             return (resp.text or '')[:limit]
         except Exception:
             return ''
+
+    def _safe_body_sample(self, body, limit: int = 2048) -> str:
+        if body is None:
+            return ''
+        if isinstance(body, bytes):
+            try:
+                return body.decode('utf-8', 'replace')[:limit]
+            except Exception:
+                return f'<{len(body)} bytes>'
+        if isinstance(body, str):
+            return body[:limit]
+        try:
+            return json.dumps(body, ensure_ascii=False)[:limit]
+        except Exception:
+            return str(body)[:limit]
+
+    def _install_retry_adapter(self) -> None:
+        try:
+            adapter = HTTPAdapter(max_retries=self.retry)
+            self.session.mount('http://', adapter)
+            self.session.mount('https://', adapter)
+        except Exception:
+            pass
     _FP_BODY_PATTERNS = re.compile("(not\\s+a\\s+multipart\\s+request|token\\s+didn'?t\\s+match|no\\s+documents\\s+in\\s+result|validation\\s+error|unsupported\\s+media\\s+type|csrf|missing\\s+required\\s+parameter|boundary\\s+not\\s+found)", re.IGNORECASE)
 
     @staticmethod
@@ -66,6 +89,7 @@ class ResourceConsumptionAuditor:
         if thresholds:
             self.thresholds.update(thresholds)
         self.retry = Retry(total=2, backoff_factor=0.4, status_forcelist=[429, 500, 502, 503, 504])
+        self._install_retry_adapter()
         self.issues: List[Dict[str, Any]] = []
 
     #================funtion _build_url _build_url =============
@@ -163,7 +187,6 @@ class ResourceConsumptionAuditor:
                 size = len(resp.content or b'')
                 status = resp.status_code
                 body_text = self._slice_body(resp, 2000)
-                body_text = body_text
                 content_type = str(resp.headers.get('Content-Type', '')).lower()
                 nonstress = elapsed <= float(self.thresholds.get('nonstress_5xx_max_time', self.thresholds['response_time'])) and size <= int(self.thresholds.get('nonstress_5xx_max_size', 131072))
                 if status in skip_status:
@@ -197,7 +220,7 @@ class ResourceConsumptionAuditor:
                     triggered = True
                 if not triggered and status == 200:
                     try:
-                        if not content_type.startswith('application/json'):
+                        if 'application/json' not in content_type:
                             raise ValueError('skip non-JSON body for large record count check')
                         data = resp.json()
                         total_records = 0
@@ -226,7 +249,7 @@ class ResourceConsumptionAuditor:
 
     #================funtion _test_large_payloads _test_large_payloads =============
     def _test_large_payloads(self, endpoint: Dict[str, Any]) -> None:
-        method = (endpoint.get('method', 'GET') or 'GET').upper().upper()
+        method = (endpoint.get('method', 'GET') or 'GET').upper()
         test_cases = [('small', {'limit': 10}, 'Low'), ('medium', {'limit': 1000}, 'Low'), ('large', {'limit': 10000}, 'Medium'), ('huge', {'limit': 100000}, 'High'), ('massive', {'limit': 1000000}, 'High')]
         it = tqdm(test_cases, desc='Testing payload sizes', leave=False) if self.show_progress else test_cases
         for size_name, params, sev in it:
@@ -322,7 +345,7 @@ class ResourceConsumptionAuditor:
 
     #================funtion _test_batch_operations _test_batch_operations =============
     def _test_batch_operations(self, endpoint: Dict[str, Any]) -> None:
-        method = (endpoint.get('method', 'GET') or 'GET').upper().upper()
+        method = (endpoint.get('method', 'GET') or 'GET').upper()
         if method not in ('POST', 'PUT', 'PATCH'):
             return
         base_payload = endpoint.get('json', {'items': [{'id': 1, 'name': 'Test User', 'email': 'test@example.com'}]})
@@ -402,15 +425,19 @@ class ResourceConsumptionAuditor:
     #================funtion _filtered_issues _filtered_issues =============
     def _filtered_issues(self) -> List[Dict[str, Any]]:
         seen = set()
-        out = []
+        out: List[Dict[str, Any]] = []
         for it in self.issues:
             code = int(it.get('status_code', 0) or 0)
             if code in (0, 400, 404, 405):
                 continue
-            desc = it.get('description') or ''
-            if 200 <= code < 300 and desc.startswith('Medium - Resource Consumption'):
-                continue
-            key = (it.get('endpoint'), it.get('method'), code, desc)
+            key = (
+                it.get('endpoint'),
+                it.get('method'),
+                it.get('type'),
+                it.get('severity'),
+                code,
+                (it.get('description') or '')[:256],
+            )
             if key in seen:
                 continue
             seen.add(key)

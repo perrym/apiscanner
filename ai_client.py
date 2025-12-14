@@ -1,9 +1,9 @@
-##############################################
-# APISCAN - API Security Scanner             #
-# Licensed under AGPL-V3.0                             #
-# Author: Perry Mertens (C)                  #
-##############################################                                              
-                                              
+########################################################
+# APISCAN - API Security Scanner                       #
+# Licensed under the MIT License                       #
+# Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
+# version 3.1 14-12-2025                               #
+########################################################
 import os
 import json
 import time

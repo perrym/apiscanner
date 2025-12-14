@@ -1,9 +1,10 @@
 ########################################################
 # APISCAN - API Security Scanner                       #
-# Licensed under AGPL-V3.0                             #
+# Licensed under the MIT License                       #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 3.0 26-11-2025                               #
+# version 3.1 14-12-2025                               #
 ########################################################
+
 from __future__ import annotations
 import argparse
 import json
@@ -29,7 +30,6 @@ def _maybe_headers_to_text(h: Any) -> str:
     preserved = first if keep_status else None
     tail = '\n'.join(parts[1:]) if keep_status else s
 
-    #================funtion _from_obj _from_obj =============
     def _from_obj(obj: Any) -> str | None:
         if isinstance(obj, dict):
             return '\n'.join((f'{k}: {v}' for k, v in obj.items()))
@@ -75,6 +75,7 @@ def _maybe_headers_to_text(h: Any) -> str:
     norm = '\n'.join(out).strip()
     return preserved + ('\n' + norm if norm else '') if preserved else norm
 
+
 #================funtion _parse_status_from_headers _parse_status_from_headers =============
 def _parse_status_from_headers(h: Any) -> int | None:
     if isinstance(h, dict):
@@ -107,6 +108,7 @@ def _parse_status_from_headers(h: Any) -> int | None:
         pass
     return None
 
+
 #================funtion _parse_status_from_body _parse_status_from_body =============
 def _parse_status_from_body(b: Any) -> int | None:
     try:
@@ -125,6 +127,7 @@ def _parse_status_from_body(b: Any) -> int | None:
             return int(m.group(1))
     return None
 
+
 #================funtion _extract_status_code _extract_status_code =============
 def _extract_status_code(res_headers: Any, res_body: Any) -> int | None:
     st = _parse_status_from_headers(res_headers)
@@ -134,6 +137,7 @@ def _extract_status_code(res_headers: Any, res_body: Any) -> int | None:
     if st is not None:
         return st
     return None
+
 
 #================funtion _map_severity _map_severity =============
 def _map_severity(s: str | None) -> str:
@@ -150,9 +154,11 @@ def _map_severity(s: str | None) -> str:
         return 'low'
     return 'info'
 
+
 #================funtion _map_severity_canon _map_severity_canon =============
 def _map_severity_canon(s: str | None) -> str:
     return _map_severity(s)
+
 
 #================funtion _map_status _map_status =============
 def _map_status(s: str | None) -> str:
@@ -166,6 +172,7 @@ def _map_status(s: str | None) -> str:
     if t in {'fixed', 'resolved'}:
         return 'fixed'
     return 'open'
+
 
 #================funtion _db_items_for_template _db_items_for_template =============
 def _db_items_for_template(db_path: Path, run_id: str | None=None) -> list[dict]:
@@ -212,6 +219,7 @@ def _db_items_for_template(db_path: Path, run_id: str | None=None) -> list[dict]
         items.append({'id': r['id'], 'title': title, 'description': r['description'] or '', 'endpoint': endpoint, 'url': endpoint, 'method': method, 'category': r['category'] or (r['risk_key'] or ''), 'severity': _map_severity_canon(r['severity']), 'status': _map_status(r['status']), 'date': r['created_at'] or '', 'request': {'headers': _maybe_headers_to_text(r['req_headers']), 'body': r['req_body'] or ''}, 'response': {'status': int(status_code) if isinstance(status_code, int) and status_code > 0 else '', 'headers': _maybe_headers_to_text(_res_headers), 'body': _res_body if isinstance(_res_body, str) else json.dumps(_res_body, ensure_ascii=False)}, 'risk_key': r['risk_key'] or ''})
     return items
 
+
 #================funtion _db_endpoints _db_endpoints =============
 def _db_endpoints(db_path: Path, run_id: str | None=None) -> list[dict]:
     with sqlite3.connect(str(db_path)) as c:
@@ -227,6 +235,7 @@ def _db_endpoints(db_path: Path, run_id: str | None=None) -> list[dict]:
     for r in rows:
         out.append({'method': (r['method'] or '').upper(), 'url': r['url'] or '', 'severity': _map_severity(r['max_severity']) if hasattr(globals().get('_map_severity'), '__call__') else r['max_severity'] or '', 'last_status': r['last_status'] or '', 'last_ms': r['last_ms'] or '', 'ok': r['count_ok'] or 0, 'fail': r['count_fail'] or 0, 'first_seen': r['first_seen'] or '', 'last_seen': r['last_seen'] or ''})
     return out
+
 
 #================funtion _normalize_for_ui _normalize_for_ui =============
 def _normalize_for_ui(it: dict) -> dict:
@@ -257,7 +266,6 @@ def _normalize_for_ui(it: dict) -> dict:
         except Exception:
             out.setdefault('response', {})['status'] = ''
 
-    #================funtion _to_text _to_text =============
     def _to_text(v):
         if v is None:
             return ''
@@ -281,6 +289,7 @@ def _normalize_for_ui(it: dict) -> dict:
     return out
 _MINIMAL_TEMPLATE = '<!doctype html>\n<html lang="en">\n<head>\n  <meta charset="utf-8" />\n  <meta name="viewport" content="width=device-width, initial-scale=1" />\n  <title>API Scan Review by Perry Mertens 2025 pamsniffer@gmail.com</title>\n  <style>\n    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }\n    h1 { margin-bottom: 8px; }\n    .meta { color: #666; margin-bottom: 16px; }\n    .item { border: 1px solid #ddd; border-radius: 8px; padding: 12px 16px; margin: 10px 0; }\n    .pill { display:inline-block; padding:2px 8px; border-radius: 999px; font-size:12px; margin-left: 6px; }\n    .sev-critical { background:#fee; color:#c00; }\n    .sev-high { background:#ffe9e9; color:#b00; }\n    .sev-medium { background:#fff3cd; color:#9a6; }\n    .sev-low { background:#e7f3ff; color:#06c; }\n    .sev-info { background:#eef2f7; color:#345; }\n    .signal-pill { display:inline-block; padding:1px 6px; border-radius: 4px; font-size:10px; margin-left: 4px; background:#e0e0e0; color:#333; }\n    pre { background:#f6f8fa; padding:10px; border-radius:6px; overflow:auto; }\n    .cols { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; }\n    .k { color:#666; }\n  </style>\n</head>\n<body>\n  <h1>API Scan Review</h1>\n  <div class="meta">Generated: <span id="ts"></span> — Items: <span id="cnt"></span></div>\n  <div id="list"></div>\n  <script id="data" type="application/json"></script>\n  <script>\n    const items = window.__APISCAN_ITEMS__ || JSON.parse(document.getElementById("data").textContent || "[]");\n    document.getElementById("ts").textContent = new Date().toISOString().slice(0,19).replace("T"," ");\n    document.getElementById("cnt").textContent = items.length;\n    const m = {"critical":"sev-critical","high":"sev-high","medium":"sev-medium","low":"sev-low","info":"sev-info"};\n    const list = document.getElementById("list");\n    for (const it of items) {\n      const div = document.createElement("div");\n      div.className = "item";\n      const sev = (it.severity||"info").toLowerCase();\n      const signals = it.signals || [];\n      const signalPills = signals.map(s => `<span class="signal-pill">${s}</span>`).join("");\n      div.innerHTML = `\n        <div><strong>${it.title || ""}</strong>\n          <span class="pill ${m[sev]||"sev-info"}">${sev}</span>\n          <span class="pill">${it.method || ""}</span>\n          <span class="pill">${it.response?.status || ""}</span>\n          ${signalPills}\n        </div>\n        <div class="k">${it.category || ""} — ${it.date || ""}</div>\n        <div class="cols">\n          <div>\n            <h4>Request</h4>\n            <pre>${(it.request?.headers||"")}</pre>\n            <pre>${(it.request?.body||"")}</pre>\n          </div>\n          <div>\n            <h4>Response</h4>\n            <pre>${(it.response?.headers||"")}</pre>\n            <pre>${(it.response?.body||"")}</pre>\n          </div>\n        </div>\n      `;\n      list.appendChild(div);\n    }\n  </script>\n</body>\n</html>'
 
+
 #================funtion _load_template _load_template =============
 def _load_template(template: Path | None) -> str:
     cand: list[Path] = []
@@ -295,12 +304,14 @@ def _load_template(template: Path | None) -> str:
             return p.read_text(encoding='utf-8', errors='ignore')
     return _MINIMAL_TEMPLATE
 
+
 #================funtion _inject_json_into_template _inject_json_into_template =============
 def _inject_json_into_template(template_str: str, items: list[dict]) -> str:
     payload = json.dumps(items, ensure_ascii=False).replace('</', '<\\/')
     if '<script id="data"' in template_str:
         return re.sub('(<script id="data"[^>]*>)([\\s\\S]*?)(</script>)', lambda m: m.group(1) + payload + m.group(3), template_str, count=1)
     return template_str.replace('</body>', f'<script>window.__APISCAN_ITEMS__ = {payload};</script></body>')
+
 
 #================funtion _inject_two_payloads _inject_two_payloads =============
 def _inject_two_payloads(template_str: str, items: list[dict], endpoints: list[dict]) -> str:
@@ -315,6 +326,7 @@ _HTTP0_ALLOWED_KINDS = {'secure_transport', 'tls', 'hsts', 'cipher', 'hostname',
 _PII_IBAN_NL = re.compile('\\bNL[0-9]{2}[A-Z]{4}[0-9]{10}\\b', re.I)
 _PII_IBAN_GENERIC = re.compile('\\b[A-Z]{2}[0-9]{2}[\\sA-Z0-9]{10,30}\\b', re.I)
 _PII_EMAIL = re.compile('\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Z|a-z]{2,}\\b')
+
 
 #================funtion _is_valid_bsn _is_valid_bsn =============
 def _is_valid_bsn(bsn_str: str) -> bool:
@@ -332,10 +344,10 @@ def _is_valid_bsn(bsn_str: str) -> bool:
         return False
 _PII_BSN = re.compile('\\b(?:BSN\\D*)?(\\d{8,9})\\b', re.I)
 
+
 #================funtion _luhn_check _luhn_check =============
 def _luhn_check(card_number: str) -> bool:
 
-    #================funtion digits_of digits_of =============
     def digits_of(n):
         return [int(d) for d in str(n)]
     digits = digits_of(card_number)
@@ -350,6 +362,7 @@ _SECRET_JWT = re.compile('\\beyJ[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]*
 _SECRET_API_KEY = re.compile('\\b(?:api[_-]?key|access[_-]?token|bearer)\\s*[:=]\\s*[\\\'\\"]?([A-Za-z0-9_\\-\\.]{10,50})[\\\'\\"]?', re.I)
 _SECRET_AWS_KEY = re.compile('\\bAKIA[0-9A-Z]{16}\\b')
 
+
 #================funtion _has_duplicate_params _has_duplicate_params =============
 def _has_duplicate_params(url: str) -> bool:
     try:
@@ -360,6 +373,7 @@ def _has_duplicate_params(url: str) -> bool:
         return False
 _VERBOSE_ERROR_RE = re.compile('(stack\\s*trace|traceback|errorDTO|exception\\s+details|at\\s+[A-Za-z0-9_.]+\\(|java\\.|python\\.|node\\.)', re.I)
 
+
 #================funtion _status_int _status_int =============
 def _status_int(it: dict) -> int | None:
     s = it.get('response', {}).get('status')
@@ -368,15 +382,18 @@ def _status_int(it: dict) -> int | None:
     except Exception:
         return None
 
+
 #================funtion _txt_body _txt_body =============
 def _txt_body(it: dict) -> str:
     b = it.get('response', {}).get('body', '')
     return b if isinstance(b, str) else ''
 
+
 #================funtion _txt_hdrs _txt_hdrs =============
 def _txt_hdrs(it: dict) -> str:
     h = it.get('response', {}).get('headers', '')
     return h if isinstance(h, str) else ''
+
 
 #================funtion _detect_risk_signals _detect_risk_signals =============
 def _detect_risk_signals(item: dict) -> list[str]:
@@ -426,6 +443,7 @@ def _detect_risk_signals(item: dict) -> list[str]:
             signals.append('5xx-input')
     return signals
 
+
 #================funtion _has_http0_allowlist_kind _has_http0_allowlist_kind =============
 def _has_http0_allowlist_kind(item: dict) -> bool:
     category = (item.get('category') or '').lower()
@@ -436,6 +454,7 @@ _DB_ERR_RE = re.compile('(sql|postgres|mysql|sqlite|oracle).*(error|syntax|excep
 _STACK_RE = re.compile('(stack trace|Traceback|^\\s*at\\s+[A-Za-z0-9_.]+\\()', re.I | re.M)
 _BOLA_RE = re.compile('\\b(BOLA|IDOR|Direct Object)\\b', re.I)
 _SQLI_RE = re.compile('\\b(SQL.?Injection|SQLi)\\b', re.I)
+
 
 #================funtion _canon_cat _canon_cat =============
 def _canon_cat(rk_or_cat: str) -> str:
@@ -460,48 +479,62 @@ def _canon_cat(rk_or_cat: str) -> str:
         return rk.title()
     return rk
 
+
 #================funtion _reclassify _reclassify =============
 def _reclassify(it: dict) -> str:
     cat = _canon_cat(it.get('risk_key') or it.get('category') or '')
-    sev = _BASELINE.get(cat, it.get('severity', 'info'))
+
+    raw_sev = (it.get('severity') or 'info').strip().lower()
+    base_sev = _BASELINE.get(cat, 'info')
+
+    _rank = {'info': 0, 'low': 1, 'medium': 2, 'high': 3, 'critical': 4}
+    def _max_sev(a: str, b: str) -> str:
+        return a if _rank.get(a, 0) >= _rank.get(b, 0) else b
+
+    if raw_sev not in _rank:
+        sev = base_sev
+    else:
+        relax_min = cat in ('Misconfig', 'Inventory', 'Resource', 'Secure Transport', 'DNS', 'Timeout')
+        sev = raw_sev if relax_min else _max_sev(raw_sev, base_sev)
+
     st = _status_int(it)
     bod = _txt_body(it)
     title = (it.get('title') or '') + ' ' + (it.get('category') or '')
     signals = it.get('signals', [])
+
     if any((kind in cat.lower() for kind in ['secure_transport', 'tls', 'hsts', 'cipher'])):
         if sev in ('info', 'low'):
             sev = 'medium'
+
     pii_indicators = {'IBAN', 'IBAN-generic', 'BSN', 'email', 'creditcard', 'JWT', 'API-key', 'AWS-key'}
     if any((signal in signals for signal in pii_indicators)):
         if sev in ('info', 'low'):
             sev = 'medium'
         if 'BSN' in signals and sev == 'medium':
             sev = 'high'
-    if 'dup-params' in signals and sev in ('info', 'low'):
+
+    if 'dup-params' in signals and sev == 'low':
         sev = 'medium'
-    if _SQLI_RE.search(title):
-        sev = 'high'
-        if st and st >= 500:
-            sev = 'critical'
-        if _DB_ERR_RE.search(bod) or _STACK_RE.search(bod):
-            sev = 'critical'
-    if _BOLA_RE.search(title) or cat == 'BOLA':
-        if st and 200 <= st < 300:
-            sev = 'high'
+
     if st and st >= 500:
         if _STACK_RE.search(bod) or _DB_ERR_RE.search(bod) or 'verbose-error' in signals or ('5xx-input' in signals):
             if sev in ('info', 'low', 'medium'):
                 sev = 'high'
+
     if 'verbose-error' in signals and sev in ('info', 'low'):
         sev = 'medium'
+
     if st and 400 <= st < 500:
         if not (_SQLI_RE.search(title) or _BOLA_RE.search(title) or _DB_ERR_RE.search(bod) or signals):
             if sev not in ('high', 'critical'):
                 sev = 'info'
+
     return sev
+
 _FP_4XX = {400, 401, 403, 404, 405, 409, 410, 415, 422, 429}
 _FP_TITLE_RE = re.compile('(missing|invalid|not found|forbidden|bad request|method not allowed|unauthorized|required field)', re.I)
 _FP_BODY_RE = re.compile('(validation failed|failed to convert|type mismatch|cannot (parse|deserialize)|invalid (json|value)|unsupported media type|no permission|token required|bad request)', re.I)
+
 
 #================funtion _is_false_positive _is_false_positive =============
 def _is_false_positive(item: dict) -> bool:
@@ -530,6 +563,45 @@ def _is_false_positive(item: dict) -> bool:
         return True
     return False
 
+
+def _postprocess_review_html_for_info(html: str) -> str:
+    if not html:
+        return html
+
+    html = html.replace('const order = ["critical", "high", "medium", "low"];',
+                        'const order = ["critical", "high", "medium", "low", "info"];')
+
+    html = html.replace('low: "LOW"',
+                        'low: "LOW",\n        info: "INFO"')
+
+    html = html.replace('const bySev = { critical: 0, high: 0, medium: 0, low: 0 };',
+                        'const bySev = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };')
+
+    html = html.replace(' | Low " + bySev.low;',
+                        ' | Low " + bySev.low +\n        " | Info " + bySev.info;')
+
+    if '.sev-pill[data-sev="info"]' not in html:
+        css_rule = '.sev-pill[data-sev="info"] { background: #f3f4f6; border-color: #d1d5db; color: #374151; }\n'
+        low_rule = '.sev-pill[data-sev="low"] {'
+        pos = html.find(low_rule)
+        if pos != -1:
+            end = html.find('}', pos)
+            if end != -1:
+                html = html[:end+1] + '\n' + css_rule + html[end+1:]
+        else:
+            pos2 = html.find('.sev-pill[data-sev="medium"]')
+            if pos2 != -1:
+                end2 = html.find('}', pos2)
+                if end2 != -1:
+                    html = html[:end2+1] + '\n' + css_rule + html[end2+1:]
+                else:
+                    html = css_rule + html
+            else:
+                html = css_rule + html
+
+    return html
+
+
 #================funtion build_review build_review =============
 def build_review(db_path: Path, out_path: Path, template: Path | None=None, run_id: str | None=None) -> Path:
     from datetime import datetime
@@ -538,7 +610,6 @@ def build_review(db_path: Path, out_path: Path, template: Path | None=None, run_
     items = _db_items_for_template(db_path, run_id=run_id)
     endpoints = _db_endpoints(db_path, run_id=run_id)
 
-    #================funtion _is_unknown_status _is_unknown_status =============
     def _is_unknown_status(val):
         return val in (None, '', 0, '0')
     filtered_items = []
@@ -546,6 +617,12 @@ def build_review(db_path: Path, out_path: Path, template: Path | None=None, run_
         status_unknown = _is_unknown_status(it.get('response', {}).get('status'))
         signals = _detect_risk_signals(it)
         it['signals'] = signals
+        try:
+            st = int(it.get('response', {}).get('status') or 0)
+        except Exception:
+            st = 0
+        if st == 404 and not signals:
+            continue
         if not status_unknown or _has_http0_allowlist_kind(it) or signals:
             filtered_items.append(it)
     items = filtered_items
@@ -554,15 +631,17 @@ def build_review(db_path: Path, out_path: Path, template: Path | None=None, run_
     for it in items:
         it['severity'] = _reclassify(it)
     items = [_normalize_for_ui(it) for it in items if not _is_false_positive(it)]
-    RISK_SEVERITIES = {'critical', 'high', 'medium', 'low'}
+    RISK_SEVERITIES = {'critical', 'high', 'medium', 'low', 'info'}
     items = [it for it in items if it.get('severity') in RISK_SEVERITIES]
     if not items:
         items = [{'id': 0, 'title': 'No findings', 'description': '...', 'endpoint': '/', 'url': '/', 'method': 'GET', 'category': 'Info', 'severity': 'info', 'status': 'confirmed', 'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'request': {'headers': '', 'body': ''}, 'response': {'status': '', 'headers': '', 'body': ''}, 'risk_key': '', 'signals': []}]
     tpl = _load_template(template)
     html_out = _inject_two_payloads(tpl, items, endpoints)
+    html_out = _postprocess_review_html_for_info(html_out)
     out_path.write_text(html_out, encoding='utf-8')
     print(f'[build_review] Wrote: {out_path} (items: {len(items)})')
     return out_path
+
 
 #================funtion _cli _cli =============
 def _cli() -> int:

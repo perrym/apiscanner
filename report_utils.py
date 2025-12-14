@@ -1,6 +1,6 @@
 ########################################################
 # APISCAN - API Security Scanner                       #
-# Licensed under AGPL-V3.0                             #
+# Licensed under the MIT License                       #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
 # version 2.2  2-11--2025                              #
 ########################################################                                   
@@ -201,6 +201,9 @@ class EnhancedReportGenerator:
     def generate_html(self) -> str:
         if not self.issues:
             return self._generate_no_findings_html()
+
+        issues = [i for i in self.issues if int(i.get('status_code') or 0) != 404]
+        self.issues = issues
 
         grouped = {s: [] for s in ("Critical", "High", "Medium", "Low", "Info")}
         for issue in self.issues:

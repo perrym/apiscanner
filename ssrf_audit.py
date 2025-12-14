@@ -1,9 +1,9 @@
 ########################################################
 # APISCAN - API Security Scanner                       #
-# Licensed under AGPL-V3.0                             #
+# Licensed under the MIT License                       #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 2.2  2-11--2025                              #
-########################################################                                  
+# version 3.1 14-12-2025                               #
+########################################################                                
 from __future__ import annotations
 
 import base64
@@ -77,6 +77,9 @@ class SSRFConfig:
         self.rps_limit = 8
         self.blind_threshold = 4.0
         self.verify_tls = False
+        self.allow_redirects = True
+        self.max_redirects = 5
+        self.baseline_samples = 2
         self.test_localhost = False
         self.excluded_parameters = ["token", "auth", "password", "secret", "key"]
         self.response_body_limit = 4096
@@ -228,21 +231,25 @@ class SSRFAuditor:
 
     #================funtion _pace simple rate limiting between requests ##########
     def _pace(self) -> None:
+        now = time.perf_counter()
+        min_gap = 1.0 / float(self.rps)
+
         with self._lock:
-            now = time.perf_counter()
-            min_gap = 1.0 / float(self.rps)
             wait = max(0.0, self._last_ts + min_gap - now)
-            if wait > 0:
-                time.sleep(wait)
+
+        if wait > 0:
+            time.sleep(wait)
+
+        with self._lock:
             self._last_ts = time.perf_counter()
 
-                                                                                   
     #================funtion _encode_payload encode SSRF payload using chosen scheme ##########
     def _encode_payload(self, payload: str, encoding_type: str = "default") -> str:
         if encoding_type == "double_url":
             return quote_plus(quote_plus(payload))
         elif encoding_type == "utf8":
-            return payload.encode("utf-8").hex()
+            # Percent-encode UTF-8 bytes (more realistic than hex-encoding)
+            return quote_plus(payload.encode("utf-8"))
         elif encoding_type == "base64":
             return base64.b64encode(payload.encode()).decode()
         elif encoding_type == "html":
@@ -252,6 +259,46 @@ class SSRFAuditor:
 
                                                                                   
     #================funtion test_endpoints run SSRF scans across endpoints ##########
+    def _should_exclude_param(self, name: str) -> bool:
+        n = (name or "").lower()
+        for kw in self.CONFIG.excluded_parameters:
+            if kw and kw.lower() in n:
+                return True
+        return False
+
+    def _merge_headers(self, hdrs: Optional[dict]) -> dict:
+        merged: Dict[str, Any] = {}
+        try:
+            merged.update(getattr(self.sess, "headers", {}) or {})
+        except Exception:
+            pass
+        if hdrs:
+            merged.update(hdrs)
+        return merged
+
+    def _baseline_latency(self, url: str, method: str) -> float:
+        samples = max(1, int(getattr(self.CONFIG, "baseline_samples", 1)))
+        vals: List[float] = []
+        for _ in range(samples):
+            started = time.perf_counter()
+            try:
+                self.sess.request(
+                    method=method,
+                    url=url,
+                    timeout=self.timeout,
+                    allow_redirects=self.CONFIG.allow_redirects,
+                    verify=self.sess.verify,
+                    headers=self._merge_headers({}),
+                )
+            except Exception:
+                continue
+            vals.append(time.perf_counter() - started)
+        if not vals:
+            return 0.0
+        vals.sort()
+        return vals[len(vals) // 2]
+
+
     def test_endpoints(self, endpoints: List[Endpoint]) -> List[Issue]:
         self._issues.clear()
         with ThreadPoolExecutor(max_workers=self.concurrency) as ex:
@@ -280,9 +327,11 @@ class SSRFAuditor:
         if self.show_progress:
             self._tw(f"-> Testing {method} {url_base}")
 
+        ep.setdefault('_baseline', self._baseline_latency(url_base, method))
+
         swagger_params = {p.get("name") for p in ep.get("parameters") or [] if p.get("in") in {"query", "header", "path"}}
         common_params = {"url", "endpoint", "host", "server", "target", "lang", "language", "locale", "v", "version", "api"}
-        all_params = sorted([x for x in swagger_params | common_params if x and x not in self.CONFIG.excluded_parameters])
+        all_params = sorted([x for x in (swagger_params | common_params) if x and not self._should_exclude_param(x)])
 
         p_iter = tqdm(all_params, desc="params", unit="param", leave=False) if self.show_progress else all_params
         for param in p_iter:
@@ -310,7 +359,7 @@ class SSRFAuditor:
         payload: str,
         encoding: str = "default",
     ) -> None:
-        key = (param, payload)
+        key = (ep.get('method',''), ep.get('path',''), param, payload, encoding)
         with self._lock:
             if key in self._tested_payloads:
                 return
@@ -386,9 +435,9 @@ class SSRFAuditor:
                 url=url,
                 json=json_body,
                 data=data,
-                headers=headers or {},
+                headers=self._merge_headers(headers or {}),
                 timeout=self.timeout,
-                allow_redirects=True,
+                allow_redirects=self.CONFIG.allow_redirects,
                 verify=self.sess.verify,
             )
             latency = time.perf_counter() - started
@@ -403,8 +452,19 @@ class SSRFAuditor:
             return
 
         body_low = _safe_body(resp, self.CONFIG.response_body_limit).lower()
+        hdr_low = ''
+        try:
+            hdr_low = ' '.join([f"{k}:{v}" for k, v in (resp.headers or {}).items()]).lower()
+        except Exception:
+            hdr_low = ''
+        header_indicators = ("metadata-flavor", "x-aws-ec2-metadata", "x-envoy", "server: envoy")
 
-        if latency >= self.CONFIG.blind_threshold:
+        baseline = float(ep.get('_baseline', 0.0) or 0.0)
+        is_blind = latency >= self.CONFIG.blind_threshold
+        if baseline > 0.0:
+            is_blind = is_blind and latency >= (baseline * 2.0)
+
+        if is_blind:
             self._record_issue(
                 ep=ep,
                 payload=payload,
@@ -424,16 +484,17 @@ class SSRFAuditor:
         indicators = (
             "169.254.169.254",
             "metadata.google.internal",
+            "computemetadata",
+            "service-accounts",
+            "instance-id",
+            "ami-id",
+            "root:x:",
+            "/etc/passwd",
             "localhost",
             "127.0.0.1",
-            "/etc/passwd",
-            "root:x:",
-            "internal server error",
-            "connection refused",
-            "forbidden",
-            "not allowed",
+            "[::1]",
         )
-        if any(ind in body_low for ind in indicators):
+        if any(ind in body_low for ind in indicators) or any(h in hdr_low for h in header_indicators):
             self._record_issue(
                 ep=ep,
                 payload=payload,
@@ -451,14 +512,20 @@ class SSRFAuditor:
 
                                                                                          
     #================funtion _calculate_confidence classify confidence based on evidence ##########
-    def _calculate_confidence(self, latency: float, response_body: str) -> str:
-        if "root:x:" in response_body or "169.254.169.254" in response_body:
+    def _calculate_confidence(self, latency: float, response_body: str, response_headers: Optional[dict] = None) -> str:
+        body = response_body or ""
+        hdrs = ""
+        try:
+            hdrs = " ".join([f"{k}:{v}" for k, v in (response_headers or {}).items()]).lower()
+        except Exception:
+            hdrs = ""
+
+        if ("root:x:" in body) or ("169.254.169.254" in body) or ("computemetadata" in body.lower()) or ("metadata-flavor" in hdrs):
             return "High"
-        elif latency > self.CONFIG.blind_threshold:
+        if latency > self.CONFIG.blind_threshold:
             return "Medium"
         return "Low"
 
-                                                                                 
     #================funtion _record_issue record a single SSRF finding ##########
     def _record_issue(
         self,
@@ -475,7 +542,7 @@ class SSRFAuditor:
         request_cookies: Optional[dict] = None,
         response_cookies: Optional[dict] = None,
     ) -> None:
-        confidence = self._calculate_confidence(latency, response_body or "")
+        confidence = self._calculate_confidence(latency, response_body or "", response_headers=dict(response_headers or {}))
         issue = {
             "endpoint": f"{ep.get('method', 'GET')} {ep.get('path', '')}",
             "parameter": param or "N/A",
@@ -545,11 +612,11 @@ class SSRFAuditor:
                     "response_body": "",
                 }
             ]
-        gen = ReportGenerator(issues, scanner="SSRF (API8)", base_url=self.base_url)
+        gen = ReportGenerator(issues, scanner="SSRF (API7)", base_url=self.base_url)
         return gen.generate_html() if fmt == "html" else gen.generate_markdown()
 
                                                                                
     #================funtion save_report persist report to disk ##########
     def save_report(self, path: str, fmt: str = "html") -> None:
         issues = self._filtered_findings()
-        ReportGenerator(issues, scanner="SSRF (API8)", base_url=self.base_url).save(path, fmt=fmt)
+        ReportGenerator(issues, scanner="SSRF (API7)", base_url=self.base_url).save(path, fmt=fmt)

@@ -1,9 +1,9 @@
 ########################################################
 # APISCAN - API Security Scanner                       #
-# Licensed under AGPL-V3.0                             #
+# Licensed under the MIT License                       #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 2.2  2-11--2025                              #
-########################################################                                               
+# version 3.1 14-12-2025                               #
+########################################################                                             
 from __future__ import annotations
 import json
 import logging
@@ -95,9 +95,7 @@ class MisconfigurationAuditorPro:
         self._request_counter = 0
         self._tested_payloads = set()
         self._finding_count: Dict[Tuple[str, str], int] = {}
-
         self._reported_header_hosts  = set()
-
         self._response_analyzers = [
             self._security_header_analyzer,
             self._cors_analyzer,
@@ -105,12 +103,10 @@ class MisconfigurationAuditorPro:
             self._verbose_error_analyzer,
             self._http_method_analyzer,
         ]
-
         self.spec: Dict[str, Any] = swagger_spec or kwargs.get("spec") or {}
-
-        # Set up logging
-        logging.basicConfig(level=logging.DEBUG if debug else logging.INFO)
         self.logger = logging.getLogger(__name__)
+        if debug:
+            self.logger.setLevel(logging.DEBUG)
 
     #================funtion _tw logging wrapper ##########
     def _tw(self, message: str, level: str = "info") -> None:
@@ -212,7 +208,7 @@ class MisconfigurationAuditorPro:
     def endpoints_from_swagger(cls, swagger_path: str) -> List[Endpoint]:
         try:
             spec = json.loads(Path(swagger_path).read_text(encoding="utf-8"))
-            server = spec.get("servers", [{}])[0].get("url", "")
+            server = str((spec.get("servers", [{}]) or [{}])[0].get("url", "") or "")
             eps: List[Endpoint] = []
             for path, item in (spec.get("paths") or {}).items():
                 for method in ("get", "post", "put", "patch", "delete", "options", "head", "trace"):
@@ -288,15 +284,13 @@ class MisconfigurationAuditorPro:
         ctype = (response.headers.get("Content-Type", "") or "").lower()
         clen = response.headers.get("Content-Length")
 
-        # Get body bytes safely
         try:
             body_bytes = bytes(getattr(response, "content", b"") or b"")
         except Exception:
             txt = getattr(response, "text", "")
             enc = getattr(response, "encoding", None) or "utf-8"
             body_bytes = txt.encode(enc, errors="replace")
-
-        # Decide display
+  
         if not body_bytes:
             if method_used in ("HEAD", "OPTIONS") or response.status_code in (204, 304) or (
                 clen is not None and str(clen).strip() == "0"
@@ -342,13 +336,16 @@ class MisconfigurationAuditorPro:
 
 
     #================funtion _enforce_rate_limit throttle outbound requests ##########
-    def _enforce_rate_limit(self):
+    def _enforce_rate_limit(self) -> None:
         now = time.time()
-        elapsed = now - self._last_request_time
         gap = 1.0 / float(self.requests_per_second)
-        if elapsed < gap:
-            time.sleep(gap - elapsed)
-        self._last_request_time = time.time()
+        with self._lock:
+            elapsed = now - self._last_request_time
+            wait = max(0.0, gap - elapsed)
+        if wait > 0:
+            time.sleep(wait)
+        with self._lock:
+            self._last_request_time = time.time()
 
                                                                                
                                                                                          
@@ -462,16 +459,13 @@ class MisconfigurationAuditorPro:
                                                                 
         if self._is_api_json(resp):
             return None
-
-                                                   
+                                                
         path = (ep.get("path") if isinstance(ep, dict) else str(ep) or "").lower()
         if re.search(r"/auth|/login|/signup|check-otp|verify-email-token", path):
             return None
-
-                                                     
+                                                    
         if str(self.base_url).lower().startswith("http://"):
             return None
-
         hdrs = resp.headers or {}
         missing = []
         low_keys = {k.lower(): v for k, v in hdrs.items()}
@@ -495,27 +489,42 @@ class MisconfigurationAuditorPro:
         )
 
                                                                                   
-    #================funtion _cors_analyzer analyze CORS exposure ##########
+        #================funtion _cors_analyzer analyze CORS exposure ##########
     def _cors_analyzer(self, ep, payload, resp, dur):
         hdrs = resp.headers or {}
         acao = (hdrs.get("Access-Control-Allow-Origin", "") or "").strip()
         acac = (hdrs.get("Access-Control-Allow-Credentials", "") or "").strip().lower()
+        vary = (hdrs.get("Vary", "") or "").lower()
+
         if not acao:
             return None
+
+        req_origin = ""
+        try:
+            req_origin = (getattr(getattr(resp, "request", None), "headers", {}) or {}).get("Origin", "") or ""
+        except Exception:
+            req_origin = ""
+
         method = getattr(getattr(resp, "request", None), "method", "GET").upper()
 
-        if acao == "*" and acac == "true":
+        sev = "Info"
+        desc_parts = [f"ACAO={acao}", f"ACAC={acac or 'false'}"]
+
+        if "," in acao:
+            sev = "Medium"
+            desc_parts.append("Non-standard: multiple origins in ACAO")
+        elif acao == "*" and acac == "true":
             sev = "High"
+        elif req_origin and acao == req_origin:
+            sev = "Medium" if "origin" not in vary else "Low"
+            desc_parts.append("ACAO reflects request Origin")
         elif acao == "*" and acac != "true":
             sev = "Info" if method == "OPTIONS" else "Low"
-        else:
-            sev = "Info"
 
-        desc = f"ACAO={acao}, ACAC={acac or 'false'}"
-        return self._build_finding(ep, payload, resp, dur, desc, sev)
+        return self._build_finding(ep, payload, resp, dur, ", ".join(desc_parts), sev)
 
-                                                                                          
-    #================funtion _server_error_analyzer flag 5xx server errors ##########
+
+    #================funtion _server_error_analyzer flag 5xx server errors ########## flag 5xx server errors ##########
     def _server_error_analyzer(self, ep, payload, resp, dur):
         if 500 <= resp.status_code < 600:
             return self._build_finding(ep, payload, resp, dur, f"{resp.status_code} on baseline/probe", "Medium")
@@ -527,11 +536,30 @@ class MisconfigurationAuditorPro:
         low = body.lower()
         markers = ("exception", "stack trace", "traceback", "sqlstate", "nullreferenceexception")
         if any(m in low for m in markers):
+            p = (ep.get("path") or "").lower()
+            if any(x in p for x in ("/swagger", "/openapi", "/api-docs", "/docs")):
+                return None
             return self._build_finding(ep, payload, resp, dur, "Response body contains implementation stack/error markers", "High")
 
-    #================funtion _http_method_analyzer placeholder for HTTP method analysis ##########
+    #================funtion _http_method_analyzer detect risky HTTP methods / Allow header ##########
     def _http_method_analyzer(self, ep, payload, resp, dur):
-        return None
+        allow = (resp.headers.get("Allow", "") or "").upper()
+        if not allow:
+            return None
+        risky = []
+        for m in ("TRACE", "TRACK", "CONNECT"):
+            if m in allow:
+                risky.append(m)
+        if not risky:
+            return None
+        return self._build_finding(
+            ep,
+            payload,
+            resp,
+            dur,
+            f"Potentially risky HTTP methods enabled via Allow header: {', '.join(risky)}",
+            "Medium",
+        )
 
                                                                                
     #================funtion _record_finding deduplicate and record finding ##########
@@ -596,15 +624,12 @@ class MisconfigurationAuditorPro:
                 status = int(i.get("status_code") or 0)
             except Exception:
                 status = 0
-
                                                 
             if status in NOISE_4XX and not any(m in body_low for m in NOISE_4XX_BODY_MARKERS):
                 continue
-
                                     
             if status == 400 and any(m in body_low for m in NOISE_4XX_BODY_MARKERS):
                 continue
-
                                                                                  
             if status >= 500:
                 if payload in ("<head>", "<options>"):
@@ -639,7 +664,7 @@ class MisconfigurationAuditorPro:
         with ThreadPoolExecutor(max_workers=self.concurrency) as pool:
             futures = [pool.submit(self._test_single_endpoint, ep) for ep in endpoints]
             if self.show_progress:
-                for _ in tqdm(as_completed(futures), total=len(futures), desc="API8 misconfig endpoints", unit="endpoint", dynamic_ncols=True):
+                for _ in tqdm(as_completed(futures), total=len(futures), desc="API8 misconfiguration endpoints", unit="endpoint", dynamic_ncols=True):
                     pass
             else:
                 for _ in as_completed(futures):
@@ -650,7 +675,7 @@ class MisconfigurationAuditorPro:
                                                                                    
     #================funtion generate_report render report via ReportGenerator ##########
     def generate_report(self, fmt: str = "markdown") -> str:
-        scanner = "Enhanced Misconfiguration Auditor (API08)"
+        scanner = "Enhanced Misconfiguration Auditor (API8)"
         filtered = self._filter_issues()  # Fixed: was _filter_findings
         gen = ReportGenerator(filtered, scanner=scanner, base_url=self.base_url)
         return gen.generate_markdown() if fmt == "markdown" else gen.generate_json()
@@ -658,6 +683,6 @@ class MisconfigurationAuditorPro:
                                                                                
     #================funtion save_report persist report to disk ##########
     def save_report(self, path: str, fmt: str = "markdown"):
-        scanner = "Enhanced Misconfiguration Auditor (API08)"
+        scanner = "Enhanced Misconfiguration Auditor (API8)"
         filtered = self._filter_issues()
         ReportGenerator(filtered, scanner=scanner, base_url=self.base_url).save(path, fmt=fmt)

@@ -1,9 +1,10 @@
 ########################################################
 # APISCAN - API Security Scanner                       #
-# Licensed under AGPL-V3.0                             #
+# Licensed under the MIT License                       #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 3.0 26-11-2025                               #
-########################################################                                                 
+# version 3.1 14-12-2025                               #
+########################################################
+
 from __future__ import annotations
 import concurrent.futures
 import json
@@ -60,14 +61,15 @@ os.environ.setdefault('APISCAN_MAX_WORKERS', '8')
 os.environ.setdefault('APISCAN_TIMEOUT', '5')
 os.environ.setdefault('APISCAN_RATE_LIMIT', '0.5')
 
-#================funtion _pt_normalize_url function =============
+
+#================funtion _pt_normalize_url description =============
 def _pt_normalize_url(u: str) -> str:
     if '://' not in u:
         u = 'https://' + u.lstrip('/')
     return u
 
-                                                                                                                     
-#================funtion build_traversal_variants_segment_replace function =============
+
+#================funtion build_traversal_variants_segment_replace description =============
 def build_traversal_variants_segment_replace(url: str, replace_index: int=-2, max_dot: int=4, max_ddot: int=4, max_ellipsis: int=4) -> list[str]:
     url = _pt_normalize_url(url)
     parts = _pt_urlsplit(url)
@@ -80,14 +82,16 @@ def build_traversal_variants_segment_replace(url: str, replace_index: int=-2, ma
     if idx < 0 or idx >= len(segs):
         return []
 
-                                                                   
+
+    #================funtion join_segments description =============
     def join_segments(_lead, _segs):
         out = '/'.join(_segs)
         if _lead == '':
             out = '/' + out
         return out or '/'
 
-                                                                 
+
+    #================funtion replace_with description =============
     def replace_with(rep_segment: str, count: int) -> str:
         new_segs = segs[:idx] + [rep_segment] * count + segs[idx + 1:]
         return _pt_urlunsplit((parts.scheme, parts.netloc, join_segments(lead, new_segs), parts.query, parts.fragment))
@@ -111,7 +115,8 @@ def build_traversal_variants_segment_replace(url: str, replace_index: int=-2, ma
             seen.add(v)
     return out
 
-#================funtion _encode_siblings function =============
+
+#================funtion _encode_siblings description =============
 def _encode_siblings(v: str) -> list[str]:
     out: list[str] = []
     out.append(v.replace('.', '%2e'))
@@ -119,8 +124,8 @@ def _encode_siblings(v: str) -> list[str]:
     out.append(v.replace('.', '%2e').replace('/', '%2f'))
     return out
 
-                                                                                                                   
-#================funtion build_traversal_variants_insert_between function =============
+
+#================funtion build_traversal_variants_insert_between description =============
 def build_traversal_variants_insert_between(url: str, insert_before_index: int=-1, max_dot: int=4, max_ddot: int=4, max_ellipsis: int=4) -> list[str]:
     url = _pt_normalize_url(url)
     parts = _pt_urlsplit(url)
@@ -133,14 +138,16 @@ def build_traversal_variants_insert_between(url: str, insert_before_index: int=-
     if idx > len(segs):
         idx = len(segs)
 
-                                                                   
+
+    #================funtion join_segments description =============
     def join_segments(_lead, _segs):
         out = '/'.join(_segs)
         if _lead == '':
             out = '/' + out
         return out or '/'
 
-                                                               
+
+    #================funtion insert_with description =============
     def insert_with(rep_segment: str, count: int) -> str:
         new_segs = segs[:idx] + [rep_segment] * count + segs[idx:]
         new_path = join_segments(lead, new_segs)
@@ -166,8 +173,7 @@ def build_traversal_variants_insert_between(url: str, insert_before_index: int=-
     return out
 
 
-                                                                          
-#================funtion listen_for_quit function =============
+#================funtion listen_for_quit description =============
 def listen_for_quit():
     print("Enter 'Q' to stop scanning...")
     while True:
@@ -181,7 +187,8 @@ if os.getenv('APISCAN_ENABLE_CONSOLE_STOP', '0') == '1':
     listener_thread = threading.Thread(target=listen_for_quit, daemon=True)
     listener_thread.start()
 
-#================funtion _headers_to_list function =============
+
+#================funtion _headers_to_list description =============
 def _headers_to_list(headerobj):
     if hasattr(headerobj, 'getlist'):
         out = []
@@ -193,15 +200,15 @@ def _headers_to_list(headerobj):
 
 class SafeConsumptionAuditor:
 
-                                                        
-                                                               
+
     NOSQL_NEGATIVE_PATTERNS = (
         'mongo: no documents in result',
         'no documents in result',
         'document not found',
         'no such document',
     )
-    #================funtion _encode_siblings function =============
+
+    #================funtion _encode_siblings description =============
     def _encode_siblings(self, v: str) -> list[str]:
         out: list[str] = []
         out.append(v.replace('/./', '/.%2f/').replace('./', '.%2f'))
@@ -211,7 +218,8 @@ class SafeConsumptionAuditor:
         out.append(v.replace('/./', '/%252e/').replace('./', '%252e/'))
         out.append(v.replace('/../', '/%252e%252e/').replace('../', '%252e%252e/'))
         return out
-    #================funtion _dirtrav_body_vectors function =============
+
+    #================funtion _dirtrav_body_vectors description =============
     def _dirtrav_body_vectors(self) -> list[str]:
         base = ['..', '..', '..', '...']
         enc  = ['%2e%2e', '%252e%252e']
@@ -238,9 +246,8 @@ class SafeConsumptionAuditor:
         'template','include','page','report','export','backup','log','config','resource'
     )
 
-    
-                                                 
-    #================funtion _test_directory_traversal function =============
+
+    #================funtion _test_directory_traversal description =============
     def _test_directory_traversal(self, ep: str) -> None:
         url = ep if ep.startswith("http") else f"{self.base_url}{ep}"
 
@@ -255,61 +262,88 @@ class SafeConsumptionAuditor:
             ("WEB-INF/web.xml", ["<web-app", "<servlet>"]),
         ]
 
-        strong_hit = lambda body: any(sig in body for sig in [
-            "root:x:0:0:", "localhost", "PATH=", "[fonts]", "<web-app"
-        ])
-        dirlist_hit = lambda body: (
-            ("Index of" in body or "Directory listing for" in body) and
-            ("Parent Directory" in body or "<title>" in body)
+        #================funtion strong_hit description =============
+        def strong_hit(body: str) -> bool:
+            low = (body or "").lower()
+            return any(sig in low for sig in (
+                "root:x:0:0:", "daemon:x:1:1:", "localhost", "path=",
+                "[extensions]", "[fonts]", "<web-app"
+            ))
+
+        #================funtion dirlist_hit description =============
+        def dirlist_hit(body: str) -> bool:
+            low = (body or "").lower()
+            return any(sig in low for sig in (
+                "index of /", "parent directory", "<title>index of", "directory listing for"
+            ))
+
+        traversal_tokens = (
+            "../", "..\\",
+            "%2e%2e", "%2e%2e%2f", "%2e%2e%5c",
+            "..%2f", "..%5c",
+            "%2f..", "%5c.."
         )
 
-                                                           
-        params_to_try = ["file", "path", "filename", "name", "filepath", "apiscan"]
-        for vec in vectors:
-            for tgt, _markers in targets:
-                payload = f"{vec}{tgt}"
-                for p in params_to_try:
-                    try:
-                        r = self.session.get(url, params={p: payload}, timeout=self.timeout)
-                        body = r.text or ""
-                        if r.status_code < 500:
-                            if strong_hit(body):
-                                self._log("Directory Traversal", f"Strong markers for {tgt} via query {p}.", "High", url)
-                                return
-                            if dirlist_hit(body):
-                                self._log("Potential Directory Listing", "Directory listing patterns detected.", "Medium", url)
-                                return
-                    except Exception:
-                        pass
-
-                                                
-        def _join(u: str, suffix: str) -> str:
-            if u.endswith("/"):
-                return u + suffix.lstrip("/")
-            return u + "/" + suffix.lstrip("/")
 
         for vec in vectors:
-            for tgt, _markers in targets:
+            for tgt, sigs in targets:
+                u = f"{url}/{vec}{{postId}}{tgt}"
                 try:
-                    u2 = _join(url, f"{vec}{tgt}")
-                    r = self.session.get(u2, timeout=self.timeout)
+                    r = self.session.get(u, timeout=self.timeout, allow_redirects=False)
                     body = r.text or ""
-                    if r.status_code < 500:
-                        if strong_hit(body):
-                            self._log("Directory Traversal (path)", f"Strong markers for {tgt} in path.", "High", u2)
-                            return
-                        if dirlist_hit(body):
-                            self._log("Potential Directory Listing (path)", "Directory listing patterns detected.", "Medium", u2)
-                            return
+
+
+                    if strong_hit(body) or any(s.lower() in body.lower() for s in sigs):
+                        self._log("Directory Traversal (suffix)", f"Markers for {tgt} detected.", "High", u, response=r,
+                                extra={"vector": "dirtrav", "base_endpoint": url})
+                        return
+                    if dirlist_hit(body):
+                        self._log("Potential Directory Listing (suffix)", "Directory listing patterns detected.", "Medium", u, response=r,
+                                extra={"vector": "dirtrav", "base_endpoint": url})
+                        return
+
+
+                    if r.status_code in (301, 302, 307, 308):
+                        loc = (r.headers.get("Location") or "").lower()
+                        if any(t in loc for t in traversal_tokens):
+                            self._log(f"Directory traversal (suffix) - suspicious redirect [{r.status_code}]",
+                                    u, "Medium", payload=u, response=r,
+                                    extra={"vector": "dirtrav", "base_endpoint": url, "location": loc})
+
                 except Exception:
                     pass
-    
-                                                                                    
+
+
+        for vec in vectors:
+            for tgt, sigs in targets:
+                u2 = f"{url}/{vec}{tgt}"
+                try:
+                    r = self.session.get(u2, timeout=self.timeout, allow_redirects=False)
+                    body = r.text or ""
+
+                    if strong_hit(body) or any(s.lower() in body.lower() for s in sigs):
+                        self._log("Directory Traversal (path)", f"Markers for {tgt} detected in path.", "High", u2, response=r,
+                                extra={"vector": "dirtrav", "base_endpoint": url})
+                        return
+                    if dirlist_hit(body):
+                        self._log("Potential Directory Listing (path)", "Directory listing patterns detected.", "Medium", u2, response=r,
+                                extra={"vector": "dirtrav", "base_endpoint": url})
+                        return
+
+                    if r.status_code in (301, 302, 307, 308):
+                        loc = (r.headers.get("Location") or "").lower()
+                        if any(t in loc for t in traversal_tokens):
+                            self._log(f"Directory traversal (path) - suspicious redirect [{r.status_code}]",
+                                    u2, "Medium", payload=u2, response=r,
+                                    extra={"vector": "dirtrav", "base_endpoint": url, "location": loc})
+                except Exception:
+                    pass
+
+
     @staticmethod
-    #================funtion endpoints_from_swagger_with_methods function =============
+
+    #================funtion endpoints_from_swagger_with_methods description =============
     def endpoints_from_swagger_with_methods(swagger_path: str):
-
-
 
 
         from pathlib import Path
@@ -323,7 +357,7 @@ class SafeConsumptionAuditor:
             u = (srv.get("url") or "").strip()
             if not u:
                 continue
-                                        
+
             if u.endswith("/"):
                 u = u[:-1]
             servers.append(u)
@@ -333,7 +367,7 @@ class SafeConsumptionAuditor:
         for path, ops in paths.items():
             if not isinstance(ops, dict):
                 continue
-                                                   
+
             if not path.startswith("/"):
                 path = "/" + path
             for method, op in ops.items():
@@ -344,16 +378,15 @@ class SafeConsumptionAuditor:
                     for s in servers:
                         out.append((f"{s}{path}", m))
                 else:
-                                                                                         
+
                     out.append((path, m))
         return out
 
 
     @staticmethod
-    #================funtion endpoints_from_swagger function =============
+
+    #================funtion endpoints_from_swagger description =============
     def endpoints_from_swagger(swagger_path: str):
-
-
 
 
         pairs = SafeConsumptionAuditor.endpoints_from_swagger_with_methods(swagger_path)
@@ -365,11 +398,9 @@ class SafeConsumptionAuditor:
             seen.add(url)
             urls.append(url)
         return urls
-                                                                                
 
 
-    
-    #================funtion _looks_interesting_body function =============
+    #================funtion _looks_interesting_body description =============
     def _looks_interesting_body(self, text: str) -> tuple[bool, str]:
         if not text: return (False, 'none')
         low = text.lower()
@@ -390,7 +421,8 @@ class SafeConsumptionAuditor:
             if has_links or has_sizes: return (True, 'medium')
         return (False, 'none')
 
-    #================funtion _likely_fp_body function =============
+
+    #================funtion _likely_fp_body description =============
     def _likely_fp_body(self, resp, body_text: str) -> bool:
         if not resp: return False
         ctype = (resp.headers.get('Content-Type') or '').lower()
@@ -403,7 +435,8 @@ class SafeConsumptionAuditor:
             return True
         return False
 
-    #================funtion _body_candidates_json function =============
+
+    #================funtion _body_candidates_json description =============
     def _body_candidates_json(self, base_obj: dict):
         out = []
         vecs = self._dirtrav_body_vectors()
@@ -418,7 +451,8 @@ class SafeConsumptionAuditor:
                 out.append(('application/json', _json.dumps(obj).encode('utf-8'), f'json:{k}'))
         return out[:24]
 
-    #================funtion _body_candidates_form function =============
+
+    #================funtion _body_candidates_form description =============
     def _body_candidates_form(self, base_map: dict):
         out = []
         vecs = self._dirtrav_body_vectors()
@@ -432,7 +466,8 @@ class SafeConsumptionAuditor:
                 out.append(('application/x-www-form-urlencoded', m, f'form:{k}'))
         return out[:24]
 
-    #================funtion _body_candidates_multipart function =============
+
+    #================funtion _body_candidates_multipart description =============
     def _body_candidates_multipart(self):
         out = []
         vecs = self._dirtrav_body_vectors()
@@ -442,37 +477,72 @@ class SafeConsumptionAuditor:
             out.append(('multipart/form-data', (data, files), f'multipart:filename'))
         return out
 
-    #================funtion _build_default_json function =============
+
+    #================funtion _build_default_json description =============
     def _build_default_json(self):
         return {'path':'/tmp/a', 'file':'a.txt', 'name':'x'}
 
-    #================funtion _build_default_form function =============
+
+    #================funtion _build_default_form description =============
     def _build_default_form(self):
         return {'path':'/tmp/a', 'file':'a.txt'}
 
-    #================funtion _classify_and_log_body function =============
+
+    #================funtion _classify_and_log_body description =============
     def _classify_and_log_body(self, endpoint, label, r, body_text, confidence):
         ctype = (r.headers.get('Content-Type') or '').lower()
-        is_binary = ctype.startswith(('image/','video/','audio/')) or 'application/octet-stream' in ctype
-        if is_binary: return
+        is_binary = ctype.startswith(('image/', 'video/', 'audio/')) or 'application/octet-stream' in ctype
+        if is_binary:
+            return
+
         if r.status_code == 200:
             sev = 'High' if confidence == 'high' else ('Medium' if confidence == 'medium' else 'Low')
-            self._log(f'Directory traversal (body:{label}) [{r.status_code}]', endpoint, sev,
-                      payload=getattr(self, '_last_payload', f'body:{label}'), response=r,
-                      extra={'vector':'dirtrav-body','confidence':confidence})
-        elif r.status_code in (301,302,307,308):
-            loc = (r.headers.get('Location') or '').lower()
-            sus = any(p in loc for p in ('../','..\\','%2e%2e','etc/passwd','web-inf'))
-            if sus:
-                self._log(f'Directory traversal (body:{label}) - suspicious redirect [{r.status_code}]',
-                          endpoint, 'Medium', payload=getattr(self, '_last_payload', f'body:{label}'), response=r,
-                          extra={'vector':'dirtrav-body','location':loc})
-        elif r.status_code in (401,403) and confidence == 'high':
-            self._log(f'Directory traversal (body:{label}) [{r.status_code}]', endpoint, 'Low',
-                      payload=getattr(self, '_last_payload', f'body:{label}'), response=r,
-                      extra={'vector':'dirtrav-body','confidence':confidence})
+            self._log(
+                f'Directory traversal (body:{label}) [{r.status_code}]',
+                endpoint,
+                sev,
+                payload=getattr(self, '_last_payload', f'body:{label}'),
+                response=r,
+                extra={'vector': 'dirtrav-body', 'confidence': confidence}
+            )
+            return
 
-    #================funtion _test_directory_traversal_body function =============
+        if r.status_code in (301, 302, 307, 308):
+            loc = (r.headers.get('Location') or '').lower()
+
+
+            traversal_tokens = (
+                "../", "..\\",
+                "%2e%2e", "%2e%2e%2f", "%2e%2e%5c",
+                "..%2f", "..%5c",
+                "%2f..", "%5c..",
+                "%252e%252e", "%252e%252e%252f", "%252e%252e%255c",
+            )
+
+            if any(t in loc for t in traversal_tokens):
+                self._log(
+                    f'Directory traversal (body:{label}) - suspicious redirect [{r.status_code}]',
+                    endpoint,
+                    'Medium',
+                    payload=getattr(self, '_last_payload', f'body:{label}'),
+                    response=r,
+                    extra={'vector': 'dirtrav-body', 'location': loc}
+                )
+            return
+
+        if r.status_code in (401, 403) and confidence == 'high':
+            self._log(
+                f'Directory traversal (body:{label}) [{r.status_code}]',
+                endpoint,
+                'Low',
+                payload=getattr(self, '_last_payload', f'body:{label}'),
+                response=r,
+                extra={'vector': 'dirtrav-body', 'confidence': confidence}
+            )
+            return
+
+
+    #================funtion _test_directory_traversal_body description =============
     def _test_directory_traversal_body(self, endpoint: str, method: str = 'POST') -> None:
         if stop_requested.is_set():
             return
@@ -481,7 +551,7 @@ class SafeConsumptionAuditor:
             domain = parsed.netloc or parsed.hostname or ''
             vectors = []
 
-                                                               
+
             allowed = set()
             try:
                 self._throttle(domain)
@@ -505,6 +575,7 @@ class SafeConsumptionAuditor:
             if getattr(self, 'fast_mode', False):
                 vectors = vectors[:16]
 
+            #================funtion do_req description =============
             def do_req(entry):
                 ctype, payload, label = entry
                 try:
@@ -523,7 +594,7 @@ class SafeConsumptionAuditor:
                 elif ctype == 'application/x-www-form-urlencoded':
                     r = self.session.request(m, endpoint, headers=hdrs, data=payload,
                                              timeout=(3, getattr(self,'timeout',10)), allow_redirects=False)
-                else:             
+                else:
                     data, files = payload
                     r = self.session.request(m, endpoint, headers=hdrs, data=data, files=files,
                                              timeout=(3, getattr(self,'timeout',10)), allow_redirects=False)
@@ -552,8 +623,9 @@ class SafeConsumptionAuditor:
                       extra={'error': str(e), 'vector':'dirtrav-body'})
 
     @staticmethod
-                                                                                                             
-    #================funtion endpoints_from_openapi_universal function =============
+
+
+    #================funtion endpoints_from_openapi_universal description =============
     def endpoints_from_openapi_universal(spec: dict, base_url: str, sec_cfg: 'OASSecurityConfig | None'=None) -> list[str]:
         if not globals().get('_HAS_OAS_UNIVERSAL', False):
             raise RuntimeError('openapi_universal is not available')
@@ -568,8 +640,8 @@ class SafeConsumptionAuditor:
                 continue
         return sorted(eps)
 
-                                                                                           
-    #================funtion scan_openapi_universal function =============
+
+    #================funtion scan_openapi_universal description =============
     def scan_openapi_universal(self, spec: dict, base_url: str, sec_cfg: 'OASSecurityConfig | None'=None) -> list[dict]:
         endpoints = self.endpoints_from_openapi_universal(spec, base_url, sec_cfg)
         return self.test_endpoints(endpoints)
@@ -585,8 +657,8 @@ class SafeConsumptionAuditor:
     NETWORK_TIMEOUT_PATTERNS = ('httpconnectionpool', 'read timed out', 'connect timeout', 'connecttimeout', 'write timeout', 'newconnectionerror', 'failed to establish a new connection', 'max retries exceeded', 'temporarily unavailable')
     GENERIC_4XX = {400, 401, 403, 404, 405, 406, 409, 415, 422, 429}
 
-                                                                                 
-    #================funtion __init__ function =============
+
+    #================funtion __init__ description =============
     def __init__(self, base_url: str, session: Optional[requests.Session]=None, *, timeout: Optional[int]=None, rate_limit: Optional[float]=None, log_monitor: Optional[Callable[[Dict[str, Any]], None]]=None) -> None:
         self.timeout = timeout if timeout is not None else int(os.getenv('APISCAN_TIMEOUT', '3'))
         self.rate_limit = rate_limit if rate_limit is not None else float(os.getenv('APISCAN_RATE_LIMIT', '1.0'))
@@ -628,7 +700,8 @@ class SafeConsumptionAuditor:
         print(f'[INIT] Auditor ready for {self.base_url} (timeout={self.timeout}s, rate_limit={self.rate_limit}s, max_workers={self.max_workers}, per_host={self.per_host_max_concurrency})')
 
     @staticmethod
-    #================funtion _create_secure_session function =============
+
+    #================funtion _create_secure_session description =============
     def _create_secure_session() -> requests.Session:
         s = requests.Session()
         retries = Retry(total=2, connect=2, read=2, backoff_factor=0.2, status_forcelist=[500, 502, 503], allowed_methods=['HEAD', 'GET', 'OPTIONS', 'POST', 'PUT', 'DELETE', 'PATCH'], raise_on_status=False, raise_on_redirect=False)
@@ -645,7 +718,8 @@ class SafeConsumptionAuditor:
         s.headers.update({'User-Agent': 'safe_consumption10/10', 'Accept': 'application/json, */*;q=0.1', 'Accept-Encoding': 'gzip, deflate', 'Connection': 'keep-alive'})
         return s
 
-    #================funtion _throttle function =============
+
+    #================funtion _throttle description =============
     def _throttle(self, domain: str) -> None:
         sem = self.host_semaphores[domain]
         sem.acquire()
@@ -659,7 +733,8 @@ class SafeConsumptionAuditor:
             sem.release()
 
     @staticmethod
-    #================funtion _safe_body function =============
+
+    #================funtion _safe_body description =============
     def _safe_body(data: Any) -> str:
         if data is None:
             return ''
@@ -670,7 +745,8 @@ class SafeConsumptionAuditor:
                 return f'<<{len(data)} bytes>>'
         return str(data)
 
-    #================funtion _log function =============
+
+    #================funtion _log description =============
     def _log(self, issue: str, target: str, severity: str, *, payload=None, response=None, extra=None) -> None:
         if extra and getattr(self, 'IGNORE_NETWORK_TIMEOUTS', True):
             err_low = str(extra.get('error', '')).lower()
@@ -686,6 +762,7 @@ class SafeConsumptionAuditor:
             if any((k in low for k in skip_markers)):
                 return
 
+        #================funtion _is_binary_response description =============
         def _is_binary_response(resp) -> bool:
             try:
                 ctype = (resp.headers.get('Content-Type') or '').lower()
@@ -763,7 +840,8 @@ class SafeConsumptionAuditor:
         except Exception:
             pass
 
-    #================funtion _has_engine_marker function =============
+
+    #================funtion _has_engine_marker description =============
     def _has_engine_marker(self, text: str, attack_type: str) -> bool:
         t = text.lower()
         if attack_type == 'sql':
@@ -778,7 +856,8 @@ class SafeConsumptionAuditor:
             return any((k in t for k in self.XXE_ERROR_KEYWORDS | self.STACKTRACE_MARKERS))
         return False
 
-    #================funtion _is_parse_error function =============
+
+    #================funtion _is_parse_error description =============
     def _is_parse_error(self, response: requests.Response) -> bool:
         try:
             ctype = (response.headers.get('Content-Type') or '').lower()
@@ -787,12 +866,14 @@ class SafeConsumptionAuditor:
         body = (response.text or '').lower()
         return any((p in body for p in self.JSON_PARSE_ERRORS)) or ('application/json' in ctype and response.status_code == 400)
 
-    #================funtion _looks_like_waf function =============
+
+    #================funtion _looks_like_waf description =============
     def _looks_like_waf(self, response: requests.Response) -> bool:
         body = (response.text or '').lower()
         return response.status_code in {403, 406, 429} or any((p in body for p in self.WAF_PATTERNS))
 
-    #================funtion _is_generic_html_error function =============
+
+    #================funtion _is_generic_html_error description =============
     def _is_generic_html_error(self, response) -> bool:
         try:
             status = int(getattr(response, 'status_code', 0))
@@ -815,7 +896,8 @@ class SafeConsumptionAuditor:
         looks_error = 'error' in title_low or 'server error' in head or 'internal server error' in head
         return status >= 500 and looks_html and looks_error
 
-    #================funtion _payload_reflected function =============
+
+    #================funtion _payload_reflected description =============
     def _payload_reflected(self, payload: str, response_text: str) -> bool:
         if not payload:
             return False
@@ -824,8 +906,8 @@ class SafeConsumptionAuditor:
         variants = {payload.lower(), quote(payload).lower(), quote(payload, safe='').lower()}
         return any((v in t for v in variants))
 
-                                                                                             
-    #================funtion classify_transport_anomaly function =============
+
+    #================funtion classify_transport_anomaly description =============
     def classify_transport_anomaly(self, url: str, method: str, exc: Exception | None, elapsed: float) -> str:
         e = (str(exc) if exc else '').lower()
         if 'hpe_invalid' in e or 'invalid chunk size' in e or 'http/1.1 400 bad request' in e:
@@ -834,10 +916,11 @@ class SafeConsumptionAuditor:
             return 'Info'
         return 'Info'
 
-    
-    #================funtion _dedupe_issues function =============
+
+    #================funtion _dedupe_issues description =============
     def _dedupe_issues(self) -> None:
-                                                                                    
+
+            #================funtion _canon description =============
             def _canon(f: dict) -> tuple:
                 issue = (f.get('issue') or '').lower()
                 desc = (f.get('description') or '').lower()
@@ -862,7 +945,7 @@ class SafeConsumptionAuditor:
                 cur = merged.get(k)
                 if cur is None:
                     f['duplicates'] = 0
-                                              
+
                     if (f.get('vector') or '').lower() == 'dirtrav':
                         f['evidence_urls'] = [f.get('url') or f.get('endpoint')]
                     elif (f.get('vector') or '').lower() == 'cors':
@@ -872,7 +955,7 @@ class SafeConsumptionAuditor:
                     merged[k] = f
                 else:
                     cur['duplicates'] = int(cur.get('duplicates', 0)) + 1
-                                            
+
                     v = (f.get('vector') or '').lower()
                     if v == 'dirtrav':
                         urls = cur.setdefault('evidence_urls', [])
@@ -892,7 +975,7 @@ class SafeConsumptionAuditor:
             self.issues = list(merged.values())
 
 
-    #================funtion _dump_raw_issues function =============
+    #================funtion _dump_raw_issues description =============
     def _dump_raw_issues(self, log_dir: Path) -> Path:
         import json as _json
         import datetime as _dt
@@ -905,8 +988,9 @@ class SafeConsumptionAuditor:
         return path
 
     @staticmethod
-                                                                                                        
-    #================funtion third_party_hosts_from_swagger function =============
+
+
+    #================funtion third_party_hosts_from_swagger description =============
     def third_party_hosts_from_swagger(swagger_path: str) -> List[str]:
         spec = json.loads(Path(swagger_path).read_text(encoding='utf-8'))
         hosts: Set[str] = set()
@@ -917,7 +1001,8 @@ class SafeConsumptionAuditor:
                 if parsed.netloc:
                     hosts.add(parsed.netloc.split(':')[0])
 
-                                                     
+
+        #================funtion walk description =============
         def walk(node: Any):
             if isinstance(node, dict):
                 for k, v in node.items():
@@ -931,24 +1016,21 @@ class SafeConsumptionAuditor:
         return sorted(hosts)
 
 
-    #================funtion _is_payload_reflected function =============
+    #================funtion _is_payload_reflected description =============
     def _is_payload_reflected(self, finding: dict) -> bool:
         payload = finding.get('payload') or ''
         body = (finding.get('response_body') or '').lower()
         return payload.lower() in body
 
-    #================funtion _test_injection function =============
+
+    #================funtion _test_injection description =============
     def _test_injection(self, test_url: str | tuple, attack_type: str, *, method: str = 'auto', payload: str | None = None) -> None:
-
-
-
-
 
 
         if stop_requested.is_set():
             return
 
-                                             
+
         if isinstance(test_url, tuple) and len(test_url) == 2:
             test_url, method = test_url[0], test_url[1] or method
 
@@ -973,7 +1055,7 @@ class SafeConsumptionAuditor:
             'term', 's', 'page', 'limit', 'offset', 'code', 'token', 'redirect', 'next', 'return', 'ref'
         ]
 
-                                                  
+
         allowed = set()
         try:
             self._throttle(domain)
@@ -984,10 +1066,10 @@ class SafeConsumptionAuditor:
             except Exception:
                 allowed = set()
         except Exception:
-                                                            
+
             allowed = set()
 
-                                   
+
         if method == 'auto' and allowed:
             for cand in ('POST', 'PUT', 'PATCH', 'GET'):
                 if cand in allowed:
@@ -996,10 +1078,10 @@ class SafeConsumptionAuditor:
 
         tried_any = False
         try:
-                                                                   
+
             fast = getattr(self, 'fast_mode', False) or os.environ.get('APISCAN_FAST') == '1'
             max_per_type = getattr(self, 'triage_payloads_per_type', 6)
-                             
+
             if method in ('auto', 'GET'):
                 tried_any = True
                 if parsed.query:
@@ -1016,7 +1098,7 @@ class SafeConsumptionAuditor:
                             self._log(f'Possible {attack_type.upper()} injection', attack_url, 'Critical', payload=p, response=r)
                             return
                         q[k] = old
-                                           
+
                 candidates = param_candidates[:5] if not fast else param_candidates[:3]
                 for k in candidates:
                     attack_url = f'{base}?{k}={urlparse.quote_plus(p)}'
@@ -1025,17 +1107,17 @@ class SafeConsumptionAuditor:
                         self._log(f'Possible {attack_type.upper()} injection', attack_url, 'Critical', payload=p, response=r)
                         return
 
-                                                        
+
             post_allowed = ('POST' in allowed) or (method in ('auto', 'POST')) or (not allowed)
             if post_allowed:
-                                                                         
+
                 if allowed and 'POST' not in allowed and method not in ('POST', 'PUT', 'PATCH'):
                     post_allowed = False
 
-                                     
+
             if post_allowed:
                 tried_any = True
-                                                 
+
                 form_keys = param_candidates[:6] if not fast else param_candidates[:3]
                 form_body = {k: p for k in form_keys}
                 try:
@@ -1046,7 +1128,7 @@ class SafeConsumptionAuditor:
                 except Exception:
                     pass
 
-                                                                    
+
                 try:
                     files = {'file': ('expl.txt', p)}
                     r = self.session.post(base, files=files, data={}, timeout=(3, max(self.timeout, 10)), allow_redirects=False)
@@ -1056,7 +1138,7 @@ class SafeConsumptionAuditor:
                 except Exception:
                     pass
 
-                                                             
+
                 try:
                     json_body = {k: p for k in param_candidates[:5]}
                     r = self.session.post(base, json=json_body, timeout=(3, max(self.timeout, 10)), allow_redirects=False)
@@ -1066,7 +1148,7 @@ class SafeConsumptionAuditor:
                 except Exception:
                     pass
 
-                                                                                     
+
             if '%7B' in test_url.lower() and '%7D' in test_url.lower():
                 attack_url = re.sub(r'%7B[^%]+%7D', urlparse.quote_plus(p), test_url, count=1, flags=re.I)
                 try:
@@ -1083,7 +1165,52 @@ class SafeConsumptionAuditor:
             self._log('Injection test failed', test_url, 'Info', extra={'error': str(exc), 'type': attack_type})
 
 
-    #================funtion _test_header_manipulation function =============
+    #================funtion _run_injection_tests_parallel description =============
+    def _run_injection_tests_parallel(self, endpoint, test_type: str) -> None:
+        if stop_requested.is_set():
+            return
+        payloads = list(self.INJECTION_PAYLOADS[test_type])
+        if self.fast_mode and len(payloads) > self.triage_payloads_per_type:
+            payloads = payloads[:self.triage_payloads_per_type]
+
+
+        if isinstance(endpoint, tuple) and len(endpoint) == 2:
+            base_endpoint, preferred_method = endpoint[0], endpoint[1]
+        else:
+            base_endpoint, preferred_method = endpoint, 'auto'
+
+        test_urls: List[Tuple[str, str, str]] = []
+        for p in payloads:
+            if stop_requested.is_set():
+                return
+
+            method_preference = preferred_method if preferred_method and preferred_method != 'AUTO' else ('POST' if '/posts' in base_endpoint else 'auto')
+            test_url = f'{base_endpoint}?input={urlparse.quote(p)}'
+            test_urls.append((test_url, method_preference, p))
+            test_urls.append((base_endpoint.replace('%7BpostId%7D', urlparse.quote_plus(p)), 'GET', p))
+
+
+        workers = min(8, max(1, len(test_urls)))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            if stop_requested.is_set():
+                return
+            futures = []
+            for test_url, method, payload in test_urls:
+                if stop_requested.is_set():
+                    break
+                futures.append(executor.submit(self._test_injection, test_url, test_type, method=method, payload=payload))
+            for future in concurrent.futures.as_completed(futures):
+                if stop_requested.is_set():
+                    for f in futures:
+                        f.cancel()
+                    return
+                try:
+                    future.result()
+                except Exception:
+                    pass
+
+
+    #================funtion _test_header_manipulation description =============
     def _test_header_manipulation(self, endpoint: str) -> None:
         if stop_requested.is_set():
             return
@@ -1134,6 +1261,7 @@ class SafeConsumptionAuditor:
             except Exception:
                 r0 = None
 
+            #================funtion _is_html description =============
             def _is_html(resp: requests.Response) -> bool:
                 ct = (resp.headers.get('Content-Type') or '').lower()
                 if 'text/html' in ct or 'application/xhtml+xml' in ct:
@@ -1204,7 +1332,152 @@ class SafeConsumptionAuditor:
         except Exception as e:
             self._log('Header manipulation test setup failed', endpoint, 'Medium', extra={'error': str(e)})
 
-    #================funtion _is_injection_successful function =============
+
+    #================funtion _test_blind_sqli description =============
+    def _test_blind_sqli(self, endpoint: str) -> None:
+        """Blind SQLi (boolean + time-based) heuristic.
+
+        Does not require HTTP 200. Compares response signatures vs baseline.
+        """
+        try:
+            parsed = urlparse.urlparse(endpoint)
+        except Exception:
+            return
+
+        base = endpoint.split("?", 1)[0]
+        domain = parsed.netloc or urlparse.urlparse(base).netloc
+        if not domain:
+            return
+
+
+        from urllib.parse import parse_qsl, urlencode
+
+        q_items = parse_qsl(parsed.query, keep_blank_values=True)
+        q = dict(q_items)
+        if q:
+            keys = list(q.keys())[:3]
+        else:
+
+            keys = ["id", "q", "search"]
+
+        #================funtion _signature description =============
+        def _signature(resp) -> tuple:
+            try:
+                body = self._safe_body(resp)
+            except Exception:
+                body = ""
+            ct = (resp.headers.get("Content-Type", "") if getattr(resp, "headers", None) else "")
+            return (getattr(resp, "status_code", 0), len(body or ""), ct.split(";", 1)[0].lower())
+
+
+        true_p = "' OR 1=1--"
+        false_p = "' OR 1=2--"
+
+
+        time_payloads = [
+            "' OR SLEEP(5)-- ",
+            "'; SELECT SLEEP(5)-- ",
+            "' OR pg_sleep(5)--",
+            "'; SELECT pg_sleep(5)--",
+            "'; WAITFOR DELAY '0:0:5'--",
+        ]
+
+        for k in keys:
+
+            q0 = dict(q) if q else {}
+            q0[k] = q0.get(k, "1") or "1"
+            u0 = base + "?" + urlencode(q0, doseq=True)
+
+
+            qt = dict(q0); qt[k] = true_p
+            qf = dict(q0); qf[k] = false_p
+            ut = base + "?" + urlencode(qt, doseq=True)
+            uf = base + "?" + urlencode(qf, doseq=True)
+
+            try:
+                self._throttle(domain)
+                r0 = self.session.get(u0, timeout=(3, max(self.timeout, 10)), allow_redirects=False)
+                self._throttle(domain)
+                rt = self.session.get(ut, timeout=(3, max(self.timeout, 10)), allow_redirects=False)
+                self._throttle(domain)
+                rf = self.session.get(uf, timeout=(3, max(self.timeout, 10)), allow_redirects=False)
+            except Exception as e:
+
+                self._log("Blind SQLi probe failed", base, "Info", extra={"error": str(e), "param": k})
+                continue
+
+            s0 = _signature(r0)
+            st = _signature(rt)
+            sf = _signature(rf)
+
+
+            len0, lent, lenf = s0[1], st[1], sf[1]
+            maxlen = max(len0, lent, lenf, 1)
+            diff_tf = abs(lent - lenf) / maxlen
+            diff_t0 = abs(lent - len0) / maxlen
+            diff_f0 = abs(lenf - len0) / maxlen
+
+            status_changed = (st[0] != sf[0]) or (st[0] != s0[0]) or (sf[0] != s0[0])
+
+            if diff_tf >= 0.25 and (diff_t0 >= 0.15 or diff_f0 >= 0.15 or status_changed):
+                self._log(
+                    "Possible Blind SQL Injection (boolean-based)",
+                    base,
+                    "High",
+                    payload={"param": k, "true": true_p, "false": false_p},
+                    response=rt,
+                    extra={
+                        "confidence": "medium",
+                        "baseline_status": s0[0],
+                        "true_status": st[0],
+                        "false_status": sf[0],
+                        "baseline_len": len0,
+                        "true_len": lent,
+                        "false_len": lenf,
+                    },
+                )
+
+                try:
+                    import time as _time
+
+                    t0 = 0.0
+                    for _ in range(2):
+                        self._throttle(domain)
+                        t_start = _time.perf_counter()
+                        self.session.get(u0, timeout=(3, max(self.timeout, 10)), allow_redirects=False)
+                        t0 += (_time.perf_counter() - t_start)
+                    t0 /= 2.0
+
+                    confirmed = False
+                    for tp in time_payloads:
+                        qd = dict(q0); qd[k] = tp
+                        ud = base + "?" + urlencode(qd, doseq=True)
+                        delays = []
+                        for _ in range(2):
+                            self._throttle(domain)
+                            t_start = _time.perf_counter()
+                            self.session.get(ud, timeout=(3, max(self.timeout, 15)), allow_redirects=False)
+                            delays.append(_time.perf_counter() - t_start)
+
+                        if all((d - t0) >= 3.5 for d in delays):
+                            confirmed = True
+                            self._log(
+                                "Possible Blind SQL Injection (time-based)",
+                                base,
+                                "Critical",
+                                payload={"param": k, "time_payload": tp},
+                                extra={"confidence": "high", "baseline_avg_s": round(t0, 3), "delays_s": [round(d, 3) for d in delays]},
+                            )
+                            break
+                    if confirmed:
+                        return
+                except Exception:
+                    pass
+                return
+
+        return
+
+    #================funtion _is_injection_successful description =============
     def _is_injection_successful(
         self,
         response: requests.Response,
@@ -1224,16 +1497,16 @@ class SafeConsumptionAuditor:
         text = response.text or ''
         low = text.lower()
 
-                                                             
+
         if status in {400, 422} and self._is_parse_error(response):
             return False
 
-                                                          
+
         if attack_type == 'nosql':
             if any(p in low for p in self.NOSQL_NEGATIVE_PATTERNS):
-                return False                                                  
+                return False
 
-                     
+
         if attack_type == 'sql':
             if self._has_sql_evidence(text):
                 return True
@@ -1241,34 +1514,32 @@ class SafeConsumptionAuditor:
                 elapsed = response.elapsed.total_seconds() if response.elapsed else 0.0
             except Exception:
                 elapsed = 0.0
-                                                                                  
-                                                      
 
-                                          
+
             return False
 
-                                                  
+
         if status >= 500:
             if attack_type == 'nosql':
-                                                 
+
                 return any((k in low for k in self.NOSQL_ERROR_KEYWORDS)) or self._has_engine_marker(low, 'nosql')
             if attack_type in {'ssti', 'ldap', 'xxe'}:
                 return self._has_engine_marker(low, attack_type)
             return False
 
-                                     
+
         if attack_type == 'nosql':
             specific = any((re.search(p, low) for p in ('mongo.*error', 'mongodb.*error', 'bson.*error')))
             keywords = any((k in low for k in self.NOSQL_ERROR_KEYWORDS))
             return specific or keywords or self._has_engine_marker(low, 'nosql')
 
-                     
+
         if attack_type == 'xss':
             if not payload or payload.lower() not in low:
                 return False
             return any((s in text for s in (f'="{payload}"', f'>{payload}<', f"'{payload}'", f'`{payload}`'))) or self._is_payload_reflected(text, payload)
 
-                                                               
+
         if attack_type == 'xxe':
             ctype = (response.headers.get('Content-Type') or '').lower()
             CONTENT_MARKERS = ('root:x:0:0:', 'daemon:x:', '/bin/bash', 'for 16-bit app support', '[extensions]')
@@ -1298,7 +1569,7 @@ class SafeConsumptionAuditor:
         return False
 
 
-    #================funtion _is_false_positive function =============
+    #================funtion _is_false_positive description =============
     def _is_false_positive(self, response: requests.Response) -> bool:
         content = (response.text or '').lower()
         false_positive_indicators = ['cloudflare', 'akamai', 'waf', 'firewall', 'access denied', 'forbidden', 'security policy', 'page not found', 'error occurred', 'try again', 'not found', 'invalid request', 'bad request']
@@ -1307,7 +1578,8 @@ class SafeConsumptionAuditor:
         has_waf_pattern = any((re.search(pattern, content) for pattern in waf_patterns))
         return has_fp_indicator or has_waf_pattern
 
-    #================funtion _detect_server_errors function =============
+
+    #================funtion _detect_server_errors description =============
     def _detect_server_errors(self, endpoint: str) -> None:
         prov = getattr(self, 'server_log_provider', None)
         if callable(prov):
@@ -1319,7 +1591,8 @@ class SafeConsumptionAuditor:
                 if 'sql' in error.lower() and endpoint in error:
                     self._log('SQL error detected in server logs', endpoint, 'High', extra={'error': error})
 
-    #================funtion _test_basic_security function =============
+
+    #================funtion _test_basic_security description =============
     def _test_basic_security(self, endpoint: str) -> None:
         try:
             r = self.session.get(endpoint, timeout=(3, self.timeout), allow_redirects=False)
@@ -1356,7 +1629,8 @@ class SafeConsumptionAuditor:
             return
         self._log('Unexpected response status', endpoint, 'Info', response=r)
 
-    #================funtion _test_crlf_injection function =============
+
+    #================funtion _test_crlf_injection description =============
     def _test_crlf_injection(self, endpoint: str) -> None:
         if stop_requested.is_set():
             return
@@ -1384,6 +1658,7 @@ class SafeConsumptionAuditor:
             variants = base_variants + extra_variants
             params_to_try = ['q', 'search', 'redirect', 'url', 'return', 'next']
 
+            #================funtion _all_headers description =============
             def _all_headers(resp: requests.Response) -> List[Tuple[str, str]]:
                 try:
                     return _headers_to_list(resp.raw.headers)
@@ -1424,21 +1699,25 @@ class SafeConsumptionAuditor:
         except Exception as e:
             self._log('CRLF test setup failed', endpoint, 'Medium', extra={'error': str(e)})
 
-    #================funtion _test_ssrf function =============
+
+    #================funtion _test_ssrf description =============
     def _test_ssrf(self, endpoint: str) -> None:
         return
 
-    #================funtion _is_ssrf_successful function =============
+
+    #================funtion _is_ssrf_successful description =============
     def _is_ssrf_successful(self, response: requests.Response, payload: str) -> bool:
         return
 
     @staticmethod
-                                                                             
-    #================funtion generate_random_id function =============
+
+
+    #================funtion generate_random_id description =============
     def generate_random_id(length: int=8) -> str:
         return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length))
 
-    #================funtion _test_graphql_introspection function =============
+
+    #================funtion _test_graphql_introspection description =============
     def _test_graphql_introspection(self, endpoint: str) -> None:
         if stop_requested.is_set():
             return
@@ -1457,7 +1736,8 @@ class SafeConsumptionAuditor:
         except Exception as e:
             self._log('GraphQL test failed', endpoint, 'Info', extra={'error': str(e)})
 
-    #================funtion _test_hpp function =============
+
+    #================funtion _test_hpp description =============
     def _test_hpp(self, endpoint: str) -> None:
         if stop_requested.is_set():
             return
@@ -1489,7 +1769,8 @@ class SafeConsumptionAuditor:
         except Exception as e:
             self._log('HPP test setup failed', endpoint, 'Info', extra={'error': str(e)})
 
-    #================funtion _test_directory_traversal function =============
+
+    #================funtion _test_directory_traversal description =============
     def _test_directory_traversal(self, endpoint: str) -> None:
         if stop_requested.is_set():
             return
@@ -1497,7 +1778,7 @@ class SafeConsumptionAuditor:
             parsed = urlparse.urlparse(endpoint)
             domain = parsed.netloc or parsed.hostname or ''
 
-                                              
+
             repl_index   = int(os.getenv('APISCAN_TRAV_REPLACE_INDEX', '-2'))
             ins_before   = int(os.getenv('APISCAN_TRAV_INSERT_BEFORE_INDEX', '-1'))
             max_dot      = int(os.getenv('APISCAN_TRAV_MAX_DOT', '3'))
@@ -1511,7 +1792,7 @@ class SafeConsumptionAuditor:
                 rep_variants = rep_variants[:min(4, len(rep_variants))]
                 ins_variants = ins_variants[:min(4, len(ins_variants))]
 
-                                                                
+
             extra = []
             for v in (rep_variants + ins_variants):
                 pv = v if v.endswith('/') else v + '/'
@@ -1526,6 +1807,7 @@ class SafeConsumptionAuditor:
                 '/etc/passwd', 'bin:x:', 'boot.ini', ':\\windows\\', 'web-inf/web.xml'
             ]
 
+            #================funtion is_likely_false_positive description =============
             def is_likely_false_positive(resp, body_text: str) -> bool:
                 if not resp:
                     return False
@@ -1540,6 +1822,7 @@ class SafeConsumptionAuditor:
                     return True
                 return False
 
+            #================funtion looks_interesting description =============
             def looks_interesting(text: str) -> tuple[bool, str]:
                 if not text:
                     return (False, 'none')
@@ -1557,6 +1840,7 @@ class SafeConsumptionAuditor:
                         return (True, 'medium')
                 return (False, 'none')
 
+            #================funtion do_req description =============
             def do_req(url, label):
                 try:
                     self._throttle(domain)
@@ -1599,7 +1883,7 @@ class SafeConsumptionAuditor:
             variants = [('segment replace', u) for u in rep_variants] + [('segment insert', u) for u in ins_variants]
             variants += [('suffix', u) for u in extra]
 
-                                             
+
             seen = set()
             filtered = []
             orig_path = urlparse.urlsplit(endpoint).path
@@ -1628,8 +1912,7 @@ class SafeConsumptionAuditor:
                     extra={'error': str(e), 'vector': 'dirtrav', 'base_endpoint': endpoint})
 
 
-            
-    #================funtion _test_docker_api function =============
+    #================funtion _test_docker_api description =============
     def _test_docker_api(self, endpoint: str) -> None:
         if stop_requested.is_set():
             return
@@ -1645,7 +1928,8 @@ class SafeConsumptionAuditor:
         except Exception as e:
             self._log('Docker test failed', f'http://{host}:2375/version', 'Info', extra={'error': str(e)})
 
-    #================funtion _test_kubernetes_api function =============
+
+    #================funtion _test_kubernetes_api description =============
     def _test_kubernetes_api(self, endpoint: str) -> None:
         if stop_requested.is_set():
             return
@@ -1668,7 +1952,8 @@ class SafeConsumptionAuditor:
         except Exception as e:
             self._log('Kubernetes test setup failed', endpoint, 'Info', extra={'error': str(e)})
 
-    #================funtion _test_sensitive_data_exposure function =============
+
+    #================funtion _test_sensitive_data_exposure description =============
     def _test_sensitive_data_exposure(self, endpoint: str) -> None:
         if stop_requested.is_set():
             return
@@ -1677,6 +1962,8 @@ class SafeConsumptionAuditor:
             self._throttle(domain)
             url = f'{self.base_url}/api/v1/config' if endpoint == self.base_url else f'{endpoint}/api/v1/config'
             r = self.session.get(url, timeout=(3, self.timeout))
+            if getattr(r, 'status_code', 0) >= 400:
+                return
             content = (r.text or '').lower()
             for term in ('password', 'secret', 'token', 'key', 'credential'):
                 if term in content:
@@ -1685,8 +1972,26 @@ class SafeConsumptionAuditor:
         except Exception as e:
             self._log('Sensitive data test failed', endpoint, 'Info', extra={'error': str(e), 'status_code': 0})
 
-                                                                                      
-    #================funtion test_endpoints function =============
+
+    #================funtion _is_endpoint_reachable description =============
+    def _is_endpoint_reachable(self, endpoint: str) -> bool:
+        """Quick reachability check to avoid spending time on dead endpoints.
+        Returns True when the endpoint does not look like a hard 404.
+        """
+        try:
+            domain = urlparse.urlparse(endpoint).netloc or ""
+            self._throttle(domain)
+            resp = self.session.head(endpoint, timeout=(2, 3), allow_redirects=False)
+            if resp.status_code in (405, 501):
+                self._throttle(domain)
+                resp = self.session.get(endpoint, timeout=(3, 5), allow_redirects=False)
+            return resp.status_code != 404
+        except requests.RequestException:
+            return False
+        except Exception:
+            return False
+
+    #================funtion test_endpoints description =============
     def test_endpoints(self, endpoints: List[str]) -> List[Issue]:
         MAX_WORKERS = self.max_workers
         print(f'{Fore.CYAN}[INFO] Starting full scan with {MAX_WORKERS} workers - Perry Mertens pamsniffer@gmail.com 2025 (C) {Style.RESET_ALL}')
@@ -1711,8 +2016,18 @@ class SafeConsumptionAuditor:
                         pbar.update(1)
         if stop_requested.is_set():
             return self.issues
-        num_core_tests = 8
-        tests_per_endpoint = num_core_tests + len(self.INJECTION_PAYLOADS)
+
+        base_core_tests = 8
+
+        base_core_tests += 1
+
+        opt_traversal = 0
+        if hasattr(self, '_test_directory_traversal'):
+            opt_traversal += 1
+        if hasattr(self, '_test_directory_traversal_body'):
+            opt_traversal += 1
+
+        tests_per_endpoint = base_core_tests + opt_traversal + len(self.INJECTION_PAYLOADS)
         total_tasks = len(reachable_endpoints) * tests_per_endpoint
         with tqdm(total=total_tasks, desc=f'Scanning endpoints ({len(reachable_endpoints)})') as pbar:
             with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as main_executor:
@@ -1720,7 +2035,7 @@ class SafeConsumptionAuditor:
                 for ep in reachable_endpoints:
                     if stop_requested.is_set():
                         break
-                    test_fns = [partial(self._test_basic_security, ep), partial(self._test_crlf_injection, ep), partial(self._test_hpp, ep), partial(self._test_sensitive_data_exposure, ep), partial(self._test_graphql_introspection, ep), partial(self._test_header_manipulation, ep)]
+                    test_fns = [partial(self._test_basic_security, ep), partial(self._test_crlf_injection, ep), partial(self._test_hpp, ep), partial(self._test_sensitive_data_exposure, ep), partial(self._test_graphql_introspection, ep), partial(self._test_header_manipulation, ep)] + [partial(self._test_blind_sqli, ep)]
                     if hasattr(self, '_test_directory_traversal'):
                         test_fns.append(partial(self._test_directory_traversal, ep))
                     if hasattr(self, '_test_directory_traversal_body'):
@@ -1758,7 +2073,137 @@ class SafeConsumptionAuditor:
             pass
         return self.issues
 
-    #================funtion _has_sql_evidence function =============
+
+#================funtion _response_signature description =============
+def _response_signature(self, resp: requests.Response | None) -> tuple[int, int, str]:
+    if resp is None:
+        return (0, 0, "")
+    try:
+        status = int(getattr(resp, "status_code", 0))
+    except Exception:
+        status = 0
+    try:
+        body = getattr(resp, "text", "") or ""
+        blen = len(body)
+    except Exception:
+        blen = 0
+    try:
+        ctype = (resp.headers.get("Content-Type") or "").split(";", 1)[0].lower()
+    except Exception:
+        ctype = ""
+    return (status, blen, ctype)
+
+
+#================funtion _sig_diff description =============
+def _sig_diff(self, a: tuple[int, int, str], b: tuple[int, int, str]) -> int:
+
+    score = 0
+    if a[0] != b[0]:
+        score += 3
+
+    if abs(a[1] - b[1]) > max(50, int(0.15 * max(a[1], b[1], 1))):
+        score += 2
+    if a[2] != b[2]:
+        score += 1
+    return score
+
+
+#================funtion _request_with_timing description =============
+def _request_with_timing(self, method: str, url: str, *, params=None, json_body=None) -> tuple[requests.Response | None, float]:
+    self._throttle(urlparse.urlparse(url).netloc if hasattr(urlparse, "urlparse") else urlparse.urlparse(url).netloc)
+    try:
+        r = self.session.request(
+            method.upper(),
+            url,
+            params=params,
+            json=json_body,
+            timeout=(3, max(self.timeout, 12)),
+            allow_redirects=False
+        )
+        try:
+            elapsed = r.elapsed.total_seconds() if r.elapsed else 0.0
+        except Exception:
+            elapsed = 0.0
+        return r, float(elapsed)
+    except Exception:
+        return None, 0.0
+
+
+#================funtion _test_blind_sqli description =============
+def _test_blind_sqli(self, endpoint: str) -> None:
+    """Blind SQL injection heuristics (boolean-based + optional time-based).
+
+    This does NOT require HTTP 200. We compare response signatures against a baseline.
+    """
+    if stop_requested.is_set():
+        return
+
+    base = endpoint
+
+    param_names = ["id", "q", "search", "query", "name", "input", "user", "email", "ref", "next", "return"]
+    true_payloads = ["' OR 1=1--", "\" OR 1=1--", "') OR ('1'='1", "1 OR 1=1"]
+    false_payloads = ["' OR 1=2--", "\" OR 1=2--", "') OR ('1'='2", "1 OR 1=2"]
+
+
+    p0 = {param_names[0]: "1"}
+    r0, t0 = self._request_with_timing("GET", base, params=p0)
+    sig0 = self._response_signature(r0)
+
+
+    best = None
+    for pn in param_names:
+        if stop_requested.is_set():
+            return
+        for tp, fp in zip(true_payloads, false_payloads):
+            rT, _ = self._request_with_timing("GET", base, params={pn: tp})
+            rF, _ = self._request_with_timing("GET", base, params={pn: fp})
+            sigT = self._response_signature(rT)
+            sigF = self._response_signature(rF)
+
+            diff_tf = self._sig_diff(sigT, sigF)
+            diff_t0 = self._sig_diff(sigT, sig0)
+            diff_f0 = self._sig_diff(sigF, sig0)
+            score = diff_tf + max(diff_t0, diff_f0)
+            if best is None or score > best[0]:
+                best = (score, pn, tp, fp, sigT, sigF, rT, rF)
+
+    if best and best[0] >= 5:
+        _, pn, tp, fp, sigT, sigF, rT, rF = best
+        desc = f"Boolean-based response difference for parameter '{pn}'. TRUE({tp}) vs FALSE({fp}). baseline={sig0}, true={sigT}, false={sigF}"
+
+        self._log("Possible Blind SQL Injection", base, desc, "High", payload=tp, response=rT)
+
+
+    time_payloads = [
+        ("';SELECT SLEEP(5)--", 4.0),
+        ("';SELECT pg_sleep(5)--", 4.0),
+        ("';WAITFOR DELAY '0:0:5'--", 4.0),
+    ]
+
+    b_times = []
+    for _ in range(2):
+        _, bt = self._request_with_timing("GET", base, params=p0)
+        if bt:
+            b_times.append(bt)
+    if not b_times:
+        return
+    b_avg = sum(b_times) / len(b_times)
+
+    for pn in param_names[:4]:
+        for payload, min_delta in time_payloads:
+            if stop_requested.is_set():
+                return
+
+            delays = []
+            for _ in range(2):
+                rD, td = self._request_with_timing("GET", base, params={pn: payload})
+                if td:
+                    delays.append(td)
+            if len(delays) == 2 and all((d - b_avg) >= min_delta for d in delays):
+                desc = f"Time-based delay detected for parameter '{pn}'. baseline_avg={b_avg:.2f}s delays={delays}"
+                self._log("Possible Time-based Blind SQL Injection", base, desc, "Critical", payload=payload, response=rD)
+                return
+    #================funtion _has_sql_evidence description =============
     def _has_sql_evidence(self, body: str) -> bool:
         low = (body or '').lower()
         if any((k in low for k in self.SQL_ENGINE_MARKERS)):
@@ -1771,67 +2216,33 @@ class SafeConsumptionAuditor:
                 return True
         return False
 
-                                                      
-   
 
-    #================funtion _is_endpoint_reachable function =============
+    #================funtion _is_endpoint_reachable description =============
     def _is_endpoint_reachable(self, endpoint: str) -> bool:
+
+        #================funtion _ok description =============
+        def _ok(code: int) -> bool:
+            return (200 <= code < 400) or code in (401, 403, 405)
+
+        sess = getattr(self, "session", None) or getattr(self, "sess", None)
+        if sess is None:
+            return True
+
         try:
-            domain = urlparse.urlparse(endpoint).netloc or ''
-            self._throttle(domain)
-            resp = self.session.head(endpoint, timeout=(2, 3), allow_redirects=False)
-            if resp.status_code in (405, 501):
-                self._throttle(domain)
-                resp = self.session.get(endpoint, timeout=(3, 5), allow_redirects=False)
-            return resp.status_code != 404
-        except requests.RequestException:
-            return False
-    
-    #================funtion _run_injection_tests_parallel function =============
-    def _run_injection_tests_parallel(self, endpoint, test_type: str) -> None:
-        if stop_requested.is_set():
-            return
-        payloads = list(self.INJECTION_PAYLOADS[test_type])
-        if self.fast_mode and len(payloads) > self.triage_payloads_per_type:
-            payloads = payloads[:self.triage_payloads_per_type]
+            r = sess.head(endpoint, timeout=self.timeout, allow_redirects=True)
+            if _ok(getattr(r, "status_code", 0)):
+                return True
+            r2 = sess.get(endpoint, timeout=self.timeout, allow_redirects=True)
+            return _ok(getattr(r2, "status_code", 0))
+        except Exception:
+            try:
+                r2 = sess.get(endpoint, timeout=self.timeout, allow_redirects=True)
+                return _ok(getattr(r2, "status_code", 0))
+            except Exception:
+                return False
 
-                                  
-        if isinstance(endpoint, tuple) and len(endpoint) == 2:
-            base_endpoint, preferred_method = endpoint[0], endpoint[1]
-        else:
-            base_endpoint, preferred_method = endpoint, 'auto'
 
-        test_urls: List[Tuple[str, str, str]] = []
-        for p in payloads:
-            if stop_requested.is_set():
-                return
-                                                                     
-            method_preference = preferred_method if preferred_method and preferred_method != 'AUTO' else ('POST' if '/posts' in base_endpoint else 'auto')
-            test_url = f'{base_endpoint}?input={urlparse.quote(p)}'
-            test_urls.append((test_url, method_preference, p))
-            test_urls.append((base_endpoint.replace('%7BpostId%7D', urlparse.quote_plus(p)), 'GET', p))
-        
-                                           
-        workers = min(8, max(1, len(test_urls)))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-            if stop_requested.is_set():
-                return
-            futures = []
-            for test_url, method, payload in test_urls:
-                if stop_requested.is_set():
-                    break
-                futures.append(executor.submit(self._test_injection, test_url, test_type, method=method, payload=payload))
-            for future in concurrent.futures.as_completed(futures):
-                if stop_requested.is_set():
-                    for f in futures:
-                        f.cancel()
-                    return
-                try:
-                    future.result()
-                except Exception:
-                    pass
-        
-    #================funtion _filter_issues function =============
+    #================funtion _filter_issues description =============
     def _filter_issues(self) -> list[dict]:
         cleaned, seen = ([], set())
 
@@ -1877,6 +2288,7 @@ class SafeConsumptionAuditor:
                 except Exception:
                     hdrs_map = {}
 
+            #================funtion _h description =============
             def _h(name: str) -> str:
                 return (hdrs_map.get(name) or hdrs_map.get(name.title()) or '').lower()
 
@@ -1886,42 +2298,51 @@ class SafeConsumptionAuditor:
             cdisp = _h('Content-Disposition')
             loc_low = _h('Location')
 
-                                                           
+
             if issue.get('issue', '').startswith('Possible SQL injection'):
-                drop = False
-                if status in GENERIC_4XX:
-                    drop = True
-                elif 'application/problem+json' in ctype:
-                    drop = True
-                else:
-                    try:
-                        if not self._has_sql_evidence(body):
-                            drop = status < 500
-                            if status >= 500:
-                                issue['severity'] = 'Info'
-                                issue['issue'] = 'Server error without SQL evidence'
-                                issue['description'] = 'Generic 5xx response without SQL/DB markers'
-                    except Exception:
-                        drop = status < 500
-                if drop:
+                try:
+                    has_evidence = bool(self._has_sql_evidence(body))
+                except Exception:
+                    has_evidence = False
+
+
+                if status in GENERIC_4XX or 'application/problem+json' in ctype:
+                    if not has_evidence:
+                        issue['severity'] = 'Info'
+                        issue['issue'] = 'Possible SQL injection (blocked/validated)'
+                        issue['description'] = 'Request rejected (4xx/problem+json) without SQL/DB error markers'
+                        issue['confidence'] = issue.get('confidence') or 'low'
+                    cleaned.append(issue)
                     continue
 
-                                            
+
+                if status >= 500 and not has_evidence:
+                    issue['severity'] = 'Info'
+                    issue['issue'] = 'Server error without SQL evidence'
+                    issue['description'] = 'Generic 5xx response without SQL/DB markers'
+                    cleaned.append(issue)
+                    continue
+
+
+                if not has_evidence:
+                    continue
+
+
             if ('nosql' in desc_low) or issue.get('issue', '').lower().startswith('possible nosql'):
-                                                   
+
                 if any(p in body_low for p in self.NOSQL_NEGATIVE_PATTERNS):
                     continue
-                                                                 
+
                 if status in GENERIC_4XX and 'application/json' in ctype:
                     issue['severity'] = 'Info'
 
-                                                                        
+
             if desc_low.startswith('possible ssrf'):
                 generic_err = ('connection refused', 'timed out', 'no route to host', 'dns error', 'invalid host')
                 if any(g in body_low for g in generic_err) or status in {400, 404, 405}:
                     issue['severity'] = 'Info'
 
-                                                                   
+
             if desc_low.startswith('possible access control bypass via spoofed header'):
                 is_json = 'application/json' in ctype
                 admin_hit = re.search('(?i)(<title>[^<]*admin[^<]*</title>|\\badmin\\s*panel\\b|href=["\\\']/admin)', body) is not None
@@ -1930,14 +2351,21 @@ class SafeConsumptionAuditor:
                 elif not admin_hit and '/admin' not in loc_low:
                     issue['severity'] = 'Info'
 
-                                                                
+
             if issue.get('issue', '').lower().startswith('broad cors policy'):
                 is_static = ctype.startswith(('image/', 'video/', 'audio/', 'font/')) or 'application/octet-stream' in ctype or 'application/pdf' in ctype or ('filename=' in cdisp)
                 if is_static and acac != 'true' and (issue.get('severity') in (None, 'Low', 'Info')):
                     continue
 
-            if status == 404 and issue.get('severity') in ('High', 'Critical'):
-                issue['severity'] = 'Info'
+            if status == 404:
+
+
+                if not any(s in body_low for s in (
+                    'root:x:0:0:', 'daemon:x:', 'index of /', '<web-app', '[extensions]'
+                )):
+                    continue
+                if issue.get('severity') in ('High', 'Critical'):
+                    issue['severity'] = 'Info'
 
             if issue.get('status_code') == '-' or 'timeout' in err_low:
                 issue['severity'] = 'Info'
@@ -1953,12 +2381,13 @@ class SafeConsumptionAuditor:
         self._dedupe_issues()
         return self.issues
 
-    
-    #================funtion _filtered function =============
+
+    #================funtion _filtered description =============
     def _filtered(self) -> list[dict]:
         return self._filter_issues()
 
-    #================funtion _looks_like_secret function =============
+
+    #================funtion _looks_like_secret description =============
     def _looks_like_secret(self, text: str) -> bool:
         if not text:
             return False
@@ -1968,6 +2397,7 @@ class SafeConsumptionAuditor:
         prefixes = ('AKIA', 'ASIA', 'sk_live_', 'sk_test_', 'xoxb-', 'xoxp-', 'ghp_', 'gho_', 'ghu_', 'eyJ')
         has_prefix = any((p in t for p in prefixes))
 
+        #================funtion _entropy description =============
         def _entropy(s: str) -> float:
             from math import log2
             if not s:
@@ -1980,7 +2410,8 @@ class SafeConsumptionAuditor:
         high_entropy = any((_entropy(c) >= 3.0 for c in candidates if len(c) >= 24))
         return bool(candidates) or has_prefix or high_entropy
 
-    #================funtion _category_of_issue function =============
+
+    #================funtion _category_of_issue description =============
     def _category_of_issue(self, text: str) -> str:
         t = (text or '').lower()
         if 'sql injection' in t or 'sqli' in t:
@@ -2019,8 +2450,8 @@ class SafeConsumptionAuditor:
             return 'Baseline'
         return 'Other'
 
-                                                                             
-    #================funtion counts_by_category function =============
+
+    #================funtion counts_by_category description =============
     def counts_by_category(self, include_info: bool=False) -> dict:
         out = {}
         for f in self.issues:
@@ -2031,21 +2462,22 @@ class SafeConsumptionAuditor:
             out[c] = out.get(c, 0) + 1
         return dict(sorted(out.items(), key=lambda kv: kv[0].lower()))
 
-                                                                       
-    #================funtion generate_report function =============
+
+    #================funtion generate_report description =============
     def generate_report(self) -> str:
         self._filter_issues()
         gen = ReportGenerator(issues=self.issues, scanner='SafeConsumption (API10)', base_url=self.base_url)
         return gen.generate_html()
 
-                                                               
-    #================funtion save_report function =============
+
+    #================funtion save_report description =============
     def save_report(self, path: str, fmt: str='html') -> None:
         ReportGenerator(issues=self._filter_issues(), scanner='SafeConsumption (API10)', base_url=self.base_url).save(path, fmt=fmt)
 
     @staticmethod
-                                                                                             
-    #================funtion xml_endpoints_from_openapi function =============
+
+
+    #================funtion xml_endpoints_from_openapi description =============
     def xml_endpoints_from_openapi(spec: dict, base_url: str, sec_cfg: 'OASSecurityConfig | None'=None) -> list[str]:
         if not globals().get('_HAS_OAS_UNIVERSAL', False):
             raise RuntimeError('openapi_universal is not available')
@@ -2065,8 +2497,9 @@ class SafeConsumptionAuditor:
             except Exception:
                 continue
         return sorted(eps)
-    
-    #================funtion _test_directory_traversal function =============
+
+
+    #================funtion _test_directory_traversal description =============
     def _test_directory_traversal(self, endpoint: str) -> None:
         if stop_requested.is_set():
             return
@@ -2076,6 +2509,7 @@ class SafeConsumptionAuditor:
             if not base_path or base_path == '/':
                 return
             domain = parts.netloc or parts.hostname or ''
+            #================funtion join description =============
             def join(path):
                 return urlparse.urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
@@ -2095,6 +2529,7 @@ class SafeConsumptionAuditor:
             strong = ['root:x:0:0:', 'daemon:x:1:1:', 'Index of /', '<title>Index of', 'Parent Directory', 'Directory listing for', 'Directory of ', '[extensions]', 'for 16-bit app support']
             weak = ['/etc/passwd', 'bin:x:', 'boot.ini', '\\Windows\\', 'WEB-INF/web.xml']
 
+            #================funtion looks_interesting description =============
             def looks_interesting(text: str):
                 if not text:
                     return (False, 'none')
@@ -2121,7 +2556,7 @@ class SafeConsumptionAuditor:
                     ctype = (r.headers.get('Content-Type') or '').lower()
                     if ctype.startswith(('image/','video/','audio/')) or 'application/octet-stream' in ctype:
                         continue
-                                                                          
+
                     low = body.lower()
                     if r.status_code in (401, 403) and any(t in low for t in ('invalid token','unauthorized','authentication')):
                         continue
@@ -2145,8 +2580,9 @@ class SafeConsumptionAuditor:
                     self._log('Directory traversal request error', u, 'Info', extra={'error': str(e), 'vector': 'dirtrav', 'base_endpoint': endpoint})
         except Exception as e:
             self._log('Directory traversal test setup failed', endpoint, 'Info', extra={'error': str(e), 'vector': 'dirtrav', 'base_endpoint': endpoint})
-    
-    #================funtion _is_injection_successful function =============
+
+
+    #================funtion _is_injection_successful description =============
     def _is_injection_successful(
         self,
         response: requests.Response,
@@ -2166,16 +2602,16 @@ class SafeConsumptionAuditor:
         text = response.text or ''
         low = text.lower()
 
-                                                            
+
         if status in {400, 422} and self._is_parse_error(response):
             return False
 
-                                           
+
         if attack_type == 'nosql':
             if any(p in low for p in self.NOSQL_NEGATIVE_PATTERNS):
                 return False
 
-             
+
         if attack_type == 'sql':
             if self._has_sql_evidence(text):
                 return True
@@ -2185,7 +2621,7 @@ class SafeConsumptionAuditor:
                 elapsed = 0.0
             return False
 
-                                        
+
         if status >= 500:
             if attack_type == 'nosql':
                 return any((k in low for k in self.NOSQL_ERROR_KEYWORDS)) or self._has_engine_marker(low, 'nosql')
@@ -2193,19 +2629,19 @@ class SafeConsumptionAuditor:
                 return self._has_engine_marker(low, attack_type)
             return False
 
-                      
+
         if attack_type == 'nosql':
             specific = any((re.search(p, low) for p in ('mongo.*error', 'mongodb.*error', 'bson.*error')))
             keywords = any((k in low for k in self.NOSQL_ERROR_KEYWORDS))
             return specific or keywords or self._has_engine_marker(low, 'nosql')
 
-             
+
         if attack_type == 'xss':
             if not payload or payload.lower() not in low:
                 return False
             return any((s in text for s in (f'="{payload}"', f'>{payload}<', f"'{payload}'", f'`{payload}`'))) or self._is_payload_reflected(text, payload)
 
-             
+
         if attack_type == 'xxe':
             ctype = (response.headers.get('Content-Type') or '').lower()
             CONTENT_MARKERS = ('root:x:0:0:', 'daemon:x:', '/bin/bash', 'for 16-bit app support', '[extensions]')
@@ -2225,7 +2661,8 @@ class SafeConsumptionAuditor:
             return specific or self._has_engine_marker(low, 'xxe')
 
         return False
-    #================funtion _filter_issues function =============
+
+    #================funtion _filter_issues description =============
     def _filter_issues(self) -> list[dict]:
         cleaned, seen = ([], set())
 
@@ -2271,6 +2708,7 @@ class SafeConsumptionAuditor:
                 except Exception:
                     hdrs_map = {}
 
+            #================funtion _h description =============
             def _h(name: str) -> str:
                 return (hdrs_map.get(name) or hdrs_map.get(name.title()) or '').lower()
 
@@ -2280,34 +2718,43 @@ class SafeConsumptionAuditor:
             cdisp = _h('Content-Disposition')
             loc_low = _h('Location')
 
-                           
+
             if issue.get('issue', '').startswith('Possible SQL injection'):
-                drop = False
-                if status in GENERIC_4XX:
-                    drop = True
-                elif 'application/problem+json' in ctype:
-                    drop = True
-                else:
-                    try:
-                        if not self._has_sql_evidence(body):
-                            drop = status < 500
-                            if status >= 500:
-                                issue['severity'] = 'Info'
-                                issue['issue'] = 'Server error without SQL evidence'
-                                issue['description'] = 'Generic 5xx response without SQL/DB markers'
-                    except Exception:
-                        drop = status < 500
-                if drop:
+                try:
+                    has_evidence = bool(self._has_sql_evidence(body))
+                except Exception:
+                    has_evidence = False
+
+
+                if status in GENERIC_4XX or 'application/problem+json' in ctype:
+                    if not has_evidence:
+                        issue['severity'] = 'Info'
+                        issue['issue'] = 'Possible SQL injection (blocked/validated)'
+                        issue['description'] = 'Request rejected (4xx/problem+json) without SQL/DB error markers'
+                        issue['confidence'] = issue.get('confidence') or 'low'
+                    cleaned.append(issue)
                     continue
 
-                             
+
+                if status >= 500 and not has_evidence:
+                    issue['severity'] = 'Info'
+                    issue['issue'] = 'Server error without SQL evidence'
+                    issue['description'] = 'Generic 5xx response without SQL/DB markers'
+                    cleaned.append(issue)
+                    continue
+
+
+                if not has_evidence:
+                    continue
+
+
             if ('nosql' in desc_low) or issue.get('issue', '').lower().startswith('possible nosql'):
                 if any(p in body_low for p in self.NOSQL_NEGATIVE_PATTERNS):
                     continue
                 if status in GENERIC_4XX and 'application/json' in ctype:
                     issue['severity'] = 'Info'
 
-                                              
+
             issue_name = (issue.get('issue') or '').lower()
             if issue_name.startswith('directory traversal'):
                 confidence = (issue.get('confidence') or '').lower()
@@ -2319,13 +2766,13 @@ class SafeConsumptionAuditor:
                 if confidence == 'low' and issue.get('severity') in ('High', 'Medium'):
                     issue['severity'] = 'Low'
 
-                              
+
             if desc_low.startswith('possible ssrf'):
                 generic_err = ('connection refused', 'timed out', 'no route to host', 'dns error', 'invalid host')
                 if any(g in body_low for g in generic_err) or status in {400, 404, 405}:
                     issue['severity'] = 'Info'
 
-                                           
+
             if desc_low.startswith('possible access control bypass via spoofed header'):
                 is_json = 'application/json' in ctype
                 admin_hit = re.search('(?i)(<title>[^<]*admin[^<]*</title>|\\badmin\\s*panel\\b|href=[\"\\\']/admin)', body) is not None
@@ -2334,14 +2781,21 @@ class SafeConsumptionAuditor:
                 elif not admin_hit and '/admin' not in loc_low:
                     issue['severity'] = 'Info'
 
-                                          
+
             if issue.get('issue', '').lower().startswith('broad cors policy'):
                 is_static = ctype.startswith(('image/', 'video/', 'audio/', 'font/')) or 'application/octet-stream' in ctype or 'application/pdf' in ctype or ('filename=' in cdisp)
                 if is_static and acac != 'true' and (issue.get('severity') in (None, 'Low', 'Info')):
                     continue
 
-            if status == 404 and issue.get('severity') in ('High', 'Critical'):
-                issue['severity'] = 'Info'
+            if status == 404:
+
+
+                if not any(s in body_low for s in (
+                    'root:x:0:0:', 'daemon:x:', 'index of /', '<web-app', '[extensions]'
+                )):
+                    continue
+                if issue.get('severity') in ('High', 'Critical'):
+                    issue['severity'] = 'Info'
 
             if issue.get('status_code') == '-' or 'timeout' in err_low:
                 issue['severity'] = 'Info'

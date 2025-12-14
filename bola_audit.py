@@ -1,9 +1,10 @@
 ########################################################
 # APISCAN - API Security Scanner                       #
-# Licensed under AGPL-V3.0                             #
+# Licensed under the MIT License                       #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 2.2  26-11-2025                             #
+# version 3.1 14-12-2025                               #
 ########################################################
+
 from __future__ import annotations
 
 import json
@@ -28,7 +29,6 @@ from openapi_universal import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
 #================funtion classify_risk derive risk level from HTTP result and context ##########
 def classify_risk(status_code: int, response_body: str = "", sensitive: bool = False, size_alert: bool = False, cross_user: bool = False) -> str:
     if status_code in (0, 400, 404, 405):
@@ -43,14 +43,12 @@ def classify_risk(status_code: int, response_body: str = "", sensitive: bool = F
         return "Low"
     return "Low"
 
-
 #================funtion _is_real_issue basic sanity check for a recorded issue ##########
 def _is_real_issue(issue: dict) -> bool:
     try:
         return int(issue.get("status_code", 0)) != 0
     except (ValueError, TypeError):
         return False
-
 
 #================funtion _headers_to_list normalize headers to list of tuples ##########
 def _headers_to_list(hdrs) -> List[Tuple[str, str]]:
@@ -61,7 +59,6 @@ def _headers_to_list(hdrs) -> List[Tuple[str, str]]:
                 out.append((k, v))
         return out
     return list(hdrs.items()) if hdrs else []
-
 
 @dataclass
 class TestResult:
@@ -93,7 +90,7 @@ class TestResult:
 
     #================funtion to_dict convert TestResult to serializable dict ##########
     def to_dict(self):
-                                                                             
+
         cross_for_risk = bool(self.cross_user and self.method.upper() in {"GET", "PUT", "DELETE"})
         sens_for_risk = bool(self.sensitive_hit or self.true_positive)
         return {
@@ -183,10 +180,25 @@ class BOLAAuditor:
             self._op_shape_index[(m, self._canonical_path(p))] = op
 
         self._endpoints_cache: Optional[List[Dict[str, Any]]] = None
+        self._baseline_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
-                          
+    #================funtion _safe_body_sample make request body JSON-serializable for logging ##########
+    def _safe_body_sample(self, body: Any, limit: int = 2048) -> str:
+        if body is None:
+            return ""
+        if isinstance(body, bytes):
+            try:
+                return body.decode("utf-8", "replace")[:limit]
+            except Exception:
+                return f"<{len(body)} bytes>"
+        if isinstance(body, str):
+            return body[:limit]
+        try:
+            return json.dumps(body, ensure_ascii=False)[:limit]
+        except Exception:
+            return str(body)[:limit]
 
-    #================funtion _canonical_path normalize an OpenAPI path template ##########
+    #================funtion _canonical_path description =============
     def _canonical_path(self, p: str) -> str:
         p = "/" + (p or "").lstrip("/")
         return re.sub(r"\{[^}]+\}", "{}", p)
@@ -201,7 +213,7 @@ class BOLAAuditor:
     def _canonicalize_url(self, url: str) -> str:
         try:
             u = urlparse(url)
-                                                              
+
             keys = sorted({k for k, _ in parse_qsl(u.query, keep_blank_values=True)})
             qs = "&".join(keys)
             return f"{u.scheme}://{u.netloc}{u.path}?{qs}" if qs else f"{u.scheme}://{u.netloc}{u.path}"
@@ -217,7 +229,6 @@ class BOLAAuditor:
         except Exception:
             return re.sub(r"\s+", " ", text).strip()[:4096]
 
-        #================funtion normalize function ##########
         def normalize(val):
             if isinstance(val, dict):
                 return {k: normalize(v) for k, v in sorted(val.items(), key=lambda x: x[0]) if k not in {"timestamp","time","date","requestId","request_id"}}
@@ -238,7 +249,143 @@ class BOLAAuditor:
         except Exception:
             return re.sub(r"\s+", " ", text).strip()[:4096]
 
-    #================funtion _fingerprint build stable hash for result dedup ##########
+    #================funtion _baseline_key build a stable key for endpoint baselines ##########
+    def _baseline_key(self, endpoint: Dict[str, Any]) -> Tuple[str, str]:
+        method = (endpoint.get("method") or "GET").upper()
+        path = endpoint.get("path") or endpoint.get("url") or "/"
+        canon = self._canonicalize_url(path)
+        return (method, canon)
+
+    #================funtion _extract_id_candidates_from_json recursively find ID-like values ##########
+    def _extract_id_candidates_from_json(self, data: Any) -> List[str]:
+        keys_id_like = ("id", "_id", "uuid", "guid", "userId", "accountId", "orderId", "customerId", "tenantId")
+        out: List[str] = []
+
+        def is_id_key(k: str) -> bool:
+            kl = (k or "").lower()
+            if kl in {x.lower() for x in keys_id_like}:
+                return True
+            return any(t in kl for t in ("id", "uuid", "guid"))
+
+        def add_val(v: Any) -> None:
+            if v is None:
+                return
+            if isinstance(v, bool):
+                return
+            if isinstance(v, (int, float)):
+                out.append(str(int(v)) if isinstance(v, int) or float(v).is_integer() else str(v))
+                return
+            if isinstance(v, str):
+                v2 = v.strip()
+                if 0 < len(v2) <= 128:
+                    out.append(v2)
+
+        def walk(x: Any) -> None:
+            if isinstance(x, dict):
+                for k, v in x.items():
+                    if is_id_key(str(k)):
+                        add_val(v)
+                    walk(v)
+            elif isinstance(x, list):
+                for i in x:
+                    walk(i)
+
+        walk(data)
+        seen = set()
+        res: List[str] = []
+        for v in out:
+            if v not in seen:
+                res.append(v)
+                seen.add(v)
+        return res[:50]
+
+    #================funtion _store_baseline record baseline response and harvested IDs ##########
+    def _store_baseline(self, key: Tuple[str, str], endpoint: Dict[str, Any], resp: Optional[requests.Response], req: Dict[str, Any]) -> None:
+        if resp is None:
+            return
+        try:
+            code = int(getattr(resp, "status_code", 0) or 0)
+        except Exception:
+            code = 0
+        if code not in (200, 206):
+            return
+
+        body_text = getattr(resp, "text", "") or ""
+        shape = self._json_shape(body_text)
+        ids: List[str] = []
+        try:
+            data = resp.json()
+            ids = self._extract_id_candidates_from_json(data)
+        except Exception:
+            ids = []
+
+        self._baseline_cache[key] = {
+            "status_code": code,
+            "shape": shape,
+            "fingerprint": self._fingerprint(req.get("method", ""), req.get("url", ""), code, body_text[:2048]),
+            "ids": ids,
+            "captured_at": time.time(),
+        }
+
+    #================funtion _pick_other_id choose an alternative ID candidate ##########
+    def _pick_other_id(self, key: Tuple[str, str], current: str) -> Optional[str]:
+        base = self._baseline_cache.get(key) or {}
+        candidates = base.get("ids") or []
+        for c in candidates:
+            if str(c) != str(current):
+                return str(c)
+        return None
+
+    #================funtion _determine_cross_user decide if response indicates cross-user access ##########
+    def _determine_cross_user(self, key: Tuple[str, str], name: str, status_code: int, body_text: str, resp: Optional[requests.Response]) -> bool:
+        if "other_user" not in (name or ""):
+            return False
+        if status_code not in (200, 206, 302):
+            return False
+
+        base = self._baseline_cache.get(key)
+        if not base:
+            return False
+
+        if status_code == 302 and resp is not None:
+            loc = (resp.headers.get("Location") or "").strip()
+            if loc and loc != (resp.request.url if resp.request else ""):
+                return True
+            return False
+
+        other_shape = self._json_shape(body_text or "")
+        if other_shape and base.get("shape") and other_shape != base.get("shape"):
+            return True
+
+        try:
+            data = resp.json() if resp is not None else None
+            other_ids = self._extract_id_candidates_from_json(data) if data is not None else []
+        except Exception:
+            other_ids = []
+        base_ids = base.get("ids") or []
+        if base_ids and other_ids:
+            for oid in other_ids[:5]:
+                if oid and oid not in base_ids:
+                    return True
+
+        if not self._is_generic_success(body_text or ""):
+            other_fp = self._fingerprint("", "", status_code, (body_text or "")[:2048])
+            if other_fp and other_fp != base.get("fingerprint"):
+                return True
+        return False
+
+    @staticmethod
+    #================funtion _looks_like_server_error_leak description =============
+    def _looks_like_server_error_leak(text: str) -> bool:
+        t = (text or "").lower()
+        markers = (
+            "traceback", "stack trace", "exception", "nullreference", "sqlstate", "syntax error",
+            "at ", "org.springframework", "java.lang.", "system.nullreferenceexception",
+            "pdoexception", "fatal error", "warning: mysql", "unhandled exception"
+        )
+        return any(m in t for m in markers)
+
+    #================funtion _fingerprint description =============
     def _fingerprint(self, method: str, url: str, status: int, body_text: str) -> str:
         canon = self._canonicalize_url(url)
         shape = self._json_shape(body_text or "")
@@ -253,7 +400,6 @@ class BOLAAuditor:
         try:
             data = json.loads(text)
             seen_keys = set()
-            #================funtion walk function ##########
             def walk(obj):
                 if isinstance(obj, dict):
                     for k, v in obj.items():
@@ -279,16 +425,17 @@ class BOLAAuditor:
         return False
 
     #================funtion _is_true_positive determine if result is a true BOLA hit ##########
+
     def _is_true_positive(self, method: str, status_code: int, cross_user: bool, contains_sensitive: bool) -> bool:
-        if status_code != 200:
+        if status_code not in (200, 206, 302):
             return False
-        if method.upper() in {"GET", "PUT", "DELETE"} and cross_user:
+        if method.upper() in {"GET", "PUT", "DELETE"} and cross_user and status_code in (200, 206, 302):
             return True
-        if contains_sensitive:
+        if contains_sensitive and status_code in (200, 206):
             return True
         return False
 
-    #================funtion _is_generic_success detect trivial success bodies ##########
+    #================funtion _is_generic_success description =============
     def _is_generic_success(self, body_text: str) -> bool:
         if not body_text:
             return True
@@ -305,8 +452,6 @@ class BOLAAuditor:
         if len(trimmed) <= 64 and trimmed in {"ok", "success", "done", "created", "updated", "deleted"}:
             return True
         return False
-
-                                 
 
     #================funtion load_swagger load and index OpenAPI/Swagger spec ##########
     def load_swagger(self, swagger_path: str) -> Optional[Dict[str, Any]]:
@@ -494,6 +639,7 @@ class BOLAAuditor:
                 return {"method": method.upper(), "url": self._abs_url(path_template), "headers": {"User-Agent": "APISecurityScanner/2.1"}}
 
     #================funtion _apply_param_values apply parameter values into request ##########
+
     def _apply_param_values(self, req: Dict[str, Any], endpoint: Dict[str, Any], values: Dict[str, str]) -> Dict[str, Any]:
         out = dict(req)
         out.setdefault("headers", {})
@@ -509,6 +655,10 @@ class BOLAAuditor:
 
         out["url"] = url
 
+        ctype = (str(out.get("headers", {}).get("Content-Type", "")) or "").lower()
+        prefers_form = ("application/x-www-form-urlencoded" in ctype) or ("multipart/form-data" in ctype)
+        prefers_json = ("application/json" in ctype) or (not prefers_form)
+
         for prm in endpoint.get("parameters", []):
             pname = prm.get("name")
             loc = prm.get("in", "query")
@@ -517,14 +667,21 @@ class BOLAAuditor:
                 out["params"][pname] = val
             elif loc == "header":
                 out["headers"][pname] = val
-            elif loc not in ("query", "header", "path"):
-                base = dict(out.get("json") or {})
-                base[pname] = val
-                out["json"] = base
+            elif loc == "path":
+                continue
+            else:
+                if prefers_form or ("data" in out and out.get("data") is not None):
+                    base = dict(out.get("data") or {})
+                    base[pname] = val
+                    out["data"] = base
+                else:
+                    base = dict(out.get("json") or {})
+                    base[pname] = val
+                    out["json"] = base
 
         return out
 
-    #================funtion _send_with_retry send HTTP request with simple retries ##########
+    #================funtion _send_with_retry description =============
     def _send_with_retry(self, req: Dict[str, Any]) -> tuple[Optional[requests.Response], float, Optional[str]]:
         attempts = 0
         start = time.time()
@@ -541,24 +698,53 @@ class BOLAAuditor:
                 return None, (time.time() - start), str(exc)
 
     #================funtion test_endpoint run BOLA tests for one endpoint ##########
+
     def test_endpoint(self, base_url: str, endpoint: Dict[str, Any], *, progress_position: int | None = None) -> List[TestResult]:
         results: List[TestResult] = []
         if not endpoint.get("parameters"):
             return results
+
         cases = self._generate_test_values(endpoint["parameters"])
+
+        key = self._baseline_key(endpoint)
+        if "valid" in cases:
+            time.sleep(self.test_delay)
+            tr_valid = self._test_object_access(endpoint, "valid", cases["valid"], store_baseline=True)
+            results.append(tr_valid)
+
         desc = f"{endpoint['method']} {endpoint['path']}"
-        it = cases.items()
+        other_cases = [(k, v) for k, v in cases.items() if k != "valid"]
+        it = other_cases
         if self.show_subbars:
-            it = tqdm(it, desc=desc, unit="case", leave=False, position=(progress_position if progress_position is not None else 1), dynamic_ncols=True)
+            it = tqdm(other_cases, desc=desc, unit="case", leave=False, position=(progress_position if progress_position is not None else 1), dynamic_ncols=True)
+
         for name, vals in it:
             time.sleep(self.test_delay)
-            results.append(self._test_object_access(endpoint, name, vals))
+            results.append(self._test_object_access(endpoint, name, vals, store_baseline=False))
+
         return results
 
-    #================funtion _test_object_access single test case executor for object access ##########
-      
-    def _test_object_access(self, endpoint: dict, name: str, vals: dict) -> TestResult:
+    #================funtion _test_object_access description =============
+    def _test_object_access(self, endpoint: dict, name: str, vals: dict, *, store_baseline: bool = False) -> TestResult:
         method = endpoint["method"]
+        key = self._baseline_key(endpoint)
+
+        if "other_user" in (name or ""):
+            try:
+                adjusted = dict(vals or {})
+                for prm in endpoint.get("parameters", []):
+                    pname = prm.get("name") or ""
+                    schema = prm.get("schema", {}) or {}
+                    fmt = (schema.get("format") or "").lower()
+                    ptype = (schema.get("type") or "string").lower()
+                    is_id_like = ("id" in pname.lower()) or (fmt == "uuid") or (ptype in ("integer", "number") and "id" in pname.lower())
+                    if is_id_like and pname in adjusted:
+                        alt = self._pick_other_id(key, str(adjusted[pname]))
+                        if alt is not None:
+                            adjusted[pname] = alt
+                vals = adjusted
+            except Exception:
+                pass
 
         try:
             req = self._build_req_from_op(method, endpoint["path"])
@@ -572,31 +758,43 @@ class BOLAAuditor:
         req = self._apply_param_values(req, endpoint, vals)
 
         resp, resp_time, error_msg = self._send_with_retry(req)
-        status_code = int(getattr(resp, "status_code", 0) or 0)
-        body_text = resp.text if resp is not None else ""
-        sample = self._sanitize_response(body_text)
+
+        status_code = 0
+        code = 0
+        body_text = ""
+        sample = ""
+        if resp is not None:
+            status_code = int(getattr(resp, "status_code", 0) or 0)
+            code = status_code
+            body_text = getattr(resp, "text", "") or ""
+            sample = self._sanitize_response(body_text)
 
         contains_sensitive = self._detect_sensitive(body_text)
         large_body = len(body_text or "") > 10000
-        cross_user = ("other_user" in name)
+
+        if store_baseline:
+            self._store_baseline(key, endpoint, resp, req)
+
+        cross_user = self._determine_cross_user(key, name, status_code, body_text, resp)
 
         true_pos = self._is_true_positive(method, status_code, cross_user, contains_sensitive)
-        is_vuln = status_code == 200 and (true_pos or large_body) if status_code != 0 else False
+
+        successful = status_code in (200, 206, 302)
+        non_generic = not self._is_generic_success(body_text or "")
+        is_vuln = bool(successful and (true_pos or contains_sensitive or (cross_user and non_generic) or (large_body and non_generic)))
 
         effective_url = getattr(getattr(resp, "request", None), "url", req.get("url"))
         req_headers = (
             dict(getattr(getattr(resp, "request", None), "headers", {}) or {})
             if resp else dict(req.get("headers", {}))
         )
-        req_body = (
-            getattr(getattr(resp, "request", None), "body", None)
-            if resp else (req.get("json") or req.get("data"))
-        )
-        if isinstance(req_body, (bytes, bytearray)):
-            try:
-                req_body = req_body.decode("utf-8", errors="replace")
-            except Exception:
-                pass
+
+        req_body = None
+        try:
+            if resp is not None and resp.request is not None:
+                req_body = getattr(resp.request, "body", None)
+        except Exception:
+            req_body = req.get("json") if req.get("json") is not None else req.get("data")
 
         tr = TestResult(
             test_case=name,
@@ -606,33 +804,33 @@ class BOLAAuditor:
             response_time=resp_time,
             is_vulnerable=is_vuln,
             response_sample=(sample or ""),
-            request_sample=(req_body if isinstance(req_body, str) else json.dumps(req_body) if req_body is not None else ""),
+            request_sample=self._safe_body_sample(req_body),
             params=dict(req.get("params") or {}),
             headers=_headers_to_list(req_headers),
-            response_headers=_headers_to_list(getattr(resp, "headers", {})) if resp else [],
-            request_cookies=self.session.cookies.get_dict(),
-            response_cookies=(resp.cookies.get_dict() if resp else {}),
+            request_body=self._safe_body_sample(req_body),
+            response_headers=_headers_to_list(getattr(resp, "headers", {}) if resp else {}),
+            request_cookies=getattr(self.session.cookies, "get_dict", lambda: {})(),
+            response_cookies=getattr(getattr(resp, "cookies", None), "get_dict", lambda: {})() if resp else {},
+            sensitive_hit=bool(contains_sensitive),
+            cross_user=bool(cross_user),
+            true_positive=bool(true_pos),
+            size_alert=bool(large_body),
             error=error_msg,
-            timestamp=datetime.now().isoformat(),
-            request_body=(req_body if isinstance(req_body, str) else json.dumps(req_body) if req_body is not None else ""),
-            sensitive_hit=contains_sensitive,
-            size_alert=large_body,
-            cross_user=cross_user,
-            true_positive=true_pos,
+            timestamp=datetime.utcnow().isoformat(),
         )
-        tr.fingerprint = self._fingerprint(tr.method, tr.url, tr.status_code, body_text or tr.response_sample)
+
+        tr.fingerprint = self._fingerprint(tr.method, tr.url, tr.status_code, body_text[:2048] if body_text else tr.response_sample)
         return tr
 
-
-    #================funtion _sanitize_response redact secrets and trim body sample ##########
+    #================funtion _sanitize_response description =============
     def _sanitize_response(self, text: str, max_length: int = 200) -> str:
         if not text:
             return ""
         sanitized = re.sub(r'(password|token|secret|authorization)"?\s*:\s*"[^"]+"', r'\1":"*****"', text, flags=re.I)
         return (sanitized[:max_length] + "...") if len(sanitized) > max_length else sanitized
 
-                                     
     #================funtion _filter_issues keep true positives and deduplicate ##########
+
     def _filter_issues(self) -> None:
         if not isinstance(self.issues, list) or not self.issues:
             self.issues = []
@@ -644,45 +842,43 @@ class BOLAAuditor:
                 code = int(it.get("status_code", 0) or 0)
             except Exception:
                 continue
+
             if code in self.ignore_statuses:
                 continue
+
             if self.ignore_http_5xx and (500 <= code < 600):
+                desc = (it.get("description") or "").lower()
+                body = (it.get("response_sample") or "") + " " + (it.get("response_body") or "")
+                if "other_user" not in desc or not self._looks_like_server_error_leak(body):
+                    continue
+
+            sev = (it.get("severity") or "").strip()
+            cross_user = bool(it.get("cross_user"))
+            body_sample = (it.get("response_body") or it.get("response_sample") or "")
+            non_generic = not self._is_generic_success(body_sample)
+
+            keep = False
+            if bool(it.get("is_vulnerable")) or bool(it.get("true_positive")):
+                keep = True
+            elif sev in ("Medium", "High", "Critical"):
+                keep = True
+            elif cross_user and code in (200, 206, 302) and non_generic:
+                keep = True
+
+            if not keep:
                 continue
-
-            method = str(it.get("method", "") or "").upper()
-            cross_user = bool(it.get("cross_user")) or ("other_user" in str(it.get("description") or "").lower())
-            body = it.get("response_body") or ""
-            contains_sensitive = bool(it.get("sensitive_hit")) or self._detect_sensitive(body)
-
-            tp = bool(it.get("true_positive"))
-            if not tp:
-                tp = self._is_true_positive(method, code, cross_user, contains_sensitive)
-
-            if not tp:
-                continue
-
-                                
-            fp = it.get("fingerprint")
-            if not fp:
-                fp = self._fingerprint(method, it.get("url", it.get("endpoint", "")), code, body)
-                it["fingerprint"] = fp
-
-                                         
-            it["severity"] = classify_risk(code, body, sensitive=True, size_alert=bool(it.get("size_alert")), cross_user=cross_user)
-            it["true_positive"] = True
-            it["cross_user"] = cross_user
-            it["sensitive_hit"] = contains_sensitive
-            it.setdefault("variants", [it.get("description", "")])
-            it.setdefault("duplicate_count", 1)
 
             filtered.append(it)
 
-                                    
         dedup: Dict[str, dict] = {}
         for it in filtered:
-            fp = it.get("fingerprint")
-            if not fp:
-                continue
+            fp = it.get("fingerprint") or self._fingerprint(
+                it.get("method", ""),
+                it.get("url", it.get("endpoint", "")),
+                int(it.get("status_code", 0) or 0),
+                (it.get("response_body") or it.get("response_sample") or ""),
+            )
+            it["fingerprint"] = fp
             if fp in dedup:
                 dedup[fp]["duplicate_count"] = dedup[fp].get("duplicate_count", 1) + 1
                 variants = dedup[fp].setdefault("variants", [])
@@ -694,8 +890,7 @@ class BOLAAuditor:
 
         self.issues = list(dedup.values())
 
-                                    
-    #================funtion run run the full BOLA pipeline over endpoints ##########
+    #================funtion run description =============
     def run(self, swagger_spec: Optional[Dict[str, Any]] = None) -> List[TestResult]:
         spec = swagger_spec or self.swagger_spec or {}
         endpoints = self.get_object_endpoints(spec)
@@ -708,7 +903,7 @@ class BOLAAuditor:
         for i, ep in iterator:
             results = self.test_endpoint(self.base_url, ep, progress_position=(i + 1 if self.show_subbars else None))
             for tr in results:
-                                                                                                       
+
                 fp = tr.fingerprint or self._fingerprint(tr.method, tr.url, tr.status_code, tr.response_sample)
                 if fp in seen:
                     seen_tr = seen[fp]
@@ -720,7 +915,6 @@ class BOLAAuditor:
                 seen[fp] = tr
                 unique_results.append(tr)
 
-                                                                         
         self.issues = [tr.to_dict() for tr in unique_results if _is_real_issue(tr.to_dict())]
         return unique_results
 

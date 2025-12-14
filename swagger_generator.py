@@ -1,8 +1,8 @@
 ########################################################
-# APISCAN Swagger generator- API Security Scanner                       #
-# Licensed under AGPL-V3.0                             #
+# APISCAN - API Security Scanner                       #
+# Licensed under the MIT License                       #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 3.0 26-11-2025                               #
+# version 3.1 14-12-2025                               #
 ########################################################
 
 """APISCAN is a private and proprietary API security tool, developed independently for internal use and research purposes.

@@ -1,5 +1,5 @@
 ---
-title: APISCAN v3.01 – AI‑enhanced OWASP APIScanner by Perry Mertens (AGPL-v3.0)
+title: APISCAN v3.1 – AI‑enhanced OWASP APIScanner by Perry Mertens (AGPL-v3.0)
 description: Free and open-source APIscanner built in Python with multi-auth, OpenAPI/Swagger support, sanitizer/rewrites, and rich CSV/HTML reporting.
 ---
 
@@ -14,7 +14,7 @@ It understands **OpenAPI/Swagger**, supports **multiple authentication flows**, 
 
 This page is the generic, customer-agnostic documentation corresponding to the v3.0 GitHub Pages landing (`index.html`).
 
-![APISCAN v3.01 dashboard](./apiscan_v3_dashboard.jpg)
+![APISCAN v3.1 dashboard](./apiscan_v3_dashboard.jpg)
 
 ---
 
@@ -28,9 +28,9 @@ Use APISCAN only on systems and APIs for which you have explicit authorization.
 
 ---
 
-## What’s new in v3.01
+## What’s new in v3.1
 
-v3.0 focuses on better planning, headers, and robustness for enterprise scans:
+v3.1 focuses on better planning, headers, and robustness for enterprise scans:
 
 - **Generic sanitizer (no hardcodes)**  
   Collapses duplicate path segments, normalizes `/vN` → `/vN.00`, trims trailing slashes.  

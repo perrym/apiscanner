@@ -1,3 +1,4 @@
+<meta content="VvYq2k5BFp5dpIL6JpQhoe90sWEXZTEBbaynlEKCWRE" name="google-site-verification">
 # APISCAN OWASP APIscanner by Perry Mertens
 
 **Author:** Perry Mertens (pamsniffer@gmail.com)  
@@ -21,7 +22,7 @@ If you modify APISCAN and make it available as a hosted service, you must make t
 APISCAN focuses on API-specific risks instead of generic web scanning.  
 It is built for testing APIs against the OWASP API Security Top 10 (2023), with one module per risk area and HTML reporting suitable for auditors and developers.
 
-## What is new in v3.01
+## What is new in v3.1
 ![APISCAN v3.01 dashboard](./apiscan_v3_dashboard.jpg)
 
 - Generic sanitizer  

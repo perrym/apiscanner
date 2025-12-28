@@ -11,6 +11,11 @@ It uses your OpenAPI/Swagger specification to generate realistic attack payloads
 Broken Authentication, Excessive Data Exposure, and other critical API vulnerabilities.
 It understands OpenAPI/Swagger, supports multiple authentication flows, provides a plan/verify workflow, includes a generic sanitizer/rewrites, and writes HTML artifacts.
 
+**APISCAN: AI-assisted API security for specialists.**
+APISCAN is not a scanner that guesses; it proves.
+It tests. It observes. Then models explain the risk with evidence attached.
+That’s how you make **AI** useful in security.
+
 ## License
 
 APISCAN is licensed under the AGPL-v3.0.

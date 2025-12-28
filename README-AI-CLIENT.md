@@ -3,6 +3,10 @@
 APISCAN sends real requests to your API, gathers evidence, and uses an AI model to classify risks based on the OWASP API Top 10. 
 It’s built for security specialists who need verifiable, evidence-based findings rather than theoretical guesses.
 
+**APISCAN is not a scanner that guesses; it proves.**
+It tests. It observes. Then models explain the risk with evidence attached.
+That’s how you make AI useful in security.
+
 Supports:
 
 - **OpenAI-compatible APIs** (`/chat/completions`)

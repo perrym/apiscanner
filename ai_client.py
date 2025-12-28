@@ -2,17 +2,19 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the MIT License                       #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 3.1 14-12-2025                               #
+# version 3.1 28-12-2025                               #
 ########################################################
 import os
 import json
 import time
+import re
 import ssl
 from typing import Any, Dict, List, Tuple, Optional
 from urllib.parse import urljoin, urlencode, urlparse
 import requests
 from pathlib import Path
 import argparse
+from dataclasses import dataclass
 
 """
 # Using a local model on port 1123
@@ -452,27 +454,276 @@ def live_probe() -> Dict[str, Any]:
         return {"ok": False, "error": str(ex), "info": info}
 
 # ----------------------- Funtion analyze_endpoints_with_llm ----------------------------#
-def analyze_endpoints_with_llm(endpoints, live_base_url: str = "", print_results: bool = False, model: str = None):
-    results = []
-    for ep in endpoints:
-        path = ep.get("path", "")
-        method = ep.get("method", "").upper()
-        user_msg = (
-            f"Evaluate endpoint for OWASP API Top 10 risks. "
-            f"Base URL: {live_base_url} | Method: {method} | Path: {path}. "
-            f"Return a single concise JSON object as specified in the system prompt."
-        )
-        msgs = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_msg},
-        ]
+
+@dataclass
+class ProbeResult:
+    url: str
+    method: str
+    status_code: int
+    elapsed_ms: int
+    request_headers: Dict[str, str]
+    response_headers: Dict[str, str]
+    response_text: str
+
+def _safe_truncate(text: Any, limit: int = 8000) -> str:
+    if text is None:
+        return ""
+    s = str(text)
+    return s if len(s) <= limit else s[:limit] + "...[truncated]"
+
+def _parse_headers_env() -> Dict[str, str]:
+    """
+    Optional extra headers for live scanning.
+
+    Supported environment variables:
+      - APISCAN_HEADERS_JSON: JSON object of headers, e.g. {"Authorization":"Bearer ...","x-api-key":"..."}
+      - APISCAN_AUTH_BEARER: token only; will be sent as Authorization: Bearer <token>
+      - APISCAN_API_KEY: value only; will be sent as x-api-key: <value>
+
+    Notes:
+      - Values are masked in outputs via _mask_headers().
+      - This function does not validate tokens; it only prepares headers.
+    """
+    headers: Dict[str, str] = {}
+
+    raw_json = os.getenv("APISCAN_HEADERS_JSON", "").strip()
+    if raw_json:
         try:
-            obj = chat_json(msgs, model=model)  
-            if print_results:
-                print(f"{method} {path} -> {obj}")
-            results.append({"path": path, "method": method, "analysis": obj})
-        except Exception as ex:
-            results.append({"path": path, "method": method, "error": str(ex)})
+            obj = json.loads(raw_json)
+            if isinstance(obj, dict):
+                headers.update({str(k): str(v) for k, v in obj.items()})
+        except Exception:
+            pass
+
+    bearer = os.getenv("APISCAN_AUTH_BEARER", "").strip()
+    if bearer and "Authorization" not in headers:
+        headers["Authorization"] = f"Bearer {bearer}"
+
+    api_key = os.getenv("APISCAN_API_KEY", "").strip()
+    if api_key and "x-api-key" not in {k.lower() for k in headers.keys()}:
+        headers["x-api-key"] = api_key
+
+    return headers
+
+def _fill_path_params(path: str, placeholders: Optional[Dict[str, str]] = None) -> str:
+    """Fill {param} placeholders with safe dummy values."""
+    if not path:
+        return path
+    placeholders = placeholders or {"id": "1", "userId": "1", "accountId": "1", "uuid": "00000000-0000-0000-0000-000000000000"}
+    def repl(m):
+        key = m.group(1)
+        return placeholders.get(key, "1")
+    return re.sub(r"\{([^\}]+)\}", repl, path)
+
+def probe_endpoint(
+    session: requests.Session,
+    base_url: str,
+    method: str,
+    path: str,
+    headers: Optional[Dict[str, str]] = None,
+    params: Optional[Dict[str, Any]] = None,
+    json_body: Optional[Any] = None,
+    timeout: Tuple[float, float] = TIMEOUT,
+) -> ProbeResult:
+    url = urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
+    req_headers: Dict[str, str] = {"User-Agent": USER_AGENT}
+    if headers:
+        req_headers.update(headers)
+
+    start = time.time()
+    r = session.request(
+        method=method.upper(),
+        url=url,
+        headers=req_headers,
+        params=params,
+        json=json_body,
+        timeout=timeout,
+        allow_redirects=False,
+    )
+    elapsed_ms = int((time.time() - start) * 1000)
+
+    return ProbeResult(
+        url=url,
+        method=method.upper(),
+        status_code=r.status_code,
+        elapsed_ms=elapsed_ms,
+        request_headers=_mask_headers(dict(r.request.headers)),
+        response_headers=_mask_headers(dict(r.headers)),
+        response_text=_safe_truncate(r.text, 8000),
+    )
+
+def _is_potentially_unsafe_method(method: str) -> bool:
+    return method.upper() in {"POST", "PUT", "PATCH", "DELETE"}
+
+# ----------------------- Function analyze_endpoints_with_llm ----------------------------#
+def analyze_endpoints_with_llm(
+    endpoints: List[Dict[str, Any]],
+    live_base_url: str = "",
+    print_results: bool = False,
+    model: str = None,
+    enable_live_scan: bool = True,
+    safe_mode: bool = True,
+    compare_auth: bool = True,
+) -> List[Dict[str, Any]]:
+    """
+    Specialist-focused analysis:
+      1) Optional live probe (real HTTP requests) against live_base_url to collect evidence.
+      2) LLM analysis based on observed evidence (status/headers/body).
+
+    Inputs:
+      endpoints: list of dicts. Supported keys per endpoint:
+        - path (str), method (str)
+        - params (dict)      -> query parameters
+        - json (any)         -> JSON body
+        - headers (dict)     -> per-endpoint headers (merged with env headers)
+        - path_params (dict) -> optional placeholder values for {param} in path
+      live_base_url: required for live probing.
+      enable_live_scan: set False to keep the old "theoretical" analysis behavior.
+      safe_mode: when True, blocks potentially unsafe methods unless ep has allow_unsafe=True.
+      compare_auth: when True and auth headers exist, also probes without auth for a quick auth signal.
+
+    Environment variables for auth/headers:
+      - APISCAN_HEADERS_JSON
+      - APISCAN_AUTH_BEARER
+      - APISCAN_API_KEY
+    """
+    results: List[Dict[str, Any]] = []
+    env_headers = _parse_headers_env()
+
+    use_live = bool(enable_live_scan and live_base_url)
+
+    with _requests_session() as s:
+        for ep in endpoints:
+            path = str(ep.get("path", "") or "")
+            method = str(ep.get("method", "") or "GET").upper()
+
+            # Fill placeholders like /users/{id}
+            path_params = ep.get("path_params") if isinstance(ep.get("path_params"), dict) else None
+            filled_path = _fill_path_params(path, placeholders=path_params)
+
+            # Safety guardrails
+            if use_live and safe_mode and _is_potentially_unsafe_method(method) and not bool(ep.get("allow_unsafe", False)):
+                results.append({
+                    "path": path,
+                    "method": method,
+                    "skipped": True,
+                    "reason": "safe_mode_blocked_unsafe_method",
+                })
+                continue
+
+            endpoint_headers = ep.get("headers") if isinstance(ep.get("headers"), dict) else {}
+            merged_headers = {**env_headers, **endpoint_headers}
+
+            probe_pack: Dict[str, Any] = {}
+            probes: List[ProbeResult] = []
+
+            if use_live:
+                try:
+                    # Primary probe (with auth/headers)
+                    pr = probe_endpoint(
+                        session=s,
+                        base_url=live_base_url,
+                        method=method,
+                        path=filled_path,
+                        headers=merged_headers if merged_headers else None,
+                        params=ep.get("params") if isinstance(ep.get("params"), dict) else None,
+                        json_body=ep.get("json"),
+                    )
+                    probes.append(pr)
+
+                    # Optional auth comparison: same call but without sensitive headers
+                    if compare_auth:
+                        stripped = dict(merged_headers)
+                        for k in list(stripped.keys()):
+                            lk = k.lower()
+                            if lk in ("authorization", "cookie", "x-api-key"):
+                                stripped.pop(k, None)
+
+                        # Only run the comparison if we actually removed something
+                        if len(stripped) != len(merged_headers):
+                            pr_noauth = probe_endpoint(
+                                session=s,
+                                base_url=live_base_url,
+                                method=method,
+                                path=filled_path,
+                                headers=stripped if stripped else None,
+                                params=ep.get("params") if isinstance(ep.get("params"), dict) else None,
+                                json_body=ep.get("json"),
+                            )
+                            probes.append(pr_noauth)
+
+                    probe_pack = {
+                        "url": probes[0].url,
+                        "probes": [
+                            {
+                                "method": p.method,
+                                "status_code": p.status_code,
+                                "elapsed_ms": p.elapsed_ms,
+                                "request_headers": p.request_headers,
+                                "response_headers": p.response_headers,
+                                "response_text": p.response_text,
+                            }
+                            for p in probes
+                        ],
+                    }
+                except Exception as ex:
+                    results.append({
+                        "path": path,
+                        "method": method,
+                        "error": f"probe_failed: {ex}",
+                    })
+                    continue
+
+            # Build LLM prompt
+            if use_live and probe_pack.get("probes"):
+                evidence = probe_pack["probes"][0]
+                user_msg = (
+                    "Analyze this observed API interaction for OWASP API Top 10 (2023) risks. "
+                    "Use evidence only. If evidence is insufficient, say so explicitly. "
+                    "Return a single JSON object as specified in the system prompt.\n\n"
+                    f"Method: {method}\n"
+                    f"Path: {path}\n"
+                    f"URL: {probe_pack.get('url','')}\n"
+                    f"Status: {evidence.get('status_code')}\n"
+                    f"ElapsedMs: {evidence.get('elapsed_ms')}\n"
+                    f"ResponseHeaders: {json.dumps(evidence.get('response_headers', {}), ensure_ascii=False)}\n"
+                    f"ResponseBody: {evidence.get('response_text','')}\n"
+                )
+                # Add auth comparison evidence (if available)
+                if len(probe_pack["probes"]) > 1:
+                    cmp_ev = probe_pack["probes"][1]
+                    user_msg += (
+                        "\nAuthComparison:\n"
+                        f"StatusNoAuth: {cmp_ev.get('status_code')}\n"
+                        f"BodyNoAuth: {cmp_ev.get('response_text','')}\n"
+                    )
+            else:
+                # Fallback: theoretical analysis (old behavior)
+                user_msg = (
+                    f"Evaluate endpoint for OWASP API Top 10 (2023) risks. "
+                    f"Base URL: {live_base_url} | Method: {method} | Path: {path}. "
+                    f"Return a single concise JSON object as specified in the system prompt."
+                )
+
+            msgs = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+            ]
+
+            try:
+                obj = chat_json(msgs, model=model)
+                out: Dict[str, Any] = {"path": path, "method": method, "analysis": obj}
+                if probe_pack:
+                    out["probe"] = probe_pack
+                if print_results:
+                    print(f"{method} {path} -> {obj}")
+                results.append(out)
+            except Exception as ex:
+                out = {"path": path, "method": method, "error": str(ex)}
+                if probe_pack:
+                    out["probe"] = probe_pack
+                results.append(out)
+
     return results
 
 # ----------------------- Funtion save_ai_summary ----------------------------#

@@ -1,7 +1,7 @@
-# APISCAN AI Client 1.0 release by Perry Mertens pamsniffer@gmail.com 2025 (C)
+# APISCAN AI Client 3.1 release by Perry Mertens pamsniffer@gmail.com 2025 (C)
 <meta content="VvYq2k5BFp5dpIL6JpQhoe90sWEXZTEBbaynlEKCWRE" name="google-site-verification">
-`ai_client.py` is a minimal, provider-agnostic Python client for Large Language Models (LLMs).  
-It sends JSON prompts and extracts JSON responses, designed for automated analysis tools and batch pipelines.
+APISCAN sends real requests to your API, gathers evidence, and uses an AI model to classify risks based on the OWASP API Top 10. 
+It’s built for security specialists who need verifiable, evidence-based findings rather than theoretical guesses.
 
 Supports:
 

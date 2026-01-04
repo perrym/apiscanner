@@ -1,8 +1,8 @@
 ########################################################
 # APISCAN - API Security Scanner                       #
-# Licensed under the AGPL-v3.0                          #
+# Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 2.2  2-11--2025                              #
+# version 3.2 1-4-2026                                 #
 ########################################################                                   
 from __future__ import annotations
 from datetime import datetime
@@ -468,8 +468,103 @@ class EnhancedReportGenerator:
         with open(path, "w", encoding="utf-8") as f:
             f.write(html_content)
 
+#================funtion generate_dashboard_report generate HTML dashboard from template_scan_en.html ============
+def generate_dashboard_report(db_path: Union[str, Path],
+                              out_path: Union[str, Path],
+                              template_path: Optional[Union[str, Path]] = None,
+                              run_id: Optional[str] = None,
+                              open_in_browser: bool = False) -> Path:
+    """
+    Generate the interactive findings dashboard (template-based) as HTML.
+
+    This uses the same JSON-injection approach as build_review.py and is meant for:
+    - Opening in a browser
+    - Printing / "Save as PDF" via the browser print dialog
+
+    Args:
+        db_path: Path to the APISCAN sqlite database.
+        out_path: Output HTML path.
+        template_path: Optional path to template_scan_en.html.
+        run_id: Optional run_id filter.
+        open_in_browser: If True, opens the resulting HTML in the default browser.
+
+    Returns:
+        Path to the generated HTML file.
+    """
+    from pathlib import Path as _Path
+    import webbrowser as _webbrowser
+
+    db_path_p = _Path(db_path)
+    out_path_p = _Path(out_path)
+    out_path_p.parent.mkdir(parents=True, exist_ok=True)
+    from build_review import build_review as _build_review
+    out_file = _build_review(db_path_p, out_path_p, template=_Path(template_path) if template_path else None, run_id=run_id)
+
+    if open_in_browser:
+        try:
+            _webbrowser.open(out_file.resolve().as_uri())
+        except Exception:
+            pass
+    try:
+        combined_path = out_file.parent / 'combined_report.html'
+        if combined_path.resolve() != out_file.resolve():
+            combined_path.write_text(out_file.read_text(encoding='utf-8', errors='ignore'), encoding='utf-8')
+    except Exception:
+        pass
+
+    return out_file
+
 ReportGenerator = EnhancedReportGenerator
 HTMLReportGenerator = EnhancedReportGenerator
+#================funtion generate_dashboard_report generate HTML dashboard from template_scan_en.html ============
+def generate_dashboard_report(db_path: Union[str, Path],
+                              out_path: Union[str, Path],
+                              template_path: Optional[Union[str, Path]] = None,
+                              run_id: Optional[str] = None,
+                              open_in_browser: bool = False) -> Path:
+    """
+    Generate the interactive findings dashboard (template-based) as HTML.
+
+    This uses the same JSON-injection approach as build_review.py and is meant for:
+    - Opening in a browser
+    - Printing / "Save as PDF" via the browser print dialog
+
+    Args:
+        db_path: Path to the APISCAN sqlite database.
+        out_path: Output HTML path.
+        template_path: Optional path to template_scan_en.html.
+        run_id: Optional run_id filter.
+        open_in_browser: If True, opens the resulting HTML in the default browser.
+
+    Returns:
+        Path to the generated HTML file.
+    """
+    from pathlib import Path as _Path
+    import webbrowser as _webbrowser
+
+    db_path_p = _Path(db_path)
+    out_path_p = _Path(out_path)
+    out_path_p.parent.mkdir(parents=True, exist_ok=True)
+    from build_review import build_review as _build_review
+
+    out_file = _build_review(db_path_p, out_path_p, template=_Path(template_path) if template_path else None, run_id=run_id)
+
+    if open_in_browser:
+        try:
+            _webbrowser.open(out_file.resolve().as_uri())
+        except Exception:
+            pass
+
+    try:
+        combined_path = out_file.parent / 'combined_report.html'
+        if combined_path.resolve() != out_file.resolve():
+            combined_path.write_text(out_file.read_text(encoding='utf-8', errors='ignore'), encoding='utf-8')
+    except Exception:
+        pass
+
+    return out_file
+
+ReportGenerator = EnhancedReportGenerator
 
 #================funtion combine_html_reports merge multiple HTML reports into one ##########
 def combine_html_reports(output_dir: Path):

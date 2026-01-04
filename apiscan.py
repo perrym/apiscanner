@@ -1,8 +1,8 @@
 ########################################################
 # APISCAN - API Security Scanner                       #
-# Licensed under the AGPL-v3.0                          #
-# Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 3.0 26-11-2025                               #
+# Licensed under the AGPL-v3.0 License                 #
+# Author: Perry Mertens pamsniffer@gmail.com (C) 2026  #
+# version 3.2 4-1-2026                                 #
 ########################################################
 
 """APISCAN is a private and proprietary API security tool, developed independently for internal use and research purposes.
@@ -38,12 +38,24 @@ from urllib.parse import urljoin
 import requests
 from tqdm import tqdm
 import math
+# ================= AI CLIENT (new preferred, v3 fallback) =================
+try:
+    from ai_client import live_probe, analyze_endpoints_with_llm, save_ai_summary
+except ImportError:
+    try:
+        from ai_client_v3 import live_probe, analyze_endpoints_with_llm, save_ai_summary
+    except Exception:
+        live_probe = None
+        analyze_endpoints_with_llm = None
+        save_ai_summary = None
+
 
 #================funtion clear_screen clear_screen =============
 def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
 clear_screen()
 print('Loading APISCAN one-moment')
+
 try:
     from colorama import Fore, Style, init as _colorama_init
     _colorama_init()
@@ -84,6 +96,7 @@ try:
     colorama.init(autoreset=True, strip=False, convert=True)
 except Exception:
     pass
+
 OUT_DIR: Path | None = None
 DB = None
 manual_file_map = {'BOLA': 'bola', 'BrokenAuth': 'broken_auth', 'Property': 'property', 'Resource': 'resource', 'AdminAccess': 'admin_access', 'BusinessFlows': 'business_flows', 'SSRF': 'ssrf', 'Misconfig': 'misconfig', 'Inventory': 'inventory', 'UnsafeConsumption': 'unsafe_consumption'}
@@ -206,7 +219,7 @@ class EvidenceDatabase:
 
             self.conn.commit()
 
-    #================funtion close close =============
+#================funtion close close =============
     def close(self) -> None:
         try:
             self.conn.close()
@@ -580,7 +593,7 @@ def _parse_success_codes(spec_str: str):
             except Exception:
                 pass
 
-    #================funtion ok ok =============
+#================funtion ok ok =============
     def ok(code: int) -> bool:
         if code in singles:
             return True
@@ -901,7 +914,6 @@ def main() -> None:
     parser.add_argument('--api11', action='store_true', help='Run AI-assisted OWASP Top 10 analysis')
     for i in range(1, 11):
         parser.add_argument(f'--api{i}', action='store_true', help=f'Run only API{i} audit')
-    # API3 (property-level) ACTIVE mode controls
     parser.add_argument('--api3-active', action='store_true', help='Enable API3 ACTIVE tests (may send write requests).')
     parser.add_argument('--api3-active-ok', choices=['YES'], help='Required acknowledgment for API3 ACTIVE tests: specify YES.')
     parser.add_argument('--api3-test-user-id', default='1001', help='API3 test user id used in some probes (default: 1001)')
@@ -1278,34 +1290,100 @@ def main() -> None:
             styled_print(f'API10 complete - {len(safe_issues)} issues', 'done')
     
     #========================= AI MODULE  =======================
+         
     if 11 in selected_apis:
         styled_print('API11 - AI-assisted OWASP analysis', 'info')
         logger.info('Running API11 - AI-assisted audit')
-        required = ['LLM_PROVIDER', 'LLM_MODEL', 'LLM_API_KEY']
-        missing = [v for v in required if not os.getenv(v)]
-        if missing:
-            styled_print(f"Missing required LLM settings for API11: {', '.join(missing)}", 'fail')
-            print('\nSet them, for example:\n  export LLM_PROVIDER=openai_compat\n  export LLM_MODEL=gpt-4o-mini\n  export LLM_API_KEY=sk-...\n')
-            sys.exit(3)
-        try:
-            from ai_client import live_probe
-            probe_result = live_probe()
-            if not probe_result.get('ok', False):
-                styled_print(f"LLM connection failed: {probe_result.get('error', 'Unknown error')}", 'fail')
-                logger.error(f'LLM connection failed: {probe_result}')
-            else:
-                styled_print(f"Connected to LLM provider: {probe_result.get('provider', 'Unknown')}", 'ok')
-                from ai_client import analyze_endpoints_with_llm, save_ai_summary
-                ai_results = analyze_endpoints_with_llm(ai_endpoints, live_base_url=args.url, print_results=True)
-                save_ai_summary(ai_results, output_dir / 'AI-api11_scanresults.json')
-                styled_print(f'API11 complete - {len(ai_results)} endpoints analyzed', 'done')
-        except ImportError as e:
-            styled_print(f'AI client not available: {e}', 'fail')
-            logger.exception('AI client import error')
-        except Exception as e:
-            styled_print(f'AI analysis failed: {e}', 'fail')
-            logger.exception('AI analysis exception')
-   
+        if not (live_probe and analyze_endpoints_with_llm and save_ai_summary):
+            styled_print('AI client not available (ai_client / ai_client_v3 not found)', 'fail')
+            logger.error('AI client import error - ai_client / ai_client_v3 missing')
+        else:
+            provider = os.getenv('LLM_PROVIDER', '').strip().lower()
+            required = ['LLM_PROVIDER', 'LLM_MODEL']
+            if provider != 'ollama':
+                required.append('LLM_API_KEY')
+
+            missing = [v for v in required if not os.getenv(v)]
+            if missing:
+                styled_print(f"Missing required LLM settings for API11: {', '.join(missing)}", 'fail')
+                print('\nExample configuration:\n')
+                if provider == 'ollama':
+                    print('  $env:LLM_PROVIDER="ollama"')
+                    print('  $env:LLM_MODEL="mistral"\n')
+                else:
+                    print('  $env:LLM_PROVIDER="openai_compat"')
+                    print('  $env:LLM_MODEL="gpt-4o-mini"')
+                    print('  $env:LLM_API_KEY="sk-..."\n')
+                sys.exit(3)
+
+            try:
+                probe_result = live_probe()
+                if not probe_result.get('ok', False):
+                    styled_print(f"LLM connection failed: {probe_result.get('error', 'Unknown error')}", 'fail')
+                    logger.error(f'LLM connection failed: {probe_result}')
+                else:
+                    styled_print(f"Connected to LLM provider: {probe_result.get('provider', 'Unknown')}", 'ok')
+                    styled_print('Starting AI security analysis...', 'info')
+                    ai_results = analyze_endpoints_with_llm(
+                        ai_endpoints,
+                        live_base_url=args.url,
+                        print_results=True,
+                        enable_live_scan=True,
+                        safe_mode=True,
+                        compare_auth=True,
+                    )
+                    save_ai_summary(ai_results, output_dir / 'AI-api11_scanresults.json')
+                    if db is not None:
+                        try:
+                            ai_issues = []
+                            for result in ai_results:
+                                if isinstance(result, dict):
+                                    if result.get('skipped'):
+                                        continue
+                                    
+                                    analysis = result.get('analysis')
+                                    if not analysis:
+                                        continue
+                                    issue = {
+                                        'method': result.get('method', 'GET'),
+                                        'endpoint': result.get('path', ''),
+                                        'url': args.url + result.get('path', '') if args.url else result.get('path', ''),
+                                        'title': f"{result.get('method', 'GET')} {result.get('path', '')}",
+                                        'description': analysis.get('explanation', ''),
+                                        'category': 'AI-OWASP',
+                                        'severity': analysis.get('risk', 'Informal'),
+                                        'status': 'confirmed',
+                                        'status_code': 200,
+                                        'request_headers': {},
+                                        'response_headers': {},
+                                        'response_body': json.dumps(analysis, ensure_ascii=False) if analysis else '',
+                                        'analysis_details': analysis
+                                    }
+                                    ai_issues.append(issue)
+                            
+                            if ai_issues:
+                                db.store_issues('AI-OWASP', ai_issues, base_url=args.url)
+                                styled_print(f'AI results stored in database ({len(ai_issues)} findings)', 'ok')
+                                vulnerability_summary['AI-OWASP'] = len(ai_issues)
+                            else:
+                                styled_print('No AI findings to store in database', 'info')
+                                vulnerability_summary['AI-OWASP'] = 0
+                                
+                        except Exception as e:
+                            styled_print(f'Failed to store AI results in database: {e}', 'warn')
+                            logger.error(f'Database store error: {e}')
+                            vulnerability_summary['AI-OWASP'] = 0
+                    else:
+                        styled_print('No database available for AI results', 'warn')
+                        vulnerability_summary['AI-OWASP'] = len([r for r in ai_results if not r.get('skipped') and r.get('analysis')])
+
+                    styled_print(f'API11 complete - {len(ai_results)} endpoints analyzed', 'done')
+
+            except Exception as e:
+                styled_print(f'AI analysis failed: {e}', 'fail')
+                logger.exception('AI analysis exception')
+                vulnerability_summary['AI-OWASP'] = 0   
+
     print('\n' + '=' * 50)
     print('SCAN finished'.center(50))
     print('=' * 50)

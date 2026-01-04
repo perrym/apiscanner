@@ -1,6 +1,16 @@
 # APISCAN - CHANGELOG
-Version:3.01 release 14-12-2025
+Version:3.2 release 1-4-2026
 Author: Perry Mertens pamsniffer@gmail.com
+
+1-4-2026
+- much beter scanner
+- beter report function
+- lot a code changes 
+- beter report function.
+- directory in many ways
+- Blind SQL injection
+- Waf detection
+- many more
 
 14-12-2025
 - change a lot of code

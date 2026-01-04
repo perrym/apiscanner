@@ -1,8 +1,8 @@
 ########################################################
 # APISCAN - API Security Scanner                       #
-# Licensed under the AGPL-v3.0                          #
+# Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 3.1 14-12-2025                               #
+# version 3.2 1-4-2026                                  #
 ########################################################
 
 from __future__ import annotations
@@ -16,6 +16,10 @@ import string
 import threading
 import itertools
 import time
+import hashlib
+import hmac
+import base64
+import sys
 from collections import defaultdict
 from datetime import datetime
 from functools import partial
@@ -25,20 +29,31 @@ import requests
 import urllib.parse as urlparse
 import urllib3
 from requests.adapters import HTTPAdapter
-from tqdm import tqdm
 from urllib3.util.retry import Retry
 from report_utils import ReportGenerator
-from urllib.parse import urlsplit as _pt_urlsplit, urlunsplit as _pt_urlunsplit
+from urllib.parse import urlsplit as _pt_urlsplit, urlunsplit as _pt_urlunsplit, parse_qs
 import io
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-try:
-    from colorama import Fore, Style
-except ModuleNotFoundError:
 
-    class _No:
-        CYAN = GREEN = YELLOW = MAGENTA = RED = RESET_ALL = ''
-    Fore = Style = _No()
+class Colors:
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    MAGENTA = '\033[95m'
+    WHITE = '\033[97m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+    RESET = '\033[0m'
+
+try:
+    from tqdm import tqdm
+    HAS_TQDM = True
+except ImportError:
+    HAS_TQDM = False
+
 try:
     from hyper.contrib import HTTP20Adapter
     _HAS_H2 = True
@@ -56,20 +71,32 @@ WAF_MARKERS = ('cloudflare', 'akamai', 'imperva', 'mod_security', 'aws waf', 're
 PROBLEM_JSON_CT = 'application/problem+json'
 stop_requested = threading.Event()
 
-
 os.environ.setdefault('APISCAN_MAX_WORKERS', '8')
-os.environ.setdefault('APISCAN_TIMEOUT', '5')
-os.environ.setdefault('APISCAN_RATE_LIMIT', '0.5')
+os.environ.setdefault('APISCAN_TIMEOUT', '2')
+os.environ.setdefault('APISCAN_RATE_LIMIT', '0.1')
+os.environ.setdefault('APISCAN_DEEP_SCAN', '0')
+os.environ.setdefault('APISCAN_PARAM_DISCOVERY', '1')
+os.environ.setdefault('APISCAN_STATEFUL', '0')
+os.environ.setdefault('APISCAN_INTENSITY', 'medium')
+os.environ.setdefault('APISCAN_ADAPTIVE', '1')
+os.environ.setdefault('APISCAN_NO_TQDM', '0')
+os.environ.setdefault('APISCAN_DIRTRAV_PROGRESS', '1')
+os.environ.setdefault('APISCAN_DIRTRAV_WORKERS', '8')
 
 
-#================funtion _pt_normalize_url description =============
+
+#================ _pt_normalize_url description ##########
+
+
 def _pt_normalize_url(u: str) -> str:
     if '://' not in u:
         u = 'https://' + u.lstrip('/')
     return u
 
 
-#================funtion build_traversal_variants_segment_replace description =============
+#================ build_traversal_variants_segment_replace description ##########
+
+
 def build_traversal_variants_segment_replace(url: str, replace_index: int=-2, max_dot: int=4, max_ddot: int=4, max_ellipsis: int=4) -> list[str]:
     url = _pt_normalize_url(url)
     parts = _pt_urlsplit(url)
@@ -83,7 +110,7 @@ def build_traversal_variants_segment_replace(url: str, replace_index: int=-2, ma
         return []
 
 
-    #================funtion join_segments description =============
+    #================ join_segments description ##########
     def join_segments(_lead, _segs):
         out = '/'.join(_segs)
         if _lead == '':
@@ -91,10 +118,11 @@ def build_traversal_variants_segment_replace(url: str, replace_index: int=-2, ma
         return out or '/'
 
 
-    #================funtion replace_with description =============
+    #================ replace_with description ##########
     def replace_with(rep_segment: str, count: int) -> str:
         new_segs = segs[:idx] + [rep_segment] * count + segs[idx + 1:]
         return _pt_urlunsplit((parts.scheme, parts.netloc, join_segments(lead, new_segs), parts.query, parts.fragment))
+
     variants: list[str] = []
     for n in range(1, max(0, int(max_dot)) + 1):
         v = replace_with('.', n)
@@ -108,6 +136,7 @@ def build_traversal_variants_segment_replace(url: str, replace_index: int=-2, ma
         v = replace_with('...', n)
         variants.append(v)
         variants.extend(_encode_siblings(v))
+
     seen, out = (set(), [])
     for v in variants:
         if v not in seen:
@@ -116,7 +145,9 @@ def build_traversal_variants_segment_replace(url: str, replace_index: int=-2, ma
     return out
 
 
-#================funtion _encode_siblings description =============
+#================ _encode_siblings description ##########
+
+
 def _encode_siblings(v: str) -> list[str]:
     out: list[str] = []
     out.append(v.replace('.', '%2e'))
@@ -125,7 +156,9 @@ def _encode_siblings(v: str) -> list[str]:
     return out
 
 
-#================funtion build_traversal_variants_insert_between description =============
+#================ build_traversal_variants_insert_between description ##########
+
+
 def build_traversal_variants_insert_between(url: str, insert_before_index: int=-1, max_dot: int=4, max_ddot: int=4, max_ellipsis: int=4) -> list[str]:
     url = _pt_normalize_url(url)
     parts = _pt_urlsplit(url)
@@ -139,7 +172,7 @@ def build_traversal_variants_insert_between(url: str, insert_before_index: int=-
         idx = len(segs)
 
 
-    #================funtion join_segments description =============
+    #================ join_segments description ##########
     def join_segments(_lead, _segs):
         out = '/'.join(_segs)
         if _lead == '':
@@ -147,11 +180,12 @@ def build_traversal_variants_insert_between(url: str, insert_before_index: int=-
         return out or '/'
 
 
-    #================funtion insert_with description =============
+    #================ insert_with description ##########
     def insert_with(rep_segment: str, count: int) -> str:
         new_segs = segs[:idx] + [rep_segment] * count + segs[idx:]
         new_path = join_segments(lead, new_segs)
         return _pt_urlunsplit((parts.scheme, parts.netloc, new_path, parts.query, parts.fragment))
+
     variants: list[str] = []
     for n in range(1, max(0, int(max_dot)) + 1):
         v = insert_with('.', n)
@@ -165,6 +199,7 @@ def build_traversal_variants_insert_between(url: str, insert_before_index: int=-
         v = insert_with('...', n)
         variants.append(v)
         variants.extend(_encode_siblings(v))
+
     seen, out = (set(), [])
     for v in variants:
         if v not in seen:
@@ -173,22 +208,27 @@ def build_traversal_variants_insert_between(url: str, insert_before_index: int=-
     return out
 
 
-#================funtion listen_for_quit description =============
+#================ listen_for_quit description ##########
+
+
 def listen_for_quit():
-    print("Enter 'Q' to stop scanning...")
+    print(f"\n{Colors.YELLOW}Enter 'Q' to stop scanning...{Colors.RESET}")
     while True:
-        inp = os.sys.stdin.readline().strip().lower()
+        inp = sys.stdin.readline().strip().lower()
         if inp == 'q':
             stop_requested.set()
-            print('\n[!] Stop requested - finishing active tasks.\n')
+            print(f'\n{Colors.RED}[!] Stop requested - finishing active tasks.{Colors.RESET}\n')
             break
+
 os.environ['APISCAN_ENABLE_CONSOLE_STOP'] = '1'
 if os.getenv('APISCAN_ENABLE_CONSOLE_STOP', '0') == '1':
     listener_thread = threading.Thread(target=listen_for_quit, daemon=True)
     listener_thread.start()
 
 
-#================funtion _headers_to_list description =============
+#================ _headers_to_list description ##########
+
+
 def _headers_to_list(headerobj):
     if hasattr(headerobj, 'getlist'):
         out = []
@@ -198,9 +238,73 @@ def _headers_to_list(headerobj):
         return out
     return list(headerobj.items())
 
+
+class ProgressBar:
+
+    #================ __init__ description ##########
+    def __init__(self, total, desc="", unit="it"):
+        self.total = total
+        self.desc = desc
+        self.unit = unit
+        self.current = 0
+        self.start_time = time.time()
+        self.last_update = 0
+        self.width = 50
+
+
+    #================ update description ##########
+    def update(self, n=1):
+        self.current += n
+        self._display()
+
+
+    #================ _display description ##########
+    def _display(self):
+        now = time.time()
+        if now - self.last_update < 0.1 and self.current < self.total:
+            return
+
+        self.last_update = now
+        elapsed = now - self.start_time
+
+        if self.total > 0:
+            percent = (self.current / self.total) * 100
+            filled = int(self.width * self.current // self.total)
+            bar = '' * filled + '' * (self.width - filled)
+
+            if self.current > 0:
+                eta = (elapsed / self.current) * (self.total - self.current)
+                eta_str = f"ETA: {eta:.1f}s"
+            else:
+                eta_str = "ETA: ?"
+
+            sys.stdout.write(f'\r{self.desc}: |{bar}| {percent:.1f}% ({self.current}/{self.total}) '
+                           f'[{elapsed:.1f}s, {eta_str}]')
+            sys.stdout.flush()
+
+            if self.current >= self.total:
+                sys.stdout.write('\n')
+                sys.stdout.flush()
+
+
+    #================ close description ##########
+    def close(self):
+        if self.current < self.total:
+            self.current = self.total
+            self._display()
+
+
+    #================ __enter__ description ##########
+    def __enter__(self):
+        return self
+
+
+    #================ __exit__ description ##########
+    def __exit__(self, *args):
+        self.close()
+
+
 class SafeConsumptionAuditor:
-
-
     NOSQL_NEGATIVE_PATTERNS = (
         'mongo: no documents in result',
         'no documents in result',
@@ -208,7 +312,46 @@ class SafeConsumptionAuditor:
         'no such document',
     )
 
-    #================funtion _encode_siblings description =============
+    JWT_PAYLOADS = [
+        'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWUsImlhdCI6MTUxNjIzOTAyMn0',
+        'eyJ0eXAiOiJKV1QiLCJhbGciOiJub25lIn0.eyJzdWIiOiIxMjM0NTY7ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWUsImlhdCI6MTUxNjIzOTAyMn0.',
+        'eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWUsImlhdCI6MTUxNjIzOTAyMn0'
+    ]
+
+    RATE_LIMIT_BYPASS_HEADERS = [
+        {'X-Forwarded-For': '127.0.0.1'},
+        {'X-Real-IP': '192.168.1.1'},
+        {'X-Originating-IP': '10.0.0.1'},
+        {'X-Client-IP': '172.16.0.1'},
+        {'X-Remote-IP': '169.254.0.1'},
+        {'X-Remote-Addr': 'fd00::1'},
+        {'X-Cluster-Client-IP': '100.64.0.1'}
+    ]
+
+    SSRF_ADVANCED_PAYLOADS = [
+        "gopher://127.0.0.1:80/_GET%20/",
+        "dict://127.0.0.1:6379/info",
+        "file:///etc/passwd",
+        "ldap://127.0.0.1:389",
+        "tftp://127.0.0.1:69/test",
+        "sftp://localhost:22/etc/passwd"
+    ]
+
+    BUSINESS_LOGIC_PAYLOADS = [
+        {'price': -999999.99, 'quantity': 100},
+        {'quantity': 9999999999},
+        {'discount': 150.0},
+        {'amount': 0.0000001},
+        {'balance': '-999999999'},
+        {'status': 'approved'},
+        {'role': 'admin'},
+        {'is_admin': True},
+        {'email_verified': True},
+        {'permissions': ['*']}
+    ]
+
+
+    #================ _encode_siblings description ##########
     def _encode_siblings(self, v: str) -> list[str]:
         out: list[str] = []
         out.append(v.replace('/./', '/.%2f/').replace('./', '.%2f'))
@@ -219,7 +362,8 @@ class SafeConsumptionAuditor:
         out.append(v.replace('/../', '/%252e%252e/').replace('../', '%252e%252e/'))
         return out
 
-    #================funtion _dirtrav_body_vectors description =============
+
+    #================ _dirtrav_body_vectors description ##########
     def _dirtrav_body_vectors(self) -> list[str]:
         base = ['..', '..', '..', '...']
         enc  = ['%2e%2e', '%252e%252e']
@@ -247,418 +391,7 @@ class SafeConsumptionAuditor:
     )
 
 
-    #================funtion _test_directory_traversal description =============
-    def _test_directory_traversal(self, ep: str) -> None:
-        url = ep if ep.startswith("http") else f"{self.base_url}{ep}"
-
-        vectors = [
-            "../", "..%2f", "%2e%2e%2f", "..%2F", "..;/", "..\\", "..%5c", "%2e%2e%5c"
-        ]
-        targets = [
-            ("/etc/passwd", ["root:x:0:0:", "/bin/"]),
-            ("/etc/hosts",  ["127.0.0.1", "localhost"]),
-            ("/proc/self/environ", ["PATH="]),
-            ("C:\\Windows\\win.ini", ["[fonts]", "[extensions]"]),
-            ("WEB-INF/web.xml", ["<web-app", "<servlet>"]),
-        ]
-
-        #================funtion strong_hit description =============
-        def strong_hit(body: str) -> bool:
-            low = (body or "").lower()
-            return any(sig in low for sig in (
-                "root:x:0:0:", "daemon:x:1:1:", "localhost", "path=",
-                "[extensions]", "[fonts]", "<web-app"
-            ))
-
-        #================funtion dirlist_hit description =============
-        def dirlist_hit(body: str) -> bool:
-            low = (body or "").lower()
-            return any(sig in low for sig in (
-                "index of /", "parent directory", "<title>index of", "directory listing for"
-            ))
-
-        traversal_tokens = (
-            "../", "..\\",
-            "%2e%2e", "%2e%2e%2f", "%2e%2e%5c",
-            "..%2f", "..%5c",
-            "%2f..", "%5c.."
-        )
-
-
-        for vec in vectors:
-            for tgt, sigs in targets:
-                u = f"{url}/{vec}{{postId}}{tgt}"
-                try:
-                    r = self.session.get(u, timeout=self.timeout, allow_redirects=False)
-                    body = r.text or ""
-
-
-                    if strong_hit(body) or any(s.lower() in body.lower() for s in sigs):
-                        self._log("Directory Traversal (suffix)", f"Markers for {tgt} detected.", "High", u, response=r,
-                                extra={"vector": "dirtrav", "base_endpoint": url})
-                        return
-                    if dirlist_hit(body):
-                        self._log("Potential Directory Listing (suffix)", "Directory listing patterns detected.", "Medium", u, response=r,
-                                extra={"vector": "dirtrav", "base_endpoint": url})
-                        return
-
-
-                    if r.status_code in (301, 302, 307, 308):
-                        loc = (r.headers.get("Location") or "").lower()
-                        if any(t in loc for t in traversal_tokens):
-                            self._log(f"Directory traversal (suffix) - suspicious redirect [{r.status_code}]",
-                                    u, "Medium", payload=u, response=r,
-                                    extra={"vector": "dirtrav", "base_endpoint": url, "location": loc})
-
-                except Exception:
-                    pass
-
-
-        for vec in vectors:
-            for tgt, sigs in targets:
-                u2 = f"{url}/{vec}{tgt}"
-                try:
-                    r = self.session.get(u2, timeout=self.timeout, allow_redirects=False)
-                    body = r.text or ""
-
-                    if strong_hit(body) or any(s.lower() in body.lower() for s in sigs):
-                        self._log("Directory Traversal (path)", f"Markers for {tgt} detected in path.", "High", u2, response=r,
-                                extra={"vector": "dirtrav", "base_endpoint": url})
-                        return
-                    if dirlist_hit(body):
-                        self._log("Potential Directory Listing (path)", "Directory listing patterns detected.", "Medium", u2, response=r,
-                                extra={"vector": "dirtrav", "base_endpoint": url})
-                        return
-
-                    if r.status_code in (301, 302, 307, 308):
-                        loc = (r.headers.get("Location") or "").lower()
-                        if any(t in loc for t in traversal_tokens):
-                            self._log(f"Directory traversal (path) - suspicious redirect [{r.status_code}]",
-                                    u2, "Medium", payload=u2, response=r,
-                                    extra={"vector": "dirtrav", "base_endpoint": url, "location": loc})
-                except Exception:
-                    pass
-
-
-    @staticmethod
-
-    #================funtion endpoints_from_swagger_with_methods description =============
-    def endpoints_from_swagger_with_methods(swagger_path: str):
-
-
-        from pathlib import Path
-        import json
-
-        raw = Path(swagger_path).read_text(encoding="utf-8")
-        spec = json.loads(raw)
-
-        servers = []
-        for srv in (spec.get("servers") or []):
-            u = (srv.get("url") or "").strip()
-            if not u:
-                continue
-
-            if u.endswith("/"):
-                u = u[:-1]
-            servers.append(u)
-
-        paths = spec.get("paths") or {}
-        out = []
-        for path, ops in paths.items():
-            if not isinstance(ops, dict):
-                continue
-
-            if not path.startswith("/"):
-                path = "/" + path
-            for method, op in ops.items():
-                m = (method or "").upper()
-                if m not in ("GET","POST","PUT","PATCH","DELETE","OPTIONS","HEAD"):
-                    continue
-                if servers:
-                    for s in servers:
-                        out.append((f"{s}{path}", m))
-                else:
-
-                    out.append((path, m))
-        return out
-
-
-    @staticmethod
-
-    #================funtion endpoints_from_swagger description =============
-    def endpoints_from_swagger(swagger_path: str):
-
-
-        pairs = SafeConsumptionAuditor.endpoints_from_swagger_with_methods(swagger_path)
-        urls = []
-        seen = set()
-        for url, _m in pairs:
-            if url in seen:
-                continue
-            seen.add(url)
-            urls.append(url)
-        return urls
-
-
-    #================funtion _looks_interesting_body description =============
-    def _looks_interesting_body(self, text: str) -> tuple[bool, str]:
-        if not text: return (False, 'none')
-        low = text.lower()
-        strong = (
-            'root:x:0:0:', 'daemon:x:1:1:', 'index of /', '<title>index of',
-            'parent directory', 'directory listing for', 'directory of ',
-            '[extensions]', 'for 16-bit app support'
-        )
-        weak = ('/etc/passwd', 'bin:x:', 'boot.ini', ':\\windows\\', 'web-inf/web.xml')
-        for s in strong:
-            if s in low: return (True, 'high')
-        import re as _re
-        wc = sum(1 for w in weak if w in low)
-        if wc >= 2: return (True, 'medium')
-        if wc == 1:
-            has_links = any(t in low for t in ('<a href="','&lt;a href=','href="','>../<','>..</a>'))
-            has_sizes = _re.search(r'\b\d+\s*(bytes?|kb|mb|gb)\b', low)
-            if has_links or has_sizes: return (True, 'medium')
-        return (False, 'none')
-
-
-    #================funtion _likely_fp_body description =============
-    def _likely_fp_body(self, resp, body_text: str) -> bool:
-        if not resp: return False
-        ctype = (resp.headers.get('Content-Type') or '').lower()
-        low = (body_text or '').lower()
-        if resp.status_code in (401,403) and any(t in low for t in ('invalid token','unauthorized','authentication','forbidden')):
-            return True
-        if 'application/json' in ctype and resp.status_code >= 400:
-            return True
-        if ctype.startswith(('image/','video/','audio/')) or 'application/octet-stream' in ctype:
-            return True
-        return False
-
-
-    #================funtion _body_candidates_json description =============
-    def _body_candidates_json(self, base_obj: dict):
-        out = []
-        vecs = self._dirtrav_body_vectors()
-        keys = list(base_obj.keys())
-        target_keys = [k for k in keys if k.lower() in self._PATH_FIELD_CANDIDATES or any(p in k.lower() for p in self._PATH_FIELD_CANDIDATES)]
-        if not target_keys: target_keys = keys
-        cap = 6
-        import json as _json
-        for k in target_keys[:6]:
-            for v in vecs[:cap]:
-                obj = dict(base_obj); obj[k] = v
-                out.append(('application/json', _json.dumps(obj).encode('utf-8'), f'json:{k}'))
-        return out[:24]
-
-
-    #================funtion _body_candidates_form description =============
-    def _body_candidates_form(self, base_map: dict):
-        out = []
-        vecs = self._dirtrav_body_vectors()
-        keys = list(base_map.keys())
-        target = [k for k in keys if k.lower() in self._PATH_FIELD_CANDIDATES or any(p in k.lower() for p in self._PATH_FIELD_CANDIDATES)]
-        if not target: target = keys
-        cap = 6
-        for k in target[:6]:
-            for v in vecs[:cap]:
-                m = dict(base_map); m[k] = v
-                out.append(('application/x-www-form-urlencoded', m, f'form:{k}'))
-        return out[:24]
-
-
-    #================funtion _body_candidates_multipart description =============
-    def _body_candidates_multipart(self):
-        out = []
-        vecs = self._dirtrav_body_vectors()
-        for v in vecs[:8]:
-            files = {'file': (v, io.BytesIO(b'test'), 'application/octet-stream')}
-            data = {'path': v}
-            out.append(('multipart/form-data', (data, files), f'multipart:filename'))
-        return out
-
-
-    #================funtion _build_default_json description =============
-    def _build_default_json(self):
-        return {'path':'/tmp/a', 'file':'a.txt', 'name':'x'}
-
-
-    #================funtion _build_default_form description =============
-    def _build_default_form(self):
-        return {'path':'/tmp/a', 'file':'a.txt'}
-
-
-    #================funtion _classify_and_log_body description =============
-    def _classify_and_log_body(self, endpoint, label, r, body_text, confidence):
-        ctype = (r.headers.get('Content-Type') or '').lower()
-        is_binary = ctype.startswith(('image/', 'video/', 'audio/')) or 'application/octet-stream' in ctype
-        if is_binary:
-            return
-
-        if r.status_code == 200:
-            sev = 'High' if confidence == 'high' else ('Medium' if confidence == 'medium' else 'Low')
-            self._log(
-                f'Directory traversal (body:{label}) [{r.status_code}]',
-                endpoint,
-                sev,
-                payload=getattr(self, '_last_payload', f'body:{label}'),
-                response=r,
-                extra={'vector': 'dirtrav-body', 'confidence': confidence}
-            )
-            return
-
-        if r.status_code in (301, 302, 307, 308):
-            loc = (r.headers.get('Location') or '').lower()
-
-
-            traversal_tokens = (
-                "../", "..\\",
-                "%2e%2e", "%2e%2e%2f", "%2e%2e%5c",
-                "..%2f", "..%5c",
-                "%2f..", "%5c..",
-                "%252e%252e", "%252e%252e%252f", "%252e%252e%255c",
-            )
-
-            if any(t in loc for t in traversal_tokens):
-                self._log(
-                    f'Directory traversal (body:{label}) - suspicious redirect [{r.status_code}]',
-                    endpoint,
-                    'Medium',
-                    payload=getattr(self, '_last_payload', f'body:{label}'),
-                    response=r,
-                    extra={'vector': 'dirtrav-body', 'location': loc}
-                )
-            return
-
-        if r.status_code in (401, 403) and confidence == 'high':
-            self._log(
-                f'Directory traversal (body:{label}) [{r.status_code}]',
-                endpoint,
-                'Low',
-                payload=getattr(self, '_last_payload', f'body:{label}'),
-                response=r,
-                extra={'vector': 'dirtrav-body', 'confidence': confidence}
-            )
-            return
-
-
-    #================funtion _test_directory_traversal_body description =============
-    def _test_directory_traversal_body(self, endpoint: str, method: str = 'POST') -> None:
-        if stop_requested.is_set():
-            return
-        try:
-            parsed = urlparse.urlparse(endpoint)
-            domain = parsed.netloc or parsed.hostname or ''
-            vectors = []
-
-
-            allowed = set()
-            try:
-                self._throttle(domain)
-                opt = self.session.request('OPTIONS', endpoint, timeout=(2, 3), allow_redirects=False)
-                allowed = {m.strip().upper() for m in (opt.headers.get('Allow') or '').split(',') if m}
-            except Exception:
-                pass
-            cand_methods = [m for m in (method.upper(), 'POST', 'PUT', 'PATCH') if m]
-            if allowed:
-                c2 = [m for m in cand_methods if m in allowed]
-                cand_methods = c2 or cand_methods
-
-            base_json = self._build_default_json()
-            vectors += self._body_candidates_json(base_json)
-
-            base_form = self._build_default_form()
-            vectors += self._body_candidates_form(base_form)
-
-            vectors += self._body_candidates_multipart()
-
-            if getattr(self, 'fast_mode', False):
-                vectors = vectors[:16]
-
-            #================funtion do_req description =============
-            def do_req(entry):
-                ctype, payload, label = entry
-                try:
-                    self._throttle(domain)
-                except Exception:
-                    pass
-                hdrs = dict(getattr(self.session, 'headers', {}))
-                hdrs['X-APISCAN-Payload'] = f'body:{label}'
-                self._last_payload = f'body:{label}'
-
-                m = cand_methods[0] if cand_methods else method.upper()
-
-                if ctype == 'application/json':
-                    r = self.session.request(m, endpoint, headers={**hdrs, 'Content-Type': 'application/json'},
-                                             data=payload, timeout=(3, getattr(self,'timeout',10)), allow_redirects=False)
-                elif ctype == 'application/x-www-form-urlencoded':
-                    r = self.session.request(m, endpoint, headers=hdrs, data=payload,
-                                             timeout=(3, getattr(self,'timeout',10)), allow_redirects=False)
-                else:
-                    data, files = payload
-                    r = self.session.request(m, endpoint, headers=hdrs, data=data, files=files,
-                                             timeout=(3, getattr(self,'timeout',10)), allow_redirects=False)
-
-                body_text = r.text or ''
-                if self._likely_fp_body(r, body_text):
-                    return
-                interesting, conf = self._looks_interesting_body(body_text)
-                if interesting:
-                    self._classify_and_log_body(endpoint, label, r, body_text, conf)
-
-            workers = min(8, max(1, len(vectors)))
-            import concurrent.futures as _cf
-            with _cf.ThreadPoolExecutor(max_workers=workers) as ex:
-                futs = []
-                for v in vectors:
-                    if stop_requested.is_set():
-                        break
-                    futs.append(ex.submit(do_req, v))
-                for f in _cf.as_completed(futs):
-                    try: f.result()
-                    except Exception: pass
-
-        except Exception as e:
-            self._log('Directory traversal (body) setup failed', endpoint, 'Info',
-                      extra={'error': str(e), 'vector':'dirtrav-body'})
-
-    @staticmethod
-
-
-    #================funtion endpoints_from_openapi_universal description =============
-    def endpoints_from_openapi_universal(spec: dict, base_url: str, sec_cfg: 'OASSecurityConfig | None'=None) -> list[str]:
-        if not globals().get('_HAS_OAS_UNIVERSAL', False):
-            raise RuntimeError('openapi_universal is not available')
-        eps: set[str] = set()
-        for op in oas_iter_ops(spec):
-            try:
-                req = oas_build_request(spec, base_url, op, sec_cfg)
-                url = req.get('url')
-                if isinstance(url, str) and url:
-                    eps.add(url.rstrip('/'))
-            except Exception:
-                continue
-        return sorted(eps)
-
-
-    #================funtion scan_openapi_universal description =============
-    def scan_openapi_universal(self, spec: dict, base_url: str, sec_cfg: 'OASSecurityConfig | None'=None) -> list[dict]:
-        endpoints = self.endpoints_from_openapi_universal(spec, base_url, sec_cfg)
-        return self.test_endpoints(endpoints)
-    SQL_ENGINE_MARKERS = {'sqlsyntaxerror', 'psql:', 'psycopg2', 'org.hibernate', 'mysql server version', 'sqlite error', 'sqlserverexception', 'odbc sql', 'syntax error at or near', 'unclosed quotation mark', 'ora-', 'pls-', 'ora-00933', 'ora-01756'}
-    NOSQL_ENGINE_MARKERS = {'mongoerror', 'bson', 'cast to objectid', 'pymongo.errors', 'elasticsearch_exception'}
-    SSTI_MARKERS = {'jinja2.exceptions', 'freemarker.core', 'mustache', 'thymeleaf'}
-    LDAP_ERROR_KEYWORDS = {'ldaperror', 'invalid dn', 'bad search filter', 'unbalanced parenthesis', 'javax.naming.directory'}
-    XXE_ERROR_KEYWORDS = {'entity not defined', 'saxparseexception', 'xerces', 'external entity', 'disallow-doctype', 'dtd is prohibited', 'doctype is not allowed'}
-    STACKTRACE_MARKERS = {'traceback (most recent call last)', 'java.lang.', 'nullpointerexception', 'indexerror', 'keyerror'}
-    JSON_PARSE_ERRORS = {'invalid character', 'unexpected token', 'json parse error', 'malformed json', 'no json object could be decoded', 'cannot deserialize instance of', 'body contains invalid json'}
-    WAF_PATTERNS = {'access denied', 'request blocked', 'akamai ghost', 'mod_security', 'cloudflare', 'your request was blocked', 'bot protection', 'forbidden by rule'}
-    IGNORE_NETWORK_TIMEOUTS = True
-    NETWORK_TIMEOUT_PATTERNS = ('httpconnectionpool', 'read timed out', 'connect timeout', 'connecttimeout', 'write timeout', 'newconnectionerror', 'failed to establish a new connection', 'max retries exceeded', 'temporarily unavailable')
-    GENERIC_4XX = {400, 401, 403, 404, 405, 406, 409, 415, 422, 429}
-
-
-    #================funtion __init__ description =============
+    #================ __init__ description ##########
     def __init__(self, base_url: str, session: Optional[requests.Session]=None, *, timeout: Optional[int]=None, rate_limit: Optional[float]=None, log_monitor: Optional[Callable[[Dict[str, Any]], None]]=None) -> None:
         self.timeout = timeout if timeout is not None else int(os.getenv('APISCAN_TIMEOUT', '3'))
         self.rate_limit = rate_limit if rate_limit is not None else float(os.getenv('APISCAN_RATE_LIMIT', '1.0'))
@@ -669,17 +402,27 @@ class SafeConsumptionAuditor:
         self.log_monitor = log_monitor
         self.server_log_provider: Optional[Callable[[], List[str]]] = None
         self.fast_mode = os.getenv('APISCAN_FAST', '0').strip().lower() in ('1', 'true', 'yes', 'on')
-        self.triage_payloads_per_type = 2
+        self.deep_scan = os.getenv('APISCAN_DEEP_SCAN', '0').strip().lower() in ('1', 'true', 'yes', 'on')
+        self.param_discovery = os.getenv('APISCAN_PARAM_DISCOVERY', '1').strip().lower() in ('1', 'true', 'yes', 'on')
+        self.stateful = os.getenv('APISCAN_STATEFUL', '0').strip().lower() in ('1', 'true', 'yes', 'on')
+        self.adaptive = os.getenv('APISCAN_ADAPTIVE', '1').strip().lower() in ('1', 'true', 'yes', 'on')
+        self.intensity = os.getenv('APISCAN_INTENSITY', 'medium').lower()
+        self.no_tqdm = os.getenv('APISCAN_NO_TQDM', '0').strip().lower() in ('1', 'true', 'yes', 'on')
+        self.triage_payloads_per_type = 2 if self.fast_mode else 6 if self.intensity == 'low' else 12 if self.intensity == 'medium' else 24
         self.per_host_max_concurrency = int(os.getenv('APISCAN_PER_HOST', '8'))
         self.host_semaphores: defaultdict[str, threading.BoundedSemaphore] = defaultdict(lambda: threading.BoundedSemaphore(self.per_host_max_concurrency))
         self.last_request_ts: defaultdict[str, float] = defaultdict(lambda: 0.0)
         self.issues: List[Dict[str, Any]] = []
         self.issues_lock = threading.Lock()
         self.canary_domain: str = os.getenv('APISCAN_CANARY', '').strip('.')
+        self.endpoint_cache = {}
+        self.param_cache = {}
+
         json_path = Path(__file__).parent / 'data' / 'injection_payloads.json'
         if not json_path.exists():
-            print(f'Error: {json_path} not found. Module cannot continue.')
-            os.sys.exit(1)
+            print(f'{Colors.RED}Error: {json_path} not found. Module cannot continue.{Colors.RESET}')
+            sys.exit(1)
+
         try:
             with json_path.open('r', encoding='utf-8') as f:
                 payloads_data = json.load(f)
@@ -694,32 +437,84 @@ class SafeConsumptionAuditor:
             self.SQL_ERROR_RX = [re.compile(p, re.I) for p in self.SQL_ERROR_REGEX]
             self.DIR_TRAVERSAL_PAYLOADS = payloads_data.get('directory_traversal_payloads', [])
             self.DIR_TRAVERSAL_FILES = payloads_data.get('directory_traversal_files', [])
-        except (KeyError, json.JSONDecodeError) as e:
-            print(f'Error parsing JSON payload file: {e}')
-            os.sys.exit(1)
-        print(f'[INIT] Auditor ready for {self.base_url} (timeout={self.timeout}s, rate_limit={self.rate_limit}s, max_workers={self.max_workers}, per_host={self.per_host_max_concurrency})')
 
+
+            self.JWT_ERROR_KEYWORDS = payloads_data.get('jwt_error_keywords', [
+                'jwt', 'token invalid', 'signature invalid', 'malformed token',
+                'token expired', 'invalid signature', 'alg none'
+            ])
+            self.BOLA_PATTERNS = payloads_data.get('bola_patterns', [
+                'access denied', 'unauthorized', 'forbidden', 'not your resource'
+            ])
+
+        except (KeyError, json.JSONDecodeError) as e:
+            print(f'{Colors.RED}Error parsing JSON payload file: {e}{Colors.RESET}')
+            sys.exit(1)
+
+
+        self.DB_SPECIFIC_PATTERNS = {
+            'mysql': ['mysql_error', 'mysqli_', 'you have an error in your sql syntax',
+                     'mysql server version', 'for the right syntax to use'],
+            'postgres': ['postgresql error', 'pg_', 'syntax error at position',
+                        'postgresql', 'pqexec', 'libpq'],
+            'oracle': ['ora-', 'pl/sql', 'oracle error', 'ora_', 'oracle.*exception'],
+            'mssql': ['microsoft sql server', 'sqlserver', 'incorrect syntax near',
+                     'sql server', 'odbc sql server', 'sqlcmd'],
+            'sqlite': ['sqlite error', 'sqlite3.', 'sqlite exception', 'sqlite3 error']
+        }
+
+
+        self.TIME_PATTERNS = [
+            r'(\d+)\s*second',
+            r'delay\s*[\'"]?\d+',
+            r'benchmark\([^)]+\)',
+            r'pg_sleep',
+            r'sleep\(',
+            r'waitfor\s+delay'
+        ]
+
+        self._print_banner()
+        print(f'{Colors.CYAN}[INIT] Enhanced Auditor ready for {self.base_url}{Colors.RESET}')
+        print(f'{Colors.CYAN}[CONFIG] timeout={self.timeout}s, workers={self.max_workers}, intensity={self.intensity}{Colors.RESET}')
+        if self.deep_scan:
+            print(f'{Colors.YELLOW}[MODE] Deep scan enabled{Colors.RESET}')
+        if self.adaptive:
+            print(f'{Colors.YELLOW}[MODE] Adaptive scanning enabled{Colors.RESET}')
+        print()
+
+
+    #================ _print_banner description ##########
+    def _print_banner(self):
+        banner = f"""
+{Colors.CYAN}{'='*70}{Colors.RESET}
+{Colors.BOLD}{Colors.GREEN}API10 - Safe Consumption of 3rd-Party APIs{Colors.RESET}
+{Colors.CYAN}{'='*70}{Colors.RESET}
+{Colors.WHITE}Version: 4.0 - Enhanced Edition{Colors.RESET}
+{Colors.WHITE}Author: Perry Mertens pamsniffer@gmail.com (C) 2025{Colors.RESET}
+{Colors.CYAN}{'='*70}{Colors.RESET}
+        """
+        print(banner)
+
+    #================ _create_secure_session description ##########
     @staticmethod
 
-    #================funtion _create_secure_session description =============
     def _create_secure_session() -> requests.Session:
         s = requests.Session()
         retries = Retry(total=2, connect=2, read=2, backoff_factor=0.2, status_forcelist=[500, 502, 503], allowed_methods=['HEAD', 'GET', 'OPTIONS', 'POST', 'PUT', 'DELETE', 'PATCH'], raise_on_status=False, raise_on_redirect=False)
-        adapter = HTTPAdapter(max_retries=retries, pool_connections=200, pool_maxsize=200, pool_block=True)
+        adapter = HTTPAdapter(max_retries=retries, pool_connections=400, pool_maxsize=400, pool_block=True)
         s.mount('http://', adapter)
         s.mount('https://', adapter)
-        use_http2 = os.getenv('APISCAN_HTTP2', '0') == '1' or bool(globals().get('APISCAN_HTTP2', 0))
-        if use_http2:
+        use_http2 = os.getenv('APISCAN_HTTP2', '0') == '1'
+        if use_http2 and _HAS_H2:
             try:
-                from hyper.contrib import HTTP20Adapter
                 s.mount('https://', HTTP20Adapter())
             except Exception:
                 pass
-        s.headers.update({'User-Agent': 'safe_consumption10/10', 'Accept': 'application/json, */*;q=0.1', 'Accept-Encoding': 'gzip, deflate', 'Connection': 'keep-alive'})
+        s.headers.update({'User-Agent': 'safe_consumption_enhanced/4.0', 'Accept': 'application/json, */*;q=0.1', 'Accept-Encoding': 'gzip, deflate', 'Connection': 'keep-alive'})
         return s
 
 
-    #================funtion _throttle description =============
+    #================ _throttle description ##########
     def _throttle(self, domain: str) -> None:
         sem = self.host_semaphores[domain]
         sem.acquire()
@@ -732,9 +527,9 @@ class SafeConsumptionAuditor:
         finally:
             sem.release()
 
+    #================ _safe_body description ##########
     @staticmethod
 
-    #================funtion _safe_body description =============
     def _safe_body(data: Any) -> str:
         if data is None:
             return ''
@@ -746,13 +541,14 @@ class SafeConsumptionAuditor:
         return str(data)
 
 
-    #================funtion _log description =============
+    #================ _log description ##########
     def _log(self, issue: str, target: str, severity: str, *, payload=None, response=None, extra=None) -> None:
         if extra and getattr(self, 'IGNORE_NETWORK_TIMEOUTS', True):
             err_low = str(extra.get('error', '')).lower()
             for p in getattr(self, 'NETWORK_TIMEOUT_PATTERNS', ('timeout', 'timed out', 'read timed out', 'connect timeout')):
                 if p in err_low:
                     return
+
         skip_markers = ('failed to parse', "name 'parsed' is not defined")
         chk = [issue]
         if extra and 'error' in extra:
@@ -762,13 +558,14 @@ class SafeConsumptionAuditor:
             if any((k in low for k in skip_markers)):
                 return
 
-        #================funtion _is_binary_response description =============
+
+        #================ _is_binary_response description ##########
         def _is_binary_response(resp) -> bool:
             try:
                 ctype = (resp.headers.get('Content-Type') or '').lower()
             except Exception:
                 ctype = ''
-            if ctype.startswith(('image/', 'audio/', 'video/')):
+            if ctype.startswith(('image/', 'audio/', 'video/')) or 'application/pdf' in ctype or 'application/octet-stream' in ctype:
                 return True
             if any((x in ctype for x in ('application/pdf', 'application/octet-stream', 'application/zip', 'application/gzip'))):
                 return True
@@ -781,6 +578,7 @@ class SafeConsumptionAuditor:
             sample = data[:1024]
             printable = sum((32 <= b < 127 or b in (9, 10, 13) for b in sample))
             return printable / max(1, len(sample)) < 0.8
+
         if response is not None:
             low_issue = (issue or '').lower()
             if ('sql injection' in low_issue or 'sqli' in low_issue) and _is_binary_response(response):
@@ -791,21 +589,42 @@ class SafeConsumptionAuditor:
                     if not extra:
                         extra = {}
                     extra['note'] = 'Downgraded: binary response (image/pdf/zip)'
-        entry = {'issue': issue, 'description': issue, 'severity': severity, 'target': target, 'payload': payload if payload is not None else '', 'status_code': response.status_code if response is not None else '-'}
+
+        entry = {
+            'issue': issue,
+            'description': issue,
+            'severity': severity,
+            'target': target,
+            'payload': payload if payload is not None else '',
+            'status_code': response.status_code if response is not None else '-',
+            'timestamp': datetime.now().isoformat()
+        }
+
         if extra:
             entry.update(extra)
+
         try:
             import urllib.parse as urlparse
             if response is not None and getattr(response, 'request', None) is not None:
                 req = response.request
                 full_url = getattr(req, 'url', target) or target
                 parsed = urlparse.urlparse(full_url)
-                entry.update(method=req.method or 'GET', url=full_url, endpoint=parsed.path or '/', request_headers=dict(getattr(req, 'headers', {}) or {}), response_headers=dict(response.headers or {}), request_cookies=getattr(response, 'cookies', {}).get_dict() if hasattr(response, 'cookies') else {}, response_cookies=response.cookies.get_dict() if hasattr(response, 'cookies') else {})
+                entry.update(
+                    method=req.method or 'GET',
+                    url=full_url,
+                    endpoint=parsed.path or '/',
+                    request_headers=dict(getattr(req, 'headers', {}) or {}),
+                    response_headers=dict(response.headers or {}),
+                    request_cookies=getattr(response, 'cookies', {}).get_dict() if hasattr(response, 'cookies') else {},
+                    response_cookies=response.cookies.get_dict() if hasattr(response, 'cookies') else {}
+                )
+
                 try:
                     rb = getattr(req, 'body', b'')
                     entry['request_body'] = self._safe_body(rb)[:20000]
                 except Exception:
                     entry['request_body'] = ''
+
                 try:
                     ct = (response.headers.get('Content-Type') or '').lower()
                     if not self._is_generic_html_error(response) and (not ct.startswith(('image/', 'video/', 'audio/'))) and ('application/octet-stream' not in ct):
@@ -825,392 +644,1443 @@ class SafeConsumptionAuditor:
             entry['parse_error'] = str(e)
             entry.setdefault('url', target)
             entry.setdefault('endpoint', urlparse.urlparse(target).path or '/')
+
         if entry.get('status_code') == '-' or 'timeout' in str(entry.get('error', '')).lower():
             entry['severity'] = 'Info'
+
+        entry['risk_score'] = self._calculate_risk_score(entry)
+
         with self.issues_lock:
             self.issues.append(entry)
+
+        if severity in ['Critical', 'High', 'Medium']:
+            self._print_issue_to_console(entry)
+
         if getattr(self, 'log_monitor', None):
             try:
                 self.log_monitor(entry)
             except Exception:
                 pass
+
+
+
+    #================ _dump_raw_issues description ##########
+    def _dump_raw_issues(self, output_dir: str) -> None:
         try:
-            if str(entry.get('severity', '')).lower() != 'info':
-                print(f"[{entry['severity']}] {entry.get('issue', '')} @ {entry.get('url', '')}")
-        except Exception:
-            pass
+            import json
+            from pathlib import Path
+
+            output_path = Path(output_dir)
+            output_path.mkdir(parents=True, exist_ok=True)
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = output_path / f"raw_issues_{timestamp}.json"
+
+            serializable_issues = []
+            for issue in self.issues:
+                serializable_issue = {}
+                for key, value in issue.items():
+                    try:
+                        json.dumps(value)
+                        serializable_issue[key] = value
+                    except (TypeError, ValueError):
+                        serializable_issue[key] = str(value)
+                serializable_issues.append(serializable_issue)
+
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(serializable_issues, f, indent=2, ensure_ascii=False)
+
+            print(f'{Colors.GREEN}[INFO] Raw issues saved to: {filename}{Colors.RESET}')
+        except Exception as e:
+            print(f'{Colors.RED}[ERROR] Failed to save raw issues: {e}{Colors.RESET}')
 
 
-    #================funtion _has_engine_marker description =============
-    def _has_engine_marker(self, text: str, attack_type: str) -> bool:
-        t = text.lower()
-        if attack_type == 'sql':
-            return any((k in t for k in self.SQL_ENGINE_MARKERS | self.STACKTRACE_MARKERS))
-        if attack_type == 'nosql':
-            return any((k in t for k in self.NOSQL_ENGINE_MARKERS | self.STACKTRACE_MARKERS))
-        if attack_type == 'ssti':
-            return any((k in t for k in self.SSTI_MARKERS | self.STACKTRACE_MARKERS))
-        if attack_type == 'ldap':
-            return any((k in t for k in self.LDAP_ERROR_KEYWORDS | self.STACKTRACE_MARKERS))
-        if attack_type == 'xxe':
-            return any((k in t for k in self.XXE_ERROR_KEYWORDS | self.STACKTRACE_MARKERS))
+    #================ _console_write description ##########
+    def _console_write(self, text: str = "") -> None:
+        if HAS_TQDM and not self.no_tqdm:
+            try:
+                from tqdm import tqdm
+                tqdm.write(text)
+            except Exception:
+                print(text)
+        else:
+            print(text)
+
+
+
+
+
+        #================ _print_issue_to_console description ##########
+        def _print_issue_to_console(self, issue: dict):
+            severity = issue.get('severity', 'Info')
+            issue_text = issue.get('issue', 'Unknown')
+            url = issue.get('url', issue.get('target', 'Unknown'))
+            status = issue.get('status_code', '?')
+            risk_score = issue.get('risk_score', 0)
+
+            url_display = url
+            if len(url_display) > 150:
+                url_display = url_display[:147] + "..."
+
+            color = Colors.YELLOW
+            symbol = "Medium "
+            if severity == 'Critical':
+                color = Colors.RED
+                symbol = "!!!"
+            elif severity == 'High':
+                color = Colors.RED
+                symbol = "High "
+            elif severity == 'Low':
+                color = Colors.BLUE
+                symbol = "Low  "
+            elif severity == 'Info':
+                color = Colors.CYAN
+                symbol = "Info "
+
+            risk_str = f" [Risk:{risk_score:.1f}]" if risk_score > 0 else ""
+
+            self._console_write(f"{color}{symbol} {severity:8}{risk_str} {issue_text}")
+            self._console_write(f"     {Colors.WHITE}URL: {url_display}")
+            if status != '?':
+                self._console_write(f"     Status: {status}{Colors.RESET}")
+            self._console_write("")
+
+
+
+    #================ _test_jwt_vulnerabilities description ##########
+    def _test_jwt_vulnerabilities(self, endpoint: str) -> None:
+        if stop_requested.is_set():
+            return
+
+        try:
+            parsed = urlparse.urlparse(endpoint)
+            domain = parsed.netloc or parsed.hostname or ''
+
+            for jwt_token in self.JWT_PAYLOADS:
+                if stop_requested.is_set():
+                    return
+
+                try:
+                    self._throttle(domain)
+
+                    headers_list = [
+                        {'Authorization': f'Bearer {jwt_token}'},
+                        {'Authorization': f'Token {jwt_token}'},
+                        {'Authorization': f'JWT {jwt_token}'},
+                        {'X-Auth-Token': jwt_token},
+                        {'X-JWT-Token': jwt_token}
+                    ]
+
+                    for headers in headers_list:
+                        try:
+                            r = self.session.get(endpoint, headers=headers, timeout=(3, self.timeout), allow_redirects=False)
+                            body_low = (r.text or '').lower()
+
+                            if any(kw in body_low for kw in self.JWT_ERROR_KEYWORDS):
+                                self._log(
+                                    'JWT security issue detected',
+                                    endpoint,
+                                    'Medium',
+                                    payload=jwt_token[:50] + '...',
+                                    response=r,
+                                    extra={'jwt_error': 'Token validation error detected'}
+                                )
+
+                            if 'alg' in jwt_token and 'none' in jwt_token.lower():
+                                if r.status_code < 400:
+                                    self._log(
+                                        'Possible JWT algorithm confusion',
+                                        endpoint,
+                                        'High',
+                                        payload=jwt_token[:50] + '...',
+                                        response=r,
+                                        extra={'vulnerability': 'JWT alg=none accepted'}
+                                    )
+
+                        except Exception:
+                            continue
+
+                except Exception as e:
+                    self._log('JWT test failed', endpoint, 'Info', extra={'error': str(e)})
+
+        except Exception as e:
+            self._log('JWT test setup failed', endpoint, 'Info', extra={'error': str(e)})
+
+
+    #================ _test_rate_limit_bypass description ##########
+    def _test_rate_limit_bypass(self, endpoint: str) -> None:
+        if stop_requested.is_set():
+            return
+
+        try:
+            parsed = urlparse.urlparse(endpoint)
+            domain = parsed.netloc or parsed.hostname or ''
+
+            baseline_status = 0
+            try:
+                self._throttle(domain)
+                baseline = self.session.get(endpoint, timeout=(3, self.timeout))
+                baseline_status = baseline.status_code
+            except Exception:
+                pass
+
+            for ip_headers in self.RATE_LIMIT_BYPASS_HEADERS:
+                if stop_requested.is_set():
+                    return
+
+                try:
+                    self._throttle(domain)
+                    status_codes = []
+                    for i in range(5):
+                        try:
+                            r = self.session.get(endpoint, headers=ip_headers, timeout=(2, self.timeout))
+                            status_codes.append(r.status_code)
+                            time.sleep(0.1)
+                        except Exception:
+                            status_codes.append(0)
+
+                    successful = sum(1 for s in status_codes if 200 <= s < 300)
+                    rate_limited = sum(1 for s in status_codes if s == 429)
+
+                    if successful >= 3 and baseline_status == 429:
+                        self._log(
+                            'Possible rate limit bypass via IP spoofing',
+                            endpoint,
+                            'Medium',
+                            extra={
+                                'headers': ip_headers,
+                                'successful_requests': successful,
+                                'baseline_status': baseline_status
+                            }
+                        )
+
+                except Exception:
+                    continue
+
+        except Exception as e:
+            self._log('Rate limit bypass test failed', endpoint, 'Info', extra={'error': str(e)})
+
+
+    #================ _test_ssrf_advanced description ##########
+    def _test_ssrf_advanced(self, endpoint: str) -> None:
+        if stop_requested.is_set() or not self.deep_scan:
+            return
+
+        try:
+            parsed = urlparse.urlparse(endpoint)
+            domain = parsed.netloc or parsed.hostname or ''
+
+            param_candidates = ['url', 'uri', 'path', 'file', 'image', 'load', 'redirect', 'return', 'next']
+
+            for param in param_candidates:
+                for payload in self.SSRF_ADVANCED_PAYLOADS:
+                    if stop_requested.is_set():
+                        return
+
+                    try:
+                        self._throttle(domain)
+
+                        if '?' in endpoint:
+                            test_url = f"{endpoint}&{param}={urlparse.quote(payload)}"
+                        else:
+                            test_url = f"{endpoint}?{param}={urlparse.quote(payload)}"
+
+                        r = self.session.get(test_url, timeout=(5, self.timeout * 2), allow_redirects=False)
+                        body_low = (r.text or '').lower()
+                        response_time = r.elapsed.total_seconds() if r.elapsed else 0
+
+                        ssrf_indicators = [
+                            'connection refused',
+                            'connection timeout',
+                            'no route to host',
+                            'gopher',
+                            'dict://',
+                            'localhost',
+                            '127.0.0.1',
+                            'internal server error'
+                        ]
+
+                        has_indicator = any(ind in body_low for ind in ssrf_indicators)
+                        slow_response = response_time > 3.0
+
+                        if has_indicator or slow_response:
+                            severity = 'High' if 'gopher://' in payload or 'dict://' in payload else 'Medium'
+                            self._log(
+                                f'Possible SSRF ({param})',
+                                test_url,
+                                severity,
+                                payload=payload,
+                                response=r,
+                                extra={
+                                    'parameter': param,
+                                    'response_time': response_time,
+                                    'has_ssrf_indicator': has_indicator
+                                }
+                            )
+
+                    except Exception as e:
+                        if 'timeout' in str(e).lower() or 'read timed' in str(e).lower():
+                            self._log(
+                                'SSRF test timeout (possible outbound connection)',
+                                endpoint,
+                                'Medium',
+                                extra={
+                                    'parameter': param,
+                                    'payload': payload,
+                                    'error': str(e)
+                                }
+                            )
+                        continue
+
+        except Exception as e:
+            self._log('Advanced SSRF test failed', endpoint, 'Info', extra={'error': str(e)})
+
+
+    #================ _test_business_logic description ##########
+    def _test_business_logic(self, endpoint: str) -> None:
+        if stop_requested.is_set() or not self.deep_scan:
+            return
+
+        try:
+            parsed = urlparse.urlparse(endpoint)
+            domain = parsed.netloc or parsed.hostname or ''
+
+            methods_to_test = ['POST', 'PUT', 'PATCH']
+
+            for method in methods_to_test:
+                for payload in self.BUSINESS_LOGIC_PAYLOADS:
+                    if stop_requested.is_set():
+                        return
+
+                    try:
+                        self._throttle(domain)
+                        content_types = ['application/json', 'application/x-www-form-urlencoded']
+
+                        for content_type in content_types:
+                            headers = {'Content-Type': content_type}
+
+                            if content_type == 'application/json':
+                                data = json.dumps(payload)
+                            else:
+                                data = payload
+
+                            r = self.session.request(
+                                method,
+                                endpoint,
+                                data=data,
+                                headers=headers,
+                                timeout=(3, self.timeout),
+                                allow_redirects=False
+                            )
+
+                            if r.status_code in [200, 201]:
+                                suspicious = False
+                                reason = ""
+
+                                if payload.get('price', 0) < 0:
+                                    suspicious = True
+                                    reason = "Negative price accepted"
+                                elif payload.get('discount', 0) > 100:
+                                    suspicious = True
+                                    reason = "Discount >100% accepted"
+                                elif payload.get('role') == 'admin':
+                                    suspicious = True
+                                    reason = "Admin role assignment possible"
+                                elif payload.get('is_admin') is True:
+                                    suspicious = True
+                                    reason = "is_admin=true accepted"
+
+                                if suspicious:
+                                    self._log(
+                                        f'Business logic flaw: {reason}',
+                                        endpoint,
+                                        'High',
+                                        payload=payload,
+                                        response=r,
+                                        extra={
+                                            'method': method,
+                                            'flaw_type': reason
+                                        }
+                                    )
+
+                    except Exception:
+                        continue
+
+        except Exception as e:
+            self._log('Business logic test failed', endpoint, 'Info', extra={'error': str(e)})
+
+
+    #================ _discover_parameters description ##########
+    def _discover_parameters(self, endpoint: str) -> List[str]:
+        if endpoint in self.param_cache:
+            return self.param_cache[endpoint]
+
+        discovered = set()
+
+        try:
+            parsed = urlparse.urlparse(endpoint)
+
+            if parsed.query:
+                params = parse_qs(parsed.query)
+                discovered.update(params.keys())
+
+            methods = ['GET', 'POST', 'OPTIONS']
+
+            for method in methods:
+                if stop_requested.is_set():
+                    break
+
+                try:
+                    self._throttle(parsed.netloc or parsed.hostname or '')
+
+                    if method == 'GET':
+                        r = self.session.get(endpoint, timeout=3, allow_redirects=False)
+                    elif method == 'POST':
+                        r = self.session.post(endpoint, json={}, timeout=3, allow_redirects=False)
+                    else:
+                        r = self.session.options(endpoint, timeout=3, allow_redirects=False)
+                        continue
+
+                    ctype = r.headers.get('Content-Type', '').lower()
+
+                    if 'application/json' in ctype:
+                        try:
+                            data = r.json()
+                            self._extract_keys_from_json(data, discovered)
+                        except:
+                            pass
+
+                    response_text = r.text or ''
+                    param_patterns = [
+                        r'"(\w+)"\s*:',
+                        r'name=["\'](\w+)["\']',
+                        r'param(?:eter)?[=:]\s*["\']?(\w+)'
+                    ]
+
+                    for pattern in param_patterns:
+                        matches = re.findall(pattern, response_text, re.I)
+                        discovered.update(matches)
+
+                except Exception:
+                    continue
+
+            common_params = [
+                'id', 'name', 'email', 'user', 'username', 'password', 'token',
+                'key', 'secret', 'q', 'query', 'search', 'filter', 'sort',
+                'page', 'limit', 'offset', 'status', 'type', 'category',
+                'file', 'path', 'url', 'redirect', 'callback', 'jsonp'
+            ]
+
+            discovered.update(common_params)
+
+            result = list(discovered)
+            self.param_cache[endpoint] = result
+            return result
+
+        except Exception as e:
+            return list(discovered)
+
+
+    #================ _extract_keys_from_json description ##########
+    def _extract_keys_from_json(self, data, discovered: set, path=""):
+        if isinstance(data, dict):
+            for k, v in data.items():
+                discovered.add(k)
+                self._extract_keys_from_json(v, discovered, f"{path}.{k}")
+        elif isinstance(data, list) and data:
+            self._extract_keys_from_json(data[0], discovered, path)
+
+
+    #================ _has_sql_evidence_improved description ##########
+    def _has_sql_evidence_improved(self, body: str) -> bool:
+        if not body:
+            return False
+
+        low = body.lower()
+
+        for db_type, patterns in self.DB_SPECIFIC_PATTERNS.items():
+            if any(p in low for p in patterns):
+                return True
+
+        if any(rx.search(low) for rx in getattr(self, 'SQL_ERROR_RX', [])):
+            return True
+
+        for pattern in self.TIME_PATTERNS:
+            if re.search(pattern, low, re.I):
+                return True
+
+        sql_keywords_in_error = [
+            'sql syntax',
+            'syntax error',
+            'unclosed quotation',
+            'near "',
+            'unknown column',
+            'table.*not exist',
+            'column.*not found'
+        ]
+
+        error_context = False
+        error_indicators = ['error', 'exception', 'failure', 'invalid']
+
+        if any(ind in low for ind in error_indicators):
+            error_context = True
+
+        if error_context and any(kw in low for kw in sql_keywords_in_error):
+            return True
+
         return False
 
 
-    #================funtion _is_parse_error description =============
-    def _is_parse_error(self, response: requests.Response) -> bool:
-        try:
-            ctype = (response.headers.get('Content-Type') or '').lower()
-        except Exception:
-            ctype = ''
-        body = (response.text or '').lower()
-        return any((p in body for p in self.JSON_PARSE_ERRORS)) or ('application/json' in ctype and response.status_code == 400)
-
-
-    #================funtion _looks_like_waf description =============
-    def _looks_like_waf(self, response: requests.Response) -> bool:
-        body = (response.text or '').lower()
-        return response.status_code in {403, 406, 429} or any((p in body for p in self.WAF_PATTERNS))
-
-
-    #================funtion _is_generic_html_error description =============
-    def _is_generic_html_error(self, response) -> bool:
-        try:
-            status = int(getattr(response, 'status_code', 0))
-        except Exception:
-            status = 0
-        try:
-            ctype = (response.headers.get('Content-Type') or '').lower()
-        except Exception:
-            ctype = ''
-        body = getattr(response, 'text', '') or ''
-        head = body.strip()[:200].lower()
-        title_low = ''
-        try:
-            import re as _re
-            m = _re.search('<title>([^<]+)</title>', body, _re.I)
-            title_low = (m.group(1) if m else '').strip().lower()
-        except Exception:
-            title_low = ''
-        looks_html = 'text/html' in ctype or head.startswith('<!doctype html') or head.startswith('<html')
-        looks_error = 'error' in title_low or 'server error' in head or 'internal server error' in head
-        return status >= 500 and looks_html and looks_error
-
-
-    #================funtion _payload_reflected description =============
-    def _payload_reflected(self, payload: str, response_text: str) -> bool:
-        if not payload:
+    #================ _is_likely_false_positive_improved description ##########
+    def _is_likely_false_positive_improved(self, response, issue_type: str) -> bool:
+        if not response:
             return False
-        t = (response_text or '').lower()
-        from urllib.parse import quote
-        variants = {payload.lower(), quote(payload).lower(), quote(payload, safe='').lower()}
-        return any((v in t for v in variants))
+
+        try:
+            ctype = response.headers.get('Content-Type', '').lower()
+            body = (response.text or '').lower()
+
+            fp_patterns = {
+                'sqli': [
+                    'sqlite is not', 'sqlalchemy', 'sequelize', 'orm error',
+                    'doctrine', 'entity framework', 'typeorm', 'prisma'
+                ],
+                'xss': [
+                    'angular.js', 'react', 'vue.js', '<script>safe',
+                    'sanitized', 'escaped', 'xss protected'
+                ],
+                'lfi': [
+                    'file not found', 'invalid path', 'security policy',
+                    'access denied', 'permission denied'
+                ],
+                'rce': [
+                    'command not found', 'permission denied', 'no such file',
+                    'invalid command'
+                ],
+                'nosql': [
+                    'mongoose', 'mongodb driver', 'invalid bson',
+                    'document validation failed'
+                ]
+            }
+
+            if issue_type in fp_patterns:
+                if any(fp in body for fp in fp_patterns[issue_type]):
+                    return True
+
+            generic_error_indicators = [
+                '<title>error</title>',
+                '<h1>error</h1>',
+                'an error occurred',
+                'please try again',
+                'contact administrator',
+                'technical difficulties'
+            ]
+
+            if any(ind in body for ind in generic_error_indicators):
+                return True
+
+            if 'application/json' in ctype:
+                try:
+                    data = json.loads(response.text)
+                    if isinstance(data, dict) and 'error' in data:
+                        return True
+                except:
+                    pass
+
+            suspicious_words = ['error', 'exception', 'invalid', 'failed', 'wrong']
+            safe_words = ['please', 'try again', 'contact support', 'valid', 'success']
+
+            suspicious_count = sum(1 for w in suspicious_words if w in body)
+            safe_count = sum(1 for w in safe_words if w in body)
+
+            if safe_count > suspicious_count:
+                return True
+
+        except Exception:
+            pass
+
+        return False
 
 
-    #================funtion classify_transport_anomaly description =============
-    def classify_transport_anomaly(self, url: str, method: str, exc: Exception | None, elapsed: float) -> str:
-        e = (str(exc) if exc else '').lower()
-        if 'hpe_invalid' in e or 'invalid chunk size' in e or 'http/1.1 400 bad request' in e:
-            return 'Medium'
-        if elapsed > 8.0 and (not e):
-            return 'Info'
-        return 'Info'
+    #================ _calculate_risk_score description ##########
+    def _calculate_risk_score(self, issue: dict) -> float:
+        score = 0.0
 
-
-    #================funtion _dedupe_issues description =============
-    def _dedupe_issues(self) -> None:
-
-            #================funtion _canon description =============
-            def _canon(f: dict) -> tuple:
-                issue = (f.get('issue') or '').lower()
-                desc = (f.get('description') or '').lower()
-                method = f.get('method') or 'GET'
-                path = f.get('path') or f.get('endpoint') or f.get('url') or ''
-                status = f.get('status_code')
-                payload = f.get('payload') or ''
-                vector = (f.get('vector') or '').lower()
-                if vector == 'generic-5xx' or 'server error without sql evidence' in issue or 'generic 5xx response without sql/db markers' in desc:
-                    return ('generic-5xx', method, path, status)
-                if vector == 'dirtrav' or issue.startswith('directory traversal'):
-                    base_ep = f.get('base_endpoint') or path
-                    sev = f.get('severity')
-                    return ('dirtrav', method, base_ep, sev)
-                if vector == 'cors' or issue == 'Broad CORS policy':
-                    return ('cors', method, path, 200)
-                return ('default', method, path, status, (f.get('issue') or ''), payload)
-
-            merged: dict[tuple, dict] = {}
-            for f in self.issues:
-                k = _canon(f)
-                cur = merged.get(k)
-                if cur is None:
-                    f['duplicates'] = 0
-
-                    if (f.get('vector') or '').lower() == 'dirtrav':
-                        f['evidence_urls'] = [f.get('url') or f.get('endpoint')]
-                    elif (f.get('vector') or '').lower() == 'cors':
-                        f['evidence_origins'] = [f.get('origin')] if f.get('origin') else []
-                    elif (f.get('vector') or '').lower() == 'generic-5xx':
-                        f['evidence_payloads'] = [f.get('payload')] if f.get('payload') else []
-                    merged[k] = f
-                else:
-                    cur['duplicates'] = int(cur.get('duplicates', 0)) + 1
-
-                    v = (f.get('vector') or '').lower()
-                    if v == 'dirtrav':
-                        urls = cur.setdefault('evidence_urls', [])
-                        u = f.get('url') or f.get('endpoint')
-                        if u and u not in urls and len(urls) < 10:
-                            urls.append(u)
-                    elif v == 'cors':
-                        origins = cur.setdefault('evidence_origins', [])
-                        o = f.get('origin')
-                        if o and o not in origins and len(origins) < 10:
-                            origins.append(o)
-                    elif v == 'generic-5xx':
-                        payloads = cur.setdefault('evidence_payloads', [])
-                        pld = f.get('payload')
-                        if pld and pld not in payloads and len(payloads) < 10:
-                            payloads.append(pld)
-            self.issues = list(merged.values())
-
-
-    #================funtion _dump_raw_issues description =============
-    def _dump_raw_issues(self, log_dir: Path) -> Path:
-        import json as _json
-        import datetime as _dt
-        log_dir.mkdir(parents=True, exist_ok=True)
-        ts = _dt.datetime.utcnow().isoformat(timespec='seconds').replace(':', '-')
-        path = log_dir / f'unsafe_raw_{ts}.json'
-        with path.open('w', encoding='utf-8') as fh:
-            _json.dump(self.issues, fh, indent=2, ensure_ascii=False)
-        print(f'[LOG] Full issue log written to {path}')
-        return path
-
-    @staticmethod
-
-
-    #================funtion third_party_hosts_from_swagger description =============
-    def third_party_hosts_from_swagger(swagger_path: str) -> List[str]:
-        spec = json.loads(Path(swagger_path).read_text(encoding='utf-8'))
-        hosts: Set[str] = set()
-        for srv in spec.get('servers', []):
-            url = srv.get('url')
-            if url:
-                parsed = urlparse.urlparse(url)
-                if parsed.netloc:
-                    hosts.add(parsed.netloc.split(':')[0])
-
-
-        #================funtion walk description =============
-        def walk(node: Any):
-            if isinstance(node, dict):
-                for k, v in node.items():
-                    if k == '$ref' and isinstance(v, str) and v.startswith('http'):
-                        hosts.add(urlparse.urlparse(v).netloc.split(':')[0])
-                    walk(v)
-            elif isinstance(node, list):
-                for item in node:
-                    walk(item)
-        walk(spec)
-        return sorted(hosts)
-
-
-    #================funtion _is_payload_reflected description =============
-    def _is_payload_reflected(self, finding: dict) -> bool:
-        payload = finding.get('payload') or ''
-        body = (finding.get('response_body') or '').lower()
-        return payload.lower() in body
-
-
-    #================funtion _test_injection description =============
-    def _test_injection(self, test_url: str | tuple, attack_type: str, *, method: str = 'auto', payload: str | None = None) -> None:
-
-
-        if stop_requested.is_set():
-            return
-
-
-        if isinstance(test_url, tuple) and len(test_url) == 2:
-            test_url, method = test_url[0], test_url[1] or method
-
-        defaults = {
-            'sql': "' OR 1=1--",
-            'nosql': '{"$ne": "invalid"}',
-            'xss': '<script>alert(1)</script>',
-            'lfi': '../../etc/passwd',
-            'rce': '$(reboot)',
-            'header': 'X-Injected: header',
-            'hpp': 'id=1&id=2',
-            'graphql': '__schema'
+        severity_map = {
+            'Critical': 9.0,
+            'High': 7.0,
+            'Medium': 4.0,
+            'Low': 2.0,
+            'Info': 0.5
         }
-        p = payload or defaults.get(attack_type, '1')
 
-        parsed = urlparse.urlparse(test_url)
-        domain = parsed.netloc or parsed.hostname or ''
-        base = test_url.split('?', 1)[0]
+        base_severity = issue.get('severity', 'Info')
+        score += severity_map.get(base_severity, 0.5)
 
-        param_candidates = [
-            'q', 'query', 'search', 'id', 'user', 'username', 'email', 'name',
-            'term', 's', 'page', 'limit', 'offset', 'code', 'token', 'redirect', 'next', 'return', 'ref'
+        confidence = issue.get('confidence', 'low')
+        if confidence == 'high':
+            score += 1.5
+        elif confidence == 'medium':
+            score += 1.0
+
+        issue_text = (issue.get('issue') or '').lower()
+
+        high_impact_keywords = [
+            'remote code', 'command injection', 'rce', 'sql injection',
+            'directory traversal', 'file inclusion', 'xxe', 'ssrf'
         ]
 
+        for keyword in high_impact_keywords:
+            if keyword in issue_text:
+                score += 2.0
+                break
 
-        allowed = set()
+        medium_impact_keywords = [
+            'xss', 'csrf', 'idor', 'access control', 'authentication bypass',
+            'information disclosure', 'data exposure'
+        ]
+
+        for keyword in medium_impact_keywords:
+            if keyword in issue_text:
+                score += 1.0
+                break
+
+        if issue.get('response_body') and len(issue.get('response_body', '')) > 100:
+            score += 0.5
+
         try:
-            self._throttle(domain)
-            try:
-                opt = self.session.request('OPTIONS', base, timeout=(2, 3), allow_redirects=False)
-                allow_hdr = opt.headers.get('Allow') or opt.headers.get('allow') or ''
-                allowed = {m.strip().upper() for m in allow_hdr.split(',') if m.strip()}
-            except Exception:
-                allowed = set()
+            status = int(issue.get('status_code', 0))
+            if status >= 500:
+                score += 0.5
+        except:
+            pass
+
+        return min(10.0, max(0.0, score))
+
+
+
+    #================ test_endpoints description ##########
+    def test_endpoints(self, endpoints: List[str]) -> List[Issue]:
+        print(f'{Colors.CYAN}[INFO] Starting enhanced scan with {self.max_workers} workers{Colors.RESET}')
+        print(f'{Colors.CYAN}[TARGET] {self.base_url}{Colors.RESET}')
+        print(f'{Colors.CYAN}[ENDPOINTS] {len(endpoints)} endpoints to scan{Colors.RESET}')
+        print()
+
+        global stop_requested
+        stop_requested.clear()
+
+        if self.adaptive:
+            return self.adaptive_scanning_with_progress(endpoints)
+        else:
+            return self._comprehensive_scan_with_progress(endpoints)
+
+
+    #================ adaptive_scanning_with_progress description ##########
+    def adaptive_scanning_with_progress(self, endpoints: list):
+        total_endpoints = len(endpoints)
+
+        print(f'{Colors.BLUE}{"="*70}{Colors.RESET}')
+        print(f'{Colors.BOLD}{Colors.GREEN}[PHASE 1] Quick reconnaissance ({total_endpoints} endpoints){Colors.RESET}')
+        print(f'{Colors.BLUE}{"-"*70}{Colors.RESET}')
+
+        sample_size = min(50, total_endpoints)
+        sample_endpoints = random.sample(endpoints, sample_size) if total_endpoints > 50 else endpoints
+
+        fast_tests = [
+            partial(self._test_basic_security),
+            partial(self._test_header_manipulation),
+            partial(self._test_crlf_injection)
+        ]
+
+        completed = 0
+        total_tasks = len(sample_endpoints) * len(fast_tests)
+
+        if HAS_TQDM and not self.no_tqdm:
+            sys.stdout.flush()
+            time.sleep(0.1)
+            with tqdm(total=total_tasks, desc="Phase 1 - Recon", unit="test", ncols=80, mininterval=0.1) as pbar:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, self.max_workers)) as executor:
+                    futures = []
+                    for endpoint in sample_endpoints:
+                        for test in fast_tests:
+                            futures.append(executor.submit(self._run_test_with_callback, test, endpoint, pbar.update))
+
+                    for future in concurrent.futures.as_completed(futures):
+                        try:
+                            future.result()
+                        except Exception:
+                            pass
+        else:
+            print(f'{Colors.WHITE}  Running quick tests...{Colors.RESET}')
+            progress = ProgressBar(total_tasks, desc="Phase 1 - Recon")
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, self.max_workers)) as executor:
+                futures = []
+                for endpoint in sample_endpoints:
+                    for test in fast_tests:
+                        futures.append(executor.submit(self._run_test_with_callback, test, endpoint, progress.update))
+
+                for future in concurrent.futures.as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception:
+                        pass
+
+            progress.close()
+
+        print(f'{Colors.GREEN}  [] Phase 1 completed - {len(self.issues)} issues found{Colors.RESET}')
+
+        sql_found = any('sql' in str(i).lower() for i in self.issues)
+        auth_found = any('auth' in str(i).lower() or '401' in str(i.get('status_code', '')) for i in self.issues)
+        admin_found = any('admin' in str(i).lower() for i in self.issues)
+
+        print(f'\n{Colors.BLUE}{"="*70}{Colors.RESET}')
+        print(f'{Colors.BOLD}{Colors.GREEN}[PHASE 2] Targeted scanning{Colors.RESET}')
+        print(f'{Colors.BLUE}{"-"*70}{Colors.RESET}')
+
+        print(f'{Colors.WHITE}  Identifying promising endpoints...{Colors.RESET}')
+        promising_endpoints = []
+
+        if HAS_TQDM and not self.no_tqdm:
+            sys.stdout.flush()
+            for endpoint in tqdm(endpoints, desc="Analyzing endpoints", unit="endpoint", ncols=80, mininterval=0.1):
+                if self._is_promising_endpoint(endpoint):
+                    promising_endpoints.append(endpoint)
+        else:
+            progress = ProgressBar(len(endpoints), desc="Analyzing endpoints")
+            for endpoint in endpoints:
+                if self._is_promising_endpoint(endpoint):
+                    promising_endpoints.append(endpoint)
+                progress.update()
+            progress.close()
+
+        print(f'{Colors.WHITE}  [Found] {len(promising_endpoints)} promising endpoints{Colors.RESET}')
+
+        intensive_tests = []
+
+        if sql_found:
+            print(f'{Colors.YELLOW}  [Focus] SQL patterns detected - running intensive SQL tests{Colors.RESET}')
+            intensive_tests.append(partial(self._run_intensive_sql_tests))
+
+        if auth_found or admin_found:
+            print(f'{Colors.YELLOW}  [Focus] Auth/admin patterns detected - running access control tests{Colors.RESET}')
+            intensive_tests.extend([
+                partial(self._test_jwt_vulnerabilities),
+                partial(self._test_business_logic)
+            ])
+
+        if self.deep_scan:
+            intensive_tests.extend([
+                partial(self._test_ssrf_advanced),
+                partial(self._test_rate_limit_bypass)
+            ])
+
+        if not intensive_tests:
+            print(f'{Colors.WHITE}  [Info] No specific patterns detected - running comprehensive tests{Colors.RESET}')
+            intensive_tests = [
+                partial(self._test_basic_security),
+                partial(self._test_crlf_injection),
+                partial(self._test_hpp),
+                partial(self._test_sensitive_data_exposure),
+                partial(self._test_graphql_introspection),
+                partial(self._test_header_manipulation),
+                partial(self._test_blind_sqli),
+                partial(self._test_directory_traversal)
+            ]
+
+        target_endpoints = promising_endpoints if promising_endpoints else endpoints[:min(20, len(endpoints))]
+
+        print(f'{Colors.WHITE}  [Testing] {len(target_endpoints)} endpoints with {len(intensive_tests)} test types{Colors.RESET}')
+
+        total_phase2_tests = len(target_endpoints) * len(intensive_tests)
+
+        if HAS_TQDM and not self.no_tqdm:
+            sys.stdout.flush()
+            with tqdm(total=total_phase2_tests, desc="Phase 2 - Targeted", unit="test", ncols=80, mininterval=0.1) as pbar:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                    futures = []
+                    for endpoint in target_endpoints:
+                        for test in intensive_tests:
+                            futures.append(executor.submit(self._run_test_with_callback, test, endpoint, pbar.update))
+
+                    for future in concurrent.futures.as_completed(futures):
+                        try:
+                            future.result()
+                        except Exception:
+                            pass
+        else:
+            progress = ProgressBar(total_phase2_tests, desc="Phase 2 - Targeted")
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                futures = []
+                for endpoint in target_endpoints:
+                    for test in intensive_tests:
+                        futures.append(executor.submit(self._run_test_with_callback, test, endpoint, progress.update))
+
+                for future in concurrent.futures.as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception:
+                        pass
+
+            progress.close()
+
+        print(f'{Colors.GREEN}  [] Phase 2 completed{Colors.RESET}')
+
+        print(f'\n{Colors.BLUE}{"="*70}{Colors.RESET}')
+        print(f'{Colors.BOLD}{Colors.GREEN}[PHASE 3] Comprehensive scan{Colors.RESET}')
+        print(f'{Colors.BLUE}{"-"*70}{Colors.RESET}')
+
+        return self._comprehensive_scan_with_progress(endpoints)
+
+
+    #================ _run_test_with_callback description ##########
+    def _run_test_with_callback(self, test_func, endpoint, callback):
+        try:
+            test_func(endpoint)
         except Exception:
-
-            allowed = set()
-
-
-        if method == 'auto' and allowed:
-            for cand in ('POST', 'PUT', 'PATCH', 'GET'):
-                if cand in allowed:
-                    method = cand
-                    break
-
-        tried_any = False
-        try:
-
-            fast = getattr(self, 'fast_mode', False) or os.environ.get('APISCAN_FAST') == '1'
-            max_per_type = getattr(self, 'triage_payloads_per_type', 6)
-
-            if method in ('auto', 'GET'):
-                tried_any = True
-                if parsed.query:
-                    from urllib.parse import parse_qsl, urlencode
-                    q = dict(parse_qsl(parsed.query, keep_blank_values=True))
-                    keys = list(q.keys())[:5]
-                    for k in keys:
-                        old = q.get(k)
-                        q[k] = p
-                        attack_q = urlencode(q, doseq=True)
-                        attack_url = base + '?' + attack_q
-                        r = self.session.get(attack_url, timeout=(3, self.timeout), allow_redirects=False)
-                        if self._is_injection_successful(r, attack_type, payload=p):
-                            self._log(f'Possible {attack_type.upper()} injection', attack_url, 'Critical', payload=p, response=r)
-                            return
-                        q[k] = old
-
-                candidates = param_candidates[:5] if not fast else param_candidates[:3]
-                for k in candidates:
-                    attack_url = f'{base}?{k}={urlparse.quote_plus(p)}'
-                    r = self.session.get(attack_url, timeout=(3, self.timeout), allow_redirects=False)
-                    if self._is_injection_successful(r, attack_type, payload=p):
-                        self._log(f'Possible {attack_type.upper()} injection', attack_url, 'Critical', payload=p, response=r)
-                        return
+            pass
+        finally:
+            callback(1)
 
 
-            post_allowed = ('POST' in allowed) or (method in ('auto', 'POST')) or (not allowed)
-            if post_allowed:
+    #================ _is_promising_endpoint description ##########
+    def _is_promising_endpoint(self, endpoint: str) -> bool:
+        url_lower = endpoint.lower()
 
-                if allowed and 'POST' not in allowed and method not in ('POST', 'PUT', 'PATCH'):
-                    post_allowed = False
+        keywords = [
+            'api', 'admin', 'user', 'auth', 'login', 'logout', 'register',
+            'upload', 'download', 'export', 'import', 'config', 'settings',
+            'profile', 'account', 'password', 'reset', 'token', 'key',
+            'secret', 'credential', 'database', 'backup', 'restore'
+        ]
 
+        if any(kw in url_lower for kw in keywords):
+            return True
 
-            if post_allowed:
-                tried_any = True
+        param_keywords = ['id=', 'token=', 'key=', 'secret=', 'auth=', 'pass=']
+        if any(param in url_lower for param in param_keywords):
+            return True
 
-                form_keys = param_candidates[:6] if not fast else param_candidates[:3]
-                form_body = {k: p for k in form_keys}
-                try:
-                    r = self.session.post(base, data=form_body, timeout=(3, max(self.timeout, 10)), allow_redirects=False)
-                    if self._is_injection_successful(r, attack_type, payload=p):
-                        self._log(f'Possible {attack_type.upper()} injection', base + ' (form)', 'Critical', payload=p, response=r)
-                        return
-                except Exception:
-                    pass
+        extensions = ['.php', '.asp', '.aspx', '.jsp', '.do', '.action']
+        if any(ext in url_lower for ext in extensions):
+            return True
 
+        if re.search(r'/\d+/', endpoint):
+            return True
 
-                try:
-                    files = {'file': ('expl.txt', p)}
-                    r = self.session.post(base, files=files, data={}, timeout=(3, max(self.timeout, 10)), allow_redirects=False)
-                    if self._is_injection_successful(r, attack_type, payload=p):
-                        self._log(f'Possible {attack_type.upper()} injection', base + ' (multipart)', 'Critical', payload=p, response=r)
-                        return
-                except Exception:
-                    pass
+        return False
 
 
-                try:
-                    json_body = {k: p for k in param_candidates[:5]}
-                    r = self.session.post(base, json=json_body, timeout=(3, max(self.timeout, 10)), allow_redirects=False)
-                    if self._is_injection_successful(r, attack_type, payload=p):
-                        self._log(f'Possible {attack_type.upper()} injection', base + ' (json)', 'Critical', payload=p, response=r)
-                        return
-                except Exception:
-                    pass
-
-
-            if '%7B' in test_url.lower() and '%7D' in test_url.lower():
-                attack_url = re.sub(r'%7B[^%]+%7D', urlparse.quote_plus(p), test_url, count=1, flags=re.I)
-                try:
-                    r = self.session.get(attack_url, timeout=(3, self.timeout), allow_redirects=False)
-                    if self._is_injection_successful(r, attack_type, payload=p):
-                        self._log(f'Possible {attack_type.upper()} injection', attack_url, 'Critical', payload=p, response=r)
-                        return
-                except Exception:
-                    pass
-
-            if not tried_any:
-                self._log('Injection test skipped (no method)', test_url, 'Info')
-        except Exception as exc:
-            self._log('Injection test failed', test_url, 'Info', extra={'error': str(exc), 'type': attack_type})
-
-
-    #================funtion _run_injection_tests_parallel description =============
-    def _run_injection_tests_parallel(self, endpoint, test_type: str) -> None:
+    #================ _run_intensive_sql_tests description ##########
+    def _run_intensive_sql_tests(self, endpoint: str):
         if stop_requested.is_set():
             return
-        payloads = list(self.INJECTION_PAYLOADS[test_type])
-        if self.fast_mode and len(payloads) > self.triage_payloads_per_type:
-            payloads = payloads[:self.triage_payloads_per_type]
 
+        extended_sql_payloads = [
+            "' UNION SELECT NULL--",
+            "' UNION SELECT username,password FROM users--",
+            "') UNION SELECT 1,2,3--",
+            "' AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT @@version),0x7e))--",
+            "' AND (SELECT * FROM (SELECT(SLEEP(5)))a)--",
+            "' AND 1=1--",
+            "' AND 1=2--",
+            "'; WAITFOR DELAY '0:0:5'--",
+            "' OR SLEEP(5)--",
+            "'; DROP TABLE users--",
+            "'; UPDATE users SET password='hacked' WHERE username='admin'--"
+        ]
 
-        if isinstance(endpoint, tuple) and len(endpoint) == 2:
-            base_endpoint, preferred_method = endpoint[0], endpoint[1]
-        else:
-            base_endpoint, preferred_method = endpoint, 'auto'
+        content_types = [
+            ('application/x-www-form-urlencoded', 'data'),
+            ('application/json', 'json'),
+            ('multipart/form-data', 'multipart')
+        ]
 
-        test_urls: List[Tuple[str, str, str]] = []
-        for p in payloads:
+        for payload in extended_sql_payloads:
             if stop_requested.is_set():
                 return
 
-            method_preference = preferred_method if preferred_method and preferred_method != 'AUTO' else ('POST' if '/posts' in base_endpoint else 'auto')
-            test_url = f'{base_endpoint}?input={urlparse.quote(p)}'
-            test_urls.append((test_url, method_preference, p))
-            test_urls.append((base_endpoint.replace('%7BpostId%7D', urlparse.quote_plus(p)), 'GET', p))
+            for ctype, ctype_name in content_types:
+                try:
+                    parsed = urlparse.urlparse(endpoint)
+                    domain = parsed.netloc or parsed.hostname or ''
+                    self._throttle(domain)
+
+                    if ctype == 'application/json':
+                        data = {'input': payload}
+                        headers = {'Content-Type': 'application/json'}
+                        r = self.session.post(endpoint, json=data, headers=headers, timeout=5)
+                    elif ctype == 'multipart/form-data':
+                        data = {'file': ('test.txt', payload, 'text/plain')}
+                        r = self.session.post(endpoint, files=data, timeout=5)
+                    else:
+                        data = {'input': payload}
+                        r = self.session.post(endpoint, data=data, timeout=5)
+
+                    if self._has_sql_evidence_improved(r.text or ''):
+                        self._log(
+                            'Intensive SQL test found vulnerability',
+                            endpoint,
+                            'Critical',
+                            payload=payload[:100],
+                            response=r,
+                            extra={
+                                'test_type': 'intensive_sql',
+                                'content_type': ctype_name,
+                                'confidence': 'high'
+                            }
+                        )
+
+                except Exception:
+                    continue
 
 
-        workers = min(8, max(1, len(test_urls)))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-            if stop_requested.is_set():
-                return
-            futures = []
-            for test_url, method, payload in test_urls:
+    #================ _comprehensive_scan_with_progress description ##########
+    def _comprehensive_scan_with_progress(self, endpoints: List[str]) -> List[Issue]:
+        print(f'{Colors.WHITE}  Total endpoints: {len(endpoints)}{Colors.RESET}')
+        print(f'{Colors.WHITE}  [STEP 1] Checking endpoint reachability...{Colors.RESET}')
+        reachable_endpoints: List[str] = []
+        if HAS_TQDM and not self.no_tqdm:
+            sys.stdout.flush()
+            for ep in tqdm(
+                endpoints,
+                desc="Checking reachability",
+                unit="endpoint",
+                ncols=80,
+                mininterval=0.1,
+            ):
                 if stop_requested.is_set():
                     break
-                futures.append(executor.submit(self._test_injection, test_url, test_type, method=method, payload=payload))
-            for future in concurrent.futures.as_completed(futures):
+                if self._is_endpoint_reachable(ep):
+                    reachable_endpoints.append(ep)
+        else:
+            progress = ProgressBar(len(endpoints), desc="Checking reachability")
+            for ep in endpoints:
                 if stop_requested.is_set():
-                    for f in futures:
-                        f.cancel()
+                    break
+                if self._is_endpoint_reachable(ep):
+                    reachable_endpoints.append(ep)
+                progress.update(1)
+            progress.close()
+
+        print(f'{Colors.WHITE}  Reachable endpoints: {len(reachable_endpoints)}{Colors.RESET}')
+
+        if not reachable_endpoints:
+            print(f'{Colors.RED}  [] No reachable endpoints found{Colors.RESET}')
+            return self.issues
+
+        per_endpoint_tests = [
+            self._test_basic_security,
+            self._test_waf_detection,
+            self._test_crlf_injection,
+            self._test_hpp,
+            self._test_sensitive_data_exposure,
+            self._test_graphql_introspection,
+            self._test_header_manipulation,
+            self._test_blind_sqli,
+            self._test_directory_traversal,
+            self._test_directory_traversal_body,
+            self._test_jwt_vulnerabilities,
+            self._test_rate_limit_bypass,
+            self._test_business_logic,
+        ]
+
+        if self.deep_scan:
+            per_endpoint_tests.append(self._test_ssrf_advanced)
+
+        base_tests = len(per_endpoint_tests) + len(self.INJECTION_PAYLOADS)
+
+        total_tasks = len(reachable_endpoints) * base_tests
+        print(
+            f'{Colors.WHITE}  [STEP 2] Running security tests ({total_tasks} total tests)...{Colors.RESET}'
+        )
+
+        if HAS_TQDM and not self.no_tqdm:
+            sys.stdout.flush()
+            with tqdm(
+                total=total_tasks,
+                desc="Running tests",
+                unit="test",
+                ncols=80,
+                mininterval=0.1,
+            ) as pbar:
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=self.max_workers
+                ) as main_executor:
+                    all_tasks: List[concurrent.futures.Future] = []
+
+                    for ep in reachable_endpoints:
+                        if stop_requested.is_set():
+                            break
+
+                        test_fns = list(per_endpoint_tests)
+                        for t in self.INJECTION_PAYLOADS:
+                            test_fns.append(
+                                partial(self._run_injection_tests_parallel, test_type=t)
+                            )
+
+                        for fn in test_fns:
+                            if stop_requested.is_set():
+                                break
+                            all_tasks.append(
+                                main_executor.submit(
+                                    self._run_test_with_callback, fn, ep, pbar.update
+                                )
+                            )
+
+                    for future in concurrent.futures.as_completed(all_tasks):
+                        if stop_requested.is_set():
+                            for task in all_tasks:
+                                task.cancel()
+                            break
+                        try:
+                            future.result(timeout=self.timeout * 20)
+                        except concurrent.futures.TimeoutError:
+                            self._log('Test timeout', 'N/A', 'Info')
+                        except Exception as e:
+                            self._log(
+                                'Test failed',
+                                'N/A',
+                                'Info',
+                                extra={'error': str(e)[:100]},
+                            )
+
+        else:
+            progress = ProgressBar(total_tasks, desc="Running tests")
+            start_time = time.time()
+
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=self.max_workers
+            ) as main_executor:
+                all_tasks: List[concurrent.futures.Future] = []
+
+                for ep in reachable_endpoints:
+                    if stop_requested.is_set():
+                        break
+
+                    test_fns = list(per_endpoint_tests)
+
+                    for t in self.INJECTION_PAYLOADS:
+                        test_fns.append(
+                            partial(self._run_injection_tests_parallel, test_type=t)
+                        )
+
+                    for fn in test_fns:
+                        if stop_requested.is_set():
+                            break
+                        all_tasks.append(
+                            main_executor.submit(
+                                self._run_test_with_callback, fn, ep, progress.update
+                            )
+                        )
+
+                for future in concurrent.futures.as_completed(all_tasks):
+                    if stop_requested.is_set():
+                        for task in all_tasks:
+                            task.cancel()
+                        break
+                    try:
+                        future.result(timeout=self.timeout * 20)
+                    except concurrent.futures.TimeoutError:
+                        self._log('Test timeout', 'N/A', 'Info')
+                    except Exception as e:
+                        self._log(
+                            'Test failed',
+                            'N/A',
+                            'Info',
+                            extra={'error': str(e)[:100]},
+                        )
+
+            progress.close()
+            elapsed = time.time() - start_time
+            print(f'{Colors.WHITE}  Scan completed in {elapsed:.1f} seconds{Colors.RESET}')
+
+
+        self._print_final_report()
+
+        return self.issues
+
+
+
+
+    #================ _print_final_report description ##########
+    def _print_final_report(self):
+        print(f'\n{Colors.BLUE}{"="*70}{Colors.RESET}')
+        print(f'{Colors.BOLD}{Colors.GREEN}SCAN COMPLETED{Colors.RESET}')
+        print(f'{Colors.BLUE}{"="*70}{Colors.RESET}')
+
+        total_issues = len(self.issues)
+        if total_issues == 0:
+            print(f'{Colors.GREEN} No security issues found!{Colors.RESET}')
+            return
+
+        severity_counts = defaultdict(int)
+        for issue in self.issues:
+            severity = issue.get('severity', 'Info')
+            severity_counts[severity] += 1
+
+        print(f'{Colors.WHITE}Total issues found: {total_issues}{Colors.RESET}')
+        print(f'\n{Colors.BOLD}{Colors.CYAN}[FINDINGS BY SEVERITY]{Colors.RESET}')
+
+        for severity in ['Critical', 'High', 'Medium', 'Low', 'Info']:
+            count = severity_counts.get(severity, 0)
+            if count > 0:
+                if severity == 'Critical':
+                    color = Colors.RED
+                    symbol = ''
+                elif severity == 'High':
+                    color = Colors.RED
+                    symbol = ''
+                elif severity == 'Medium':
+                    color = Colors.YELLOW
+                    symbol = ''
+                elif severity == 'Low':
+                    color = Colors.CYAN
+                    symbol = ''
+                else:
+                    color = Colors.WHITE
+                    symbol = ''
+
+                print(f'{color}  {symbol} {severity:8}: {count:3} issues{Colors.RESET}')
+
+        risk_scores = [i.get('risk_score', 0) for i in self.issues if i.get('severity') != 'Info']
+        if risk_scores:
+            avg_risk = sum(risk_scores) / len(risk_scores)
+            max_risk = max(risk_scores)
+            print(f'\n{Colors.BOLD}{Colors.CYAN}[RISK ASSESSMENT]{Colors.RESET}')
+            print(f'{Colors.WHITE}  Average risk score: {avg_risk:.1f}/10.0{Colors.RESET}')
+            print(f'{Colors.WHITE}  Maximum risk score: {max_risk:.1f}/10.0{Colors.RESET}')
+
+            high_risk = [i for i in self.issues if i.get('risk_score', 0) >= 7.0]
+            if high_risk:
+                print(f'\n{Colors.BOLD}{Colors.RED}[HIGH RISK ISSUES FOUND]{Colors.RESET}')
+                for idx, issue in enumerate(high_risk[:5]):
+                    risk = issue.get('risk_score', 0)
+                    severity = issue.get('severity', 'Unknown')
+                    issue_text = issue.get('issue', 'Unknown')
+                    if len(issue_text) > 80:
+                        issue_text = issue_text[:77] + '...'
+
+                    print(f'{Colors.RED}  {idx+1}. [{severity}] {issue_text}')
+                    print(f'     Risk Score: {risk:.1f}/10.0{Colors.RESET}')
+
+        categories = defaultdict(int)
+        for issue in self.issues:
+            if issue.get('severity') != 'Info':
+                cat = self._category_of_issue(issue.get('issue', ''))
+                categories[cat] += 1
+
+        if categories:
+            print(f'\n{Colors.BOLD}{Colors.CYAN}[FINDINGS BY CATEGORY]{Colors.RESET}')
+            for cat, count in sorted(categories.items(), key=lambda x: x[1], reverse=True):
+                print(f'{Colors.WHITE}  {cat:25}: {count:3} issues{Colors.RESET}')
+
+        print(f'\n{Colors.GREEN} Scan completed successfully!{Colors.RESET}')
+        print(f'{Colors.WHITE}   Run generate_report() for detailed HTML report{Colors.RESET}')
+        print(f'{Colors.BLUE}{"="*70}{Colors.RESET}')
+
+
+
+    #================ _test_basic_security description ##########
+    def _test_basic_security(self, endpoint: str) -> None:
+        try:
+            r = self.session.get(endpoint, timeout=(3, self.timeout), allow_redirects=False)
+            status = r.status_code
+
+            if status in {401, 403}:
+                self._log('Auth required / forbidden', endpoint, 'Info', response=r)
+            elif status == 404:
+                self._log('Not found', endpoint, 'Info', response=r)
+            elif status == 405:
+                allow = r.headers.get('Allow')
+                self._log('Method not allowed', endpoint, 'Info',
+                        extra={'allow': allow} if allow else None, response=r)
+            elif status >= 500:
+                self._log('Server error observed', endpoint, 'Info', response=r)
+
+        except Exception as e:
+            self._log('Request failed', endpoint, 'Info', extra={'error': str(e)})
+
+
+    #================ _test_waf_detection description ##########
+    def _test_waf_detection(self, endpoint: str) -> None:
+        if stop_requested.is_set():
+            return
+
+        try:
+            parsed = urlparse.urlparse(endpoint)
+            domain = parsed.netloc or parsed.hostname or ''
+            baseline_status = None
+            try:
+                self._throttle(domain)
+                baseline = self.session.get(endpoint, timeout=(3, self.timeout), allow_redirects=False)
+                baseline_status = baseline.status_code
+                baseline_server = baseline.headers.get('Server', '')
+            except Exception:
+                baseline_server = ''
+
+            waf_payloads = [
+                "' OR '1'='1",
+                ".%2f.%2fetc%2fpasswd",
+                "<img src=x onerror=alert(1)>",
+                "|cat /etc/passwd",
+                "${7*7}",
+                "<!--#exec cmd=\"ls\"-->",
+                "%00",
+                "././",
+            ]
+
+            blocked_count = 0
+            total_tested = 0
+
+            for payload in waf_payloads[:5]:
+                if stop_requested.is_set():
                     return
+
                 try:
-                    future.result()
+                    self._throttle(domain)
+                    test_url = f"{endpoint}?test={urlparse.quote(payload)}"
+                    r = self.session.get(test_url, timeout=(3, self.timeout), allow_redirects=False)
+                    total_tested += 1
+
+                    server_header = r.headers.get('Server', '')
+                    body = r.text or ''
+                    body_low = body.lower()
+                    is_blocked = False
+                    blocking_reason = ""
+
+                    if r.status_code == 400 and 'bad request' in body_low:
+                        is_blocked = True
+                        blocking_reason = "400 Bad Request"
+                    elif r.status_code == 403:
+                        is_blocked = True
+                        blocking_reason = "403 Forbidden"
+                    elif r.status_code == 406:
+                        is_blocked = True
+                        blocking_reason = "406 Not Acceptable"
+                    elif r.status_code == 429:
+                        is_blocked = True
+                        blocking_reason = "429 Too Many Requests"
+                    elif r.status_code == 413:
+                        is_blocked = True
+                        blocking_reason = "413 Payload Too Large"
+                    elif any(waf_marker in body_low for waf_marker in WAF_MARKERS):
+                        is_blocked = True
+                        blocking_reason = "WAF signature detected"
+
+                    if is_blocked:
+                        blocked_count += 1
+
+                        waf_type = "Unknown WAF/Filter"
+                        if 'openresty' in server_header.lower():
+                            waf_type = "OpenResty"
+                        elif 'cloudflare' in server_header.lower() or 'cloudflare' in body_low:
+                            waf_type = "Cloudflare"
+                        elif 'akamai' in server_header.lower() or 'akamai' in body_low:
+                            waf_type = "Akamai"
+                        elif 'mod_security' in body_low or 'modsecurity' in body_low:
+                            waf_type = "ModSecurity"
+                        elif 'imperva' in body_low:
+                            waf_type = "Imperva"
+                        elif 'aws waf' in body_low:
+                            waf_type = "AWS WAF"
+                        elif 'barracuda' in body_low:
+                            waf_type = "Barracuda"
+                        elif 'fortinet' in body_low or 'fortiweb' in body_low:
+                            waf_type = "Fortinet"
+
+                        if blocked_count == 1 or waf_type != "Unknown WAF/Filter":
+                            severity = 'Medium' if waf_type != "Unknown WAF/Filter" else 'Low'
+                            self._log(
+                                f'WAF/Input filtering detected: {waf_type}',
+                                endpoint,
+                                severity,
+                                payload=payload[:50],
+                                response=r,
+                                extra={
+                                    'waf_type': waf_type,
+                                    'blocking_reason': blocking_reason,
+                                    'server_header': server_header,
+                                    'baseline_status': baseline_status,
+                                    'note': f'Payload blocked with {r.status_code}'
+                                }
+                            )
+
+                except Exception as req_err:
+                    self._log(
+                        'WAF test request failed',
+                        endpoint,
+                        'Info',
+                        extra={'error': str(req_err), 'payload': payload[:50]}
+                    )
+                    continue
+
+            if total_tested > 0 and blocked_count / total_tested >= 0.6:
+                self._log(
+                    'Strong input validation/WAF present',
+                    endpoint,
+                    'Low',
+                    extra={
+                        'blocked_ratio': f'{blocked_count}/{total_tested}',
+                        'note': 'High percentage of suspicious requests blocked'
+                    }
+                )
+
+        except Exception as e:
+            self._log('WAF detection test failed', endpoint, 'Info', extra={'error': str(e)})
+
+
+
+
+
+    #================ _test_crlf_injection description ##########
+    def _test_crlf_injection(self, endpoint: str) -> None:
+        if stop_requested.is_set():
+            return
+        try:
+            parsed = urlparse.urlparse(endpoint)
+            domain = parsed.netloc or parsed.hostname or ''
+            if not domain:
+                self._log('CRLF test invalid host', endpoint, 'Low')
+                return
+            canary_name = 'X-CRLF-Canary'
+            canary_val = f'apiscan-{self.generate_random_id(8)}'
+            canary_cookie = f'{canary_name}={canary_val}'
+            base_variants = [f'%0d%0a{canary_name}: {canary_val}', f'%0d%0aSet-Cookie: {canary_cookie}']
+            extra_variants = []
+            try:
+                for p in self.CRLF_PAYLOADS or []:
+                    if 'X-Injected:' in p:
+                        extra_variants.append(p.replace('X-Injected: header', f'{canary_name}: {canary_val}'))
+                    else:
+                        extra_variants.append(p)
+            except Exception:
+                pass
+            variants = base_variants + extra_variants
+            params_to_try = ['q', 'search', 'redirect', 'url', 'return', 'next']
+
+
+            #================ _all_headers description ##########
+            def _all_headers(resp: requests.Response) -> List[Tuple[str, str]]:
+                try:
+                    return _headers_to_list(resp.raw.headers)
                 except Exception:
-                    pass
+                    return list(resp.headers.items())
+
+            for param in params_to_try:
+                if stop_requested.is_set():
+                    return
+                for inj in variants:
+                    if stop_requested.is_set():
+                        return
+                    url = f'{endpoint}'
+                    sep = '&' if '?' in url else '?'
+                    test_url = f'{url}{sep}{param}=test{inj}'
+                    try:
+                        self._throttle(domain)
+                        r = self.session.get(test_url, timeout=(3, self.timeout), allow_redirects=False)
+                        hdrs = _all_headers(r)
+                        hdrs_dict = {k.lower(): v for k, v in hdrs}
+                        body_low = (r.text or '').lower()
+                        if canary_name.lower() in hdrs_dict and canary_val in hdrs_dict[canary_name.lower()]:
+                            self._log('CRLF injection (response header injection)', test_url, 'High', payload=inj, response=r, extra={'param': param, 'injected_header': canary_name, 'value': canary_val})
+                            continue
+                        loc = r.headers.get('Location', '')
+                        if loc and canary_val in loc:
+                            self._log('CRLF injection (Location header poisoned)', test_url, 'High', payload=inj, response=r, extra={'param': param, 'location': loc})
+                            continue
+                        set_cookie_lines = [v for k, v in hdrs if k.lower() == 'set-cookie']
+                        if any((canary_name.lower() in v.lower() and canary_val in v for v in set_cookie_lines)):
+                            self._log('CRLF injection (Set-Cookie poisoned)', test_url, 'High', payload=inj, response=r, extra={'param': param, 'set_cookie': set_cookie_lines[:2]})
+                            continue
+                        if f'{canary_name.lower()}: {canary_val.lower()}' in body_low:
+                            self._log('CRLF header string reflected in body', test_url, 'Info', payload=inj, response=r, extra={'param': param})
+                            continue
+                    except Exception as e:
+                        sev = self.classify_transport_anomaly(endpoint, 'GET', e, 0.0)
+                        self._log('CRLF test failed', test_url, sev, extra={'error': str(e), 'param': param, 'payload': inj})
+        except Exception as e:
+            self._log('CRLF test setup failed', endpoint, 'Medium', extra={'error': str(e)})
 
 
-    #================funtion _test_header_manipulation description =============
+    #================ _test_hpp description ##########
+    def _test_hpp(self, endpoint: str) -> None:
+        if stop_requested.is_set():
+            return
+        try:
+            domain = urlparse.urlparse(endpoint).netloc or ''
+            try:
+                self._throttle(domain)
+                options_response = self.session.request('OPTIONS', endpoint, timeout=(2, 3), allow_redirects=False)
+                allowed_methods = {m.strip().upper() for m in options_response.headers.get('Allow', '').split(',') if m}
+                if 'GET' not in allowed_methods and options_response.status_code != 200:
+                    return
+            except Exception:
+                pass
+            for param in self.HPP_PARAMS:
+                url = f'{endpoint}?{param}=1&{param}=2'
+                try:
+                    self._throttle(domain)
+                    r = self.session.get(url, timeout=(3, self.timeout), allow_redirects=False)
+                    if r.status_code == 405:
+                        continue
+                    body = r.text or ''
+                    body_has_combo = '1,2' in body or ',1' in body
+                    param_reflected = any([f'{param}=1' in body and f'{param}=2' in body, f'{param}=1,2' in body, f'{param}=2,1' in body, f'{param}[]=1' in body and f'{param}[]=2' in body])
+                    if body_has_combo or param_reflected:
+                        severity = 'Medium' if r.status_code < 300 and (body_has_combo or param_reflected) else 'Info'
+                        self._log('HPP detected', url, severity, response=r, extra={'parameter': param})
+                except Exception as e:
+                    self._log('HPP test failed', url, 'Info', extra={'error': str(e)})
+        except Exception as e:
+            self._log('HPP test setup failed', endpoint, 'Info', extra={'error': str(e)})
+
+
+    #================ _test_sensitive_data_exposure description ##########
+    def _test_sensitive_data_exposure(self, endpoint: str) -> None:
+        if stop_requested.is_set():
+            return
+        try:
+            domain = urlparse.urlparse(endpoint).netloc or ''
+            self._throttle(domain)
+            url = f'{self.base_url}/api/v1/config' if endpoint == self.base_url else f'{endpoint}/api/v1/config'
+            r = self.session.get(url, timeout=(3, self.timeout))
+            if getattr(r, 'status_code', 0) >= 400:
+                return
+            content = (r.text or '').lower()
+            for term in ('password', 'secret', 'token', 'key', 'credential'):
+                if term in content:
+                    self._log('Sensitive data exposure', url, 'High', response=r)
+                    break
+        except Exception as e:
+            self._log('Sensitive data test failed', endpoint, 'Info', extra={'error': str(e), 'status_code': 0})
+
+
+    #================ _test_graphql_introspection description ##########
+    def _test_graphql_introspection(self, endpoint: str) -> None:
+        if stop_requested.is_set():
+            return
+        try:
+            domain = urlparse.urlparse(endpoint).netloc or ''
+            for path in ('/graphql', '/v1/graphql', '/api/graphql'):
+                url = f"{endpoint.rstrip('/')}{path}"
+                try:
+                    self._throttle(domain)
+                    r = self.session.post(url, json={'query': self.GRAPHQL_INTROSPECTION_QUERY}, timeout=(3, self.timeout))
+                    if r.status_code == 200 and '__schema' in (r.text or ''):
+                        self._log('GraphQL introspection enabled', endpoint, 'Medium', response=r)
+                        break
+                except Exception:
+                    continue
+        except Exception as e:
+            self._log('GraphQL test failed', endpoint, 'Info', extra={'error': str(e)})
+
+
+
+
+
+    #================ _test_header_manipulation description ##########
     def _test_header_manipulation(self, endpoint: str) -> None:
         if stop_requested.is_set():
             return
@@ -1261,13 +2131,15 @@ class SafeConsumptionAuditor:
             except Exception:
                 r0 = None
 
-            #================funtion _is_html description =============
+
+            #================ _is_html description ##########
             def _is_html(resp: requests.Response) -> bool:
                 ct = (resp.headers.get('Content-Type') or '').lower()
                 if 'text/html' in ct or 'application/xhtml+xml' in ct:
                     return True
                 head = (resp.text or '')[:200].lstrip().lower()
                 return head.startswith('<!doctype html') or head.startswith('<html')
+
             ADMIN_RE = re.compile('(?i)(?:<title>[^<]*admin[^<]*</title>|\\badmin\\s*panel\\b|href=["\\\']/admin[^"\\\']*)')
             for h, v in sec_headers.items():
                 if stop_requested.is_set():
@@ -1333,12 +2205,8 @@ class SafeConsumptionAuditor:
             self._log('Header manipulation test setup failed', endpoint, 'Medium', extra={'error': str(e)})
 
 
-    #================funtion _test_blind_sqli description =============
+    #================ _test_blind_sqli description ##########
     def _test_blind_sqli(self, endpoint: str) -> None:
-        """Blind SQLi (boolean + time-based) heuristic.
-
-        Does not require HTTP 200. Compares response signatures vs baseline.
-        """
         try:
             parsed = urlparse.urlparse(endpoint)
         except Exception:
@@ -1349,7 +2217,6 @@ class SafeConsumptionAuditor:
         if not domain:
             return
 
-
         from urllib.parse import parse_qsl, urlencode
 
         q_items = parse_qsl(parsed.query, keep_blank_values=True)
@@ -1357,10 +2224,10 @@ class SafeConsumptionAuditor:
         if q:
             keys = list(q.keys())[:3]
         else:
-
             keys = ["id", "q", "search"]
 
-        #================funtion _signature description =============
+
+        #================ _signature description ##########
         def _signature(resp) -> tuple:
             try:
                 body = self._safe_body(resp)
@@ -1369,10 +2236,8 @@ class SafeConsumptionAuditor:
             ct = (resp.headers.get("Content-Type", "") if getattr(resp, "headers", None) else "")
             return (getattr(resp, "status_code", 0), len(body or ""), ct.split(";", 1)[0].lower())
 
-
         true_p = "' OR 1=1--"
         false_p = "' OR 1=2--"
-
 
         time_payloads = [
             "' OR SLEEP(5)-- ",
@@ -1383,11 +2248,9 @@ class SafeConsumptionAuditor:
         ]
 
         for k in keys:
-
             q0 = dict(q) if q else {}
             q0[k] = q0.get(k, "1") or "1"
             u0 = base + "?" + urlencode(q0, doseq=True)
-
 
             qt = dict(q0); qt[k] = true_p
             qf = dict(q0); qf[k] = false_p
@@ -1402,14 +2265,12 @@ class SafeConsumptionAuditor:
                 self._throttle(domain)
                 rf = self.session.get(uf, timeout=(3, max(self.timeout, 10)), allow_redirects=False)
             except Exception as e:
-
                 self._log("Blind SQLi probe failed", base, "Info", extra={"error": str(e), "param": k})
                 continue
 
             s0 = _signature(r0)
             st = _signature(rt)
             sf = _signature(rf)
-
 
             len0, lent, lenf = s0[1], st[1], sf[1]
             maxlen = max(len0, lent, lenf, 1)
@@ -1474,18 +2335,992 @@ class SafeConsumptionAuditor:
                 except Exception:
                     pass
                 return
-
         return
 
-    #================funtion _is_injection_successful description =============
-    def _is_injection_successful(
-        self,
-        response: requests.Response,
-        attack_type: str,
-        *,
-        baseline_latency: float = 0.5,
-        payload: str = ''
-    ) -> bool:
+
+    #================ _dirtrav_success_indicators description ##########
+    def _dirtrav_success_indicators(body: str) -> bool:
+        if not body:
+            return False
+        signatures = [
+            "root:x:0:0",
+            "[extensions]",
+            "[fonts]",
+            "apache2",
+        ]
+        low = body.lower()
+        return any(sig.lower() in low for sig in signatures)
+
+
+
+    #================ _test_directory_traversal description ##########
+    def _test_directory_traversal(self, endpoint: str) -> None:
+        if stop_requested.is_set():
+            return
+        try:
+            parsed = urlparse.urlparse(endpoint)
+            domain = parsed.netloc or parsed.hostname or ''
+
+            repl_index = int(os.getenv('APISCAN_TRAV_REPLACE_INDEX', '-2'))
+            ins_before = int(os.getenv('APISCAN_TRAV_INSERT_BEFORE_INDEX', '-1'))
+            max_dot = int(os.getenv('APISCAN_TRAV_MAX_DOT', '3'))
+            max_ddot = int(os.getenv('APISCAN_TRAV_MAX_DDOT', '3'))
+            max_ellipsis = int(os.getenv('APISCAN_TRAV_MAX_ELLIPSIS', '2'))
+
+            base_resp = None
+            try:
+                self._throttle(domain)
+                base_resp = self.session.get(
+                    endpoint,
+                    headers={'X-APISCAN-Base': '1'},
+                    timeout=(3, getattr(self, 'timeout', 10)),
+                    allow_redirects=False,
+                )
+            except Exception:
+                base_resp = None
+
+            #================ _get_status description ##########
+            def _get_status(resp):
+                try:
+                    return int(getattr(resp, 'status_code', 0))
+                except Exception:
+                    return 0
+
+            login_tokens = ('login', 'signin', 'sign-in', 'logon', 'oauth2', 'aad', 'account', 'identity')
+            base_status = _get_status(base_resp) if base_resp is not None else 0
+            base_loc = (base_resp.headers.get('Location') or '').lower() if base_resp is not None else ''
+            base_body_low = (base_resp.text or '').lower() if base_resp is not None else ''
+
+            #================ is_protected_status description ##########
+            def is_protected_status(status: int, loc: str, body_low: str) -> bool:
+                if status in (401, 403):
+                    return True
+                if status in (301, 302, 307, 308) and any(t in loc for t in login_tokens):
+                    return True
+                if status in (200, 302) and any(t in body_low for t in login_tokens):
+                    return True
+                return False
+
+            baseline_protected = False
+            if base_resp is not None:
+                baseline_protected = is_protected_status(base_status, base_loc, base_body_low)
+
+            rep_variants = build_traversal_variants_segment_replace(
+                endpoint, repl_index, max_dot, max_ddot, max_ellipsis
+            )
+            ins_variants = build_traversal_variants_insert_between(
+                endpoint, ins_before, max_dot, max_ddot, max_ellipsis
+            )
+
+            if getattr(self, 'fast_mode', False):
+                rep_variants = rep_variants[:min(4, len(rep_variants))]
+                ins_variants = ins_variants[:min(4, len(ins_variants))]
+
+            extra = []
+            for v in (rep_variants + ins_variants):
+                pv = v if v.endswith('/') else v + '/'
+                extra.extend([
+                    pv + 'etc/passwd',
+                    pv + 'WEB-INF/web.xml',
+                    pv + 'windows/win.ini',
+                ])
+
+            strong_indicators = [
+                'root:x:0:0:', 'daemon:x:1:1:',
+                'index of /', '<title>index of',
+                'parent directory', 'directory listing for', 'directory of ',
+                '[extensions]', 'for 16-bit app support',
+            ]
+            weak_indicators = [
+                '/etc/passwd', 'bin:x:', 'boot.ini', ':\\windows\\', 'web-inf/web.xml',
+            ]
+
+            #================ is_likely_false_positive description ##########
+            def is_likely_false_positive(resp, body_text: str) -> bool:
+                if not resp:
+                    return False
+                ctype = (resp.headers.get('Content-Type') or '').lower()
+                if resp.status_code in (401, 403):
+                    low = (body_text or '').lower()
+                    if any(s in low for s in ('invalid token', 'unauthorized', 'authentication', 'crapiresponse')):
+                        return True
+                if 'application/json' in ctype and resp.status_code >= 400:
+                    return True
+                if ctype.startswith(('image/', 'video/', 'audio/')) or 'application/octet-stream' in ctype:
+                    return True
+                return False
+
+            #================ looks_interesting description ##########
+            def looks_interesting(text: str) -> tuple[bool, str]:
+                if not text:
+                    return (False, 'none')
+                low = text.lower()
+                for ind in strong_indicators:
+                    if ind in low:
+                        return (True, 'high')
+                weak_count = sum(1 for ind in weak_indicators if ind in low)
+                if weak_count >= 2:
+                    return (True, 'medium')
+                if weak_count == 1:
+                    import re as _re
+                    has_links = any(t in low for t in ('<a href="', '&lt;a href=', 'href="', '>./<', '>.</a>'))
+                    has_sizes = _re.search(r'\b\d+\s*(bytes?|kb|mb|gb)\b', low)
+                    if has_links or has_sizes:
+                        return (True, 'medium')
+                return (False, 'none')
+
+            use_dirtrav_pb = (
+                HAS_TQDM
+                and not getattr(self, 'no_tqdm', False)
+                and os.getenv('APISCAN_DIRTRAV_PROGRESS', '1') == '1'
+            )
+            dirtrav_pbar = None
+
+            #================ do_req description ##########
+            def do_req(url: str, label: str):
+                nonlocal dirtrav_pbar
+                if stop_requested.is_set():
+                    return
+                try:
+                    self._throttle(domain)
+                    r = self.session.get(
+                        url,
+                        headers={'X-APISCAN-DirTrav': label},
+                        timeout=(3, getattr(self, 'timeout', 10)),
+                        allow_redirects=False,
+                    )
+                    body = r.text or ''
+                    body_low = body.lower()
+                    loc = (r.headers.get('Location') or '')
+
+                    if baseline_protected:
+                        new_protected = is_protected_status(r.status_code, loc.lower(), body_low)
+                        if not new_protected and r.status_code == 200:
+                            self._log(
+                                'Possible access control bypass via path traversal',
+                                url,
+                                'High',
+                                payload=url,
+                                response=r,
+                                extra={
+                                    'vector': 'dirtrav-auth',
+                                    'base_endpoint': endpoint,
+                                    'baseline_status': base_status,
+                                    'baseline_location': base_loc,
+                                    'new_status': r.status_code,
+                                    'new_location': loc,
+                                    'label': label,
+                                    'confidence': 'high',
+                                },
+                            )
+                            return
+
+                    if is_likely_false_positive(r, body):
+                        return
+
+                    is_interesting, confidence = looks_interesting(body)
+                    ctype = (r.headers.get('Content-Type') or '').lower()
+                    is_binary = (
+                        ctype.startswith(('image/', 'video/', 'audio/'))
+                        or 'application/octet-stream' in ctype
+                    )
+                    if is_binary:
+                        return
+
+                    if r.status_code == 200 and is_interesting:
+                        sev = 'High' if confidence == 'high' else ('Medium' if confidence == 'medium' else 'Low')
+                        self._log(
+                            f'Directory traversal ({label}) [{r.status_code}]',
+                            url,
+                            sev,
+                            payload=url,
+                            response=r,
+                            extra={
+                                'vector': 'dirtrav',
+                                'base_endpoint': endpoint,
+                                'confidence': confidence,
+                            },
+                        )
+
+                    elif r.status_code in (301, 302, 307, 308):
+                        loc2 = loc
+                        if any(p in loc2 for p in ('./', '.\\', '%2e%2e', 'etc/passwd', 'web-inf')):
+                            self._log(
+                                f'Directory traversal ({label}) - suspicious redirect [{r.status_code}]',
+                                url,
+                                'Medium',
+                                payload=url,
+                                response=r,
+                                extra={
+                                    'vector': 'dirtrav',
+                                    'base_endpoint': endpoint,
+                                    'location': loc2,
+                                },
+                            )
+
+                    elif r.status_code in (401, 403) and is_interesting and confidence == 'high':
+                        self._log(
+                            f'Directory traversal ({label}) [{r.status_code}]',
+                            url,
+                            'Low',
+                            payload=url,
+                            response=r,
+                            extra={
+                                'vector': 'dirtrav',
+                                'base_endpoint': endpoint,
+                                'confidence': confidence,
+                            },
+                        )
+
+                except Exception as e:
+                    self._log(
+                        'Directory traversal request error',
+                        url,
+                        'Info',
+                        extra={'error': str(e), 'vector': 'dirtrav', 'base_endpoint': endpoint},
+                    )
+                finally:
+                    if dirtrav_pbar is not None:
+                        dirtrav_pbar.update(1)
+
+            variants = [('segment replace', u) for u in rep_variants] + [('segment insert', u) for u in ins_variants]
+            variants += [('suffix', u) for u in extra]
+
+            seen = set()
+            filtered: list[tuple[str, str]] = []
+            orig_path = urlparse.urlsplit(endpoint).path
+            for label, u in variants:
+                vp = urlparse.urlsplit(u).path
+                key = (label, vp)
+                if vp != orig_path and key not in seen:
+                    filtered.append((label, u))
+                    seen.add(key)
+
+            variant_count = len(filtered)
+            if variant_count == 0:
+                return
+
+            if use_dirtrav_pb:
+                try:
+                    desc = f"DirTrav {endpoint}"
+                    if len(desc) > 60:
+                        desc = desc[:57] + "..."
+                    dirtrav_pbar = tqdm(
+                        total=variant_count,
+                        desc=desc,
+                        unit="req",
+                        ncols=80,
+                        mininterval=0.1,
+                        leave=False,
+                    )
+                except Exception:
+                    dirtrav_pbar = None
+
+            raw_env = os.getenv('APISCAN_DIRTRAV_WORKERS')
+            try:
+                total_endpoints = int(getattr(self, 'total_endpoints', 0) or len(getattr(self, 'endpoints', [])))
+            except Exception:
+                total_endpoints = 0
+
+            per_host_cap = int(getattr(self, 'per_host_max_concurrency', 4))
+            global_cap = max(1, int(getattr(self, 'max_workers', 8)))
+
+            if raw_env is not None:
+                dirtrav_cap = max(1, int(raw_env))
+                source = 'env'
+            else:
+                if total_endpoints and total_endpoints <= 10:
+                    dirtrav_cap = min(8, global_cap // 2 or 1, per_host_cap * 2)
+                else:
+                    dirtrav_cap = min(4, max(1, global_cap // 4), per_host_cap)
+                dirtrav_cap = max(1, dirtrav_cap)
+                source = 'auto'
+
+            workers = min(variant_count, dirtrav_cap)
+            workers = max(1, workers)
+
+            try:
+                self._log(
+                    'DirTrav worker selection',
+                    endpoint,
+                    'Info',
+                    extra={
+                        'source': source,
+                        'dirtrav_cap': dirtrav_cap,
+                        'workers': workers,
+                        'total_endpoints': total_endpoints,
+                        'variant_count': variant_count,
+                        'per_host_cap': per_host_cap,
+                        'global_cap': global_cap,
+                    },
+                )
+            except Exception:
+                pass
+
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+                    futures = []
+                    for label, u in filtered:
+                        if stop_requested.is_set():
+                            break
+                        futures.append(executor.submit(do_req, u, label))
+                    for f in concurrent.futures.as_completed(futures):
+                        try:
+                            f.result()
+                        except Exception:
+                            pass
+            finally:
+                if dirtrav_pbar is not None:
+                    dirtrav_pbar.close()
+
+        except Exception as e:
+            self._log(
+                'Directory traversal test setup failed',
+                endpoint,
+                'Info',
+                extra={'error': str(e), 'vector': 'dirtrav', 'base_endpoint': endpoint},
+            )
+
+
+    #================ _test_directory_traversal_body description ##########
+    def _test_directory_traversal_body(self, endpoint: str) -> None:
+        if stop_requested.is_set():
+            return
+        try:
+            parsed = urlparse.urlparse(endpoint)
+            domain = parsed.netloc or parsed.hostname or ''
+            vectors: list[tuple[str, Any, str]] = []
+
+            allowed = set()
+            try:
+                self._throttle(domain)
+                opt = self.session.request(
+                    'OPTIONS',
+                    endpoint,
+                    timeout=(2, 3),
+                    allow_redirects=False,
+                )
+                allowed = {m.strip().upper() for m in (opt.headers.get('Allow') or '').split(',') if m}
+            except Exception:
+                pass
+
+            cand_methods = ['POST', 'PUT', 'PATCH']
+            if allowed:
+                c2 = [m for m in cand_methods if m in allowed]
+                cand_methods = c2 or cand_methods
+
+            base_json = {'path': '/tmp/a', 'file': 'a.txt', 'name': 'x'}
+            vectors += self._body_candidates_json(base_json)
+
+            base_form = {'path': '/tmp/a', 'file': 'a.txt'}
+            vectors += self._body_candidates_form(base_form)
+
+            vectors += self._body_candidates_multipart()
+
+            if getattr(self, 'fast_mode', False):
+                vectors = vectors[:16]
+
+            use_dirtrav_pb = (
+                HAS_TQDM
+                and not getattr(self, 'no_tqdm', False)
+                and os.getenv('APISCAN_DIRTRAV_PROGRESS', '1') == '1'
+            )
+            dirtrav_pbar = None
+
+            #================ do_req description ##########
+            def do_req(entry):
+                nonlocal dirtrav_pbar
+                if stop_requested.is_set():
+                    return
+                ctype, payload, label = entry
+                try:
+                    self._throttle(domain)
+                except Exception:
+                    pass
+
+                hdrs = dict(getattr(self.session, 'headers', {}))
+                hdrs['X-APISCAN-Payload'] = f'body:{label}'
+                self._last_payload = f'body:{label}'
+
+                m = cand_methods[0] if cand_methods else 'POST'
+
+                try:
+                    if ctype == 'application/json':
+                        r = self.session.request(
+                            m,
+                            endpoint,
+                            headers={**hdrs, 'Content-Type': 'application/json'},
+                            data=payload,
+                            timeout=(3, getattr(self, 'timeout', 10)),
+                            allow_redirects=False,
+                        )
+                    elif ctype == 'application/x-www-form-urlencoded':
+                        r = self.session.request(
+                            m,
+                            endpoint,
+                            headers=hdrs,
+                            data=payload,
+                            timeout=(3, getattr(self, 'timeout', 10)),
+                            allow_redirects=False,
+                        )
+                    else:
+                        data, files = payload
+                        r = self.session.request(
+                            m,
+                            endpoint,
+                            headers=hdrs,
+                            data=data,
+                            files=files,
+                            timeout=(3, getattr(self, 'timeout', 10)),
+                            allow_redirects=False,
+                        )
+                except Exception as e:
+                    self._log(
+                        'Directory traversal (body) request error',
+                        endpoint,
+                        'Info',
+                        extra={'error': str(e), 'vector': 'dirtrav-body', 'label': label},
+                    )
+                    return
+                finally:
+                    if dirtrav_pbar is not None:
+                        dirtrav_pbar.update(1)
+
+                body_text = r.text or ''
+                if self._likely_fp_body(r, body_text):
+                    return
+
+                interesting, conf = self._looks_interesting_body(body_text)
+                if interesting:
+                    self._classify_and_log_body(endpoint, label, r, body_text, conf)
+
+            vector_count = len(vectors)
+            if vector_count == 0:
+                return
+
+            if use_dirtrav_pb:
+                try:
+                    desc = f"DirTrav body {endpoint}"
+                    if len(desc) > 60:
+                        desc = desc[:57] + "..."
+                    dirtrav_pbar = tqdm(
+                        total=vector_count,
+                        desc=desc,
+                        unit="req",
+                        ncols=80,
+                        mininterval=0.1,
+                        leave=False,
+                    )
+                except Exception:
+                    dirtrav_pbar = None
+
+            raw_env = os.getenv('APISCAN_DIRTRAV_WORKERS')
+            try:
+                total_endpoints = int(getattr(self, 'total_endpoints', 0) or len(getattr(self, 'endpoints', [])))
+            except Exception:
+                total_endpoints = 0
+
+            per_host_cap = int(getattr(self, 'per_host_max_concurrency', 4))
+            global_cap = max(1, int(getattr(self, 'max_workers', 8)))
+
+            if raw_env is not None:
+                dirtrav_cap = max(1, int(raw_env))
+                source = 'env'
+            else:
+                if total_endpoints and total_endpoints <= 10:
+                    dirtrav_cap = min(8, global_cap // 2 or 1, per_host_cap * 2)
+                else:
+                    dirtrav_cap = min(4, max(1, global_cap // 4), per_host_cap)
+                dirtrav_cap = max(1, dirtrav_cap)
+                source = 'auto'
+
+            workers = min(vector_count, dirtrav_cap)
+            workers = max(1, workers)
+
+            try:
+                self._log(
+                    'DirTrav body worker selection',
+                    endpoint,
+                    'Info',
+                    extra={
+                        'source': source,
+                        'dirtrav_cap': dirtrav_cap,
+                        'workers': workers,
+                        'total_endpoints': total_endpoints,
+                        'vector_count': vector_count,
+                        'per_host_cap': per_host_cap,
+                        'global_cap': global_cap,
+                    },
+                )
+            except Exception:
+                pass
+
+            import concurrent.futures as _cf
+            try:
+                with _cf.ThreadPoolExecutor(max_workers=workers) as ex:
+                    futs = []
+                    for v in vectors:
+                        if stop_requested.is_set():
+                            break
+                        futs.append(ex.submit(do_req, v))
+                    for f in _cf.as_completed(futs):
+                        try:
+                            f.result()
+                        except Exception:
+                            pass
+            finally:
+                if dirtrav_pbar is not None:
+                    dirtrav_pbar.close()
+
+        except Exception as e:
+            self._log(
+                'Directory traversal (body) setup failed',
+                endpoint,
+                'Info',
+                extra={'error': str(e), 'vector': 'dirtrav-body', 'base_endpoint': endpoint},
+            )
+
+
+    #================ _looks_interesting_body description ##########
+    def _looks_interesting_body(self, text: str) -> tuple[bool, str]:
+        if not text: return (False, 'none')
+        low = text.lower()
+        strong = (
+            'root:x:0:0:', 'daemon:x:1:1:', 'index of /', '<title>index of',
+            'parent directory', 'directory listing for', 'directory of ',
+            '[extensions]', 'for 16-bit app support'
+        )
+        weak = ('/etc/passwd', 'bin:x:', 'boot.ini', ':\\windows\\', 'web-inf/web.xml')
+        for s in strong:
+            if s in low: return (True, 'high')
+        import re as _re
+        wc = sum(1 for w in weak if w in low)
+        if wc >= 2: return (True, 'medium')
+        if wc == 1:
+            has_links = any(t in low for t in ('<a href="','&lt;a href=','href="','>../<','>..</a>'))
+            has_sizes = _re.search(r'\b\d+\s*(bytes?|kb|mb|gb)\b', low)
+            if has_links or has_sizes: return (True, 'medium')
+        return (False, 'none')
+
+
+    #================ _likely_fp_body description ##########
+    def _likely_fp_body(self, resp, body_text: str) -> bool:
+        if not resp: return False
+        ctype = (resp.headers.get('Content-Type') or '').lower()
+        low = (body_text or '').lower()
+        if resp.status_code in (401,403) and any(t in low for t in ('invalid token','unauthorized','authentication','forbidden')):
+            return True
+        if 'application/json' in ctype and resp.status_code >= 400:
+            return True
+        if ctype.startswith(('image/','video/','audio/')) or 'application/octet-stream' in ctype:
+            return True
+        return False
+
+
+    #================ _body_candidates_json description ##########
+    def _body_candidates_json(self, base_obj: dict):
+        out = []
+        vecs = self._dirtrav_body_vectors()
+        keys = list(base_obj.keys())
+        target_keys = [k for k in keys if k.lower() in self._PATH_FIELD_CANDIDATES or any(p in k.lower() for p in self._PATH_FIELD_CANDIDATES)]
+        if not target_keys: target_keys = keys
+        cap = 6
+        import json as _json
+        for k in target_keys[:6]:
+            for v in vecs[:cap]:
+                obj = dict(base_obj); obj[k] = v
+                out.append(('application/json', _json.dumps(obj).encode('utf-8'), f'json:{k}'))
+        return out[:24]
+
+
+    #================ _body_candidates_form description ##########
+    def _body_candidates_form(self, base_map: dict):
+        out = []
+        vecs = self._dirtrav_body_vectors()
+        keys = list(base_map.keys())
+        target = [k for k in keys if k.lower() in self._PATH_FIELD_CANDIDATES or any(p in k.lower() for p in self._PATH_FIELD_CANDIDATES)]
+        if not target: target = keys
+        cap = 6
+        for k in target[:6]:
+            for v in vecs[:cap]:
+                m = dict(base_map); m[k] = v
+                out.append(('application/x-www-form-urlencoded', m, f'form:{k}'))
+        return out[:24]
+
+
+    #================ _body_candidates_multipart description ##########
+    def _body_candidates_multipart(self):
+        out = []
+        vecs = self._dirtrav_body_vectors()
+        for v in vecs[:8]:
+            files = {'file': (v, io.BytesIO(b'test'), 'application/octet-stream')}
+            data = {'path': v}
+            out.append(('multipart/form-data', (data, files), f'multipart:filename'))
+        return out
+
+
+
+    #================ _is_generic_400_parser_error description ##########
+    def _is_generic_400_parser_error(self, r: requests.Response) -> bool:
+        if not r or r.status_code != 400:
+            return False
+
+        ctype = (r.headers.get('Content-Type') or '').lower()
+        body = (r.text or '').lower()
+        server = (r.headers.get('Server') or '').lower()
+
+        if 'text/html' not in ctype and not body.startswith('<html'):
+            return False
+
+        if '<h1>400 bad request</h1>' in body or '<title>400 bad request</title>' in body:
+            return True
+
+        if any(x in server for x in ('openresty', 'nginx', 'haproxy', 'varnish')):
+            return True
+
+        return False
+
+
+    #================ _classify_and_log_body description ##########
+    def _classify_and_log_body(self, endpoint, label, r, body_text, confidence):
+        ctype = (r.headers.get('Content-Type') or '').lower()
+        is_binary = ctype.startswith(('image/', 'video/', 'audio/')) or 'application/octet-stream' in ctype
+        if is_binary:
+            return
+
+        if r.status_code == 200:
+            sev = 'High' if confidence == 'high' else ('Medium' if confidence == 'medium' else 'Low')
+            self._log(
+                f'Directory traversal (body:{label}) [{r.status_code}]',
+                endpoint,
+                sev,
+                payload=getattr(self, '_last_payload', f'body:{label}'),
+                response=r,
+                extra={'vector': 'dirtrav-body', 'confidence': confidence}
+            )
+            return
+
+        if r.status_code in (301, 302, 307, 308):
+            loc = (r.headers.get('Location') or '').lower()
+            traversal_tokens = (
+                "../", "..\\",
+                "%2e%2e", "%2e%2e%2f", "%2e%2e%5c",
+                "..%2f", "..%5c",
+                "%2f..", "%5c..",
+                "%252e%252e", "%252e%252e%252f", "%252e%252e%255c",
+            )
+
+            if any(t in loc for t in traversal_tokens):
+                self._log(
+                    f'Directory traversal (body:{label}) - suspicious redirect [{r.status_code}]',
+                    endpoint,
+                    'Medium',
+                    payload=getattr(self, '_last_payload', f'body:{label}'),
+                    response=r,
+                    extra={'vector': 'dirtrav-body', 'location': loc}
+                )
+            return
+
+        if r.status_code in (401, 403) and confidence == 'high':
+            self._log(
+                f'Directory traversal (body:{label}) [{r.status_code}]',
+                endpoint,
+                'Low',
+                payload=getattr(self, '_last_payload', f'body:{label}'),
+                response=r,
+                extra={'vector': 'dirtrav-body', 'confidence': confidence}
+            )
+            return
+
+
+    #================ _run_injection_tests_parallel description ##########
+    def _run_injection_tests_parallel(self, endpoint, test_type: str) -> None:
+        if stop_requested.is_set():
+            return
+        payloads = list(self.INJECTION_PAYLOADS[test_type])
+        if self.fast_mode and len(payloads) > self.triage_payloads_per_type:
+            payloads = payloads[:self.triage_payloads_per_type]
+
+        if isinstance(endpoint, tuple) and len(endpoint) == 2:
+            base_endpoint, preferred_method = endpoint[0], endpoint[1]
+        else:
+            base_endpoint, preferred_method = endpoint, 'auto'
+
+        test_urls: List[Tuple[str, str, str]] = []
+        for p in payloads:
+            if stop_requested.is_set():
+                return
+            method_preference = preferred_method if preferred_method and preferred_method != 'AUTO' else ('POST' if '/posts' in base_endpoint else 'auto')
+            test_url = f'{base_endpoint}?input={urlparse.quote(p)}'
+            test_urls.append((test_url, method_preference, p))
+            test_urls.append((base_endpoint.replace('%7BpostId%7D', urlparse.quote_plus(p)), 'GET', p))
+
+        workers = min(8, max(1, len(test_urls)))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            if stop_requested.is_set():
+                return
+            futures = []
+            for test_url, method, payload in test_urls:
+                if stop_requested.is_set():
+                    break
+                futures.append(executor.submit(self._test_injection, test_url, test_type, method=method, payload=payload))
+            for future in concurrent.futures.as_completed(futures):
+                if stop_requested.is_set():
+                    for f in futures:
+                        f.cancel()
+                    return
+                try:
+                    future.result()
+                except Exception:
+                    pass
+
+
+    #================ _test_injection description ##########
+    def _test_injection(self, test_url: str | tuple, attack_type: str, *, method: str = 'auto', payload: str | None = None) -> None:
+        if stop_requested.is_set():
+            return
+
+        if isinstance(test_url, tuple) and len(test_url) == 2:
+            test_url, method = test_url[0], test_url[1] or method
+
+        defaults = {
+            'sql': "' OR 1=1--",
+            'nosql': '{"$ne": "invalid"}',
+            'xss': '<script>alert(1)</script>',
+            'lfi': '../../etc/passwd',
+            'rce': '$(reboot)',
+            'header': 'X-Injected: header',
+            'hpp': 'id=1&id=2',
+            'graphql': '__schema'
+        }
+        p = payload or defaults.get(attack_type, '1')
+
+        parsed = urlparse.urlparse(test_url)
+        domain = parsed.netloc or parsed.hostname or ''
+        base = test_url.split('?', 1)[0]
+
+        param_candidates = [
+            'q', 'query', 'search', 'id', 'user', 'username', 'email', 'name',
+            'term', 's', 'page', 'limit', 'offset', 'code', 'token', 'redirect', 'next', 'return', 'ref'
+        ]
+
+        allowed = set()
+        try:
+            self._throttle(domain)
+            try:
+                opt = self.session.request('OPTIONS', base, timeout=(2, 3), allow_redirects=False)
+                allow_hdr = opt.headers.get('Allow') or opt.headers.get('allow') or ''
+                allowed = {m.strip().upper() for m in allow_hdr.split(',') if m.strip()}
+            except Exception:
+                allowed = set()
+        except Exception:
+            allowed = set()
+
+        if method == 'auto' and allowed:
+            for cand in ('POST', 'PUT', 'PATCH', 'GET'):
+                if cand in allowed:
+                    method = cand
+                    break
+
+        tried_any = False
+        try:
+            fast = getattr(self, 'fast_mode', False) or os.environ.get('APISCAN_FAST') == '1'
+            max_per_type = getattr(self, 'triage_payloads_per_type', 6)
+
+            if method in ('auto', 'GET'):
+                tried_any = True
+                if parsed.query:
+                    from urllib.parse import parse_qsl, urlencode
+                    q = dict(parse_qsl(parsed.query, keep_blank_values=True))
+                    keys = list(q.keys())[:5]
+                    for k in keys:
+                        old = q.get(k)
+                        q[k] = p
+                        attack_q = urlencode(q, doseq=True)
+                        attack_url = base + '?' + attack_q
+
+                        try:
+                            self._throttle(domain)
+                            r = self.session.get(attack_url, timeout=(3, self.timeout), allow_redirects=False)
+
+
+                            if r.status_code == 400:
+                                server_header = r.headers.get('Server', '').lower()
+                                body_low = (r.text or '').lower()
+
+                                waf_detected = False
+                                waf_name = "Unknown"
+
+                                if 'openresty' in server_header:
+                                    waf_detected = True
+                                    waf_name = "OpenResty (nginx-based WAF)"
+                                elif 'cloudflare' in server_header or 'cloudflare' in body_low:
+                                    waf_detected = True
+                                    waf_name = "Cloudflare WAF"
+                                elif 'akamai' in server_header or 'akamai' in body_low:
+                                    waf_detected = True
+                                    waf_name = "Akamai"
+                                elif any(marker in body_low for marker in ['mod_security', 'modsecurity']):
+                                    waf_detected = True
+                                    waf_name = "ModSecurity"
+
+                                if waf_detected:
+                                    self._log(
+                                        f'WAF detected: {waf_name} - Blocked {attack_type.upper()} attempt',
+                                        attack_url,
+                                        'Low',
+                                        payload=p[:100],
+                                        response=r,
+                                        extra={
+                                            'waf': waf_name,
+                                            'attack_type': attack_type,
+                                            'parameter': k,
+                                            'note': 'Injection attempt blocked by WAF'
+                                        }
+                                    )
+                                elif 'bad request' in body_low:
+
+                                    self._log(
+                                        f'Strict input validation - {attack_type.upper()} blocked (400)',
+                                        attack_url,
+                                        'Low',
+                                        payload=p[:100],
+                                        response=r,
+                                        extra={
+                                            'attack_type': attack_type,
+                                            'parameter': k,
+                                            'server': server_header,
+                                            'note': 'Request rejected with 400 Bad Request'
+                                        }
+                                    )
+
+
+                            if self._is_injection_successful(r, attack_type, payload=p):
+                                self._log(f'Possible {attack_type.upper()} injection', attack_url, 'Critical', payload=p, response=r)
+                                return
+                        except Exception as req_err:
+                            self._log('Request failed during injection test', attack_url, 'Info',
+                                    extra={'error': str(req_err), 'type': attack_type})
+                        finally:
+                            q[k] = old
+
+                candidates = param_candidates[:5] if not fast else param_candidates[:3]
+                for k in candidates:
+                    attack_url = f'{base}?{k}={urlparse.quote_plus(p)}'
+                    try:
+                        self._throttle(domain)
+                        r = self.session.get(attack_url, timeout=(3, self.timeout), allow_redirects=False)
+
+
+                        if r.status_code == 400:
+                            server_header = r.headers.get('Server', '').lower()
+                            body_low = (r.text or '').lower()
+
+                            if 'openresty' in server_header or 'bad request' in body_low:
+                                self._log(
+                                    f'Input filtering detected - {attack_type.upper()} blocked',
+                                    attack_url,
+                                    'Low',
+                                    payload=p[:100],
+                                    response=r,
+                                    extra={
+                                        'attack_type': attack_type,
+                                        'parameter': k,
+                                        'server': server_header,
+                                        'note': '400 Bad Request on suspicious input'
+                                    }
+                                )
+
+
+                        if self._is_injection_successful(r, attack_type, payload=p):
+                            self._log(f'Possible {attack_type.upper()} injection', attack_url, 'Critical', payload=p, response=r)
+                            return
+                    except Exception as req_err:
+                        self._log('Request failed during injection test', attack_url, 'Info',
+                                extra={'error': str(req_err), 'type': attack_type})
+
+            post_allowed = ('POST' in allowed) or (method in ('auto', 'POST')) or (not allowed)
+            if allowed and 'POST' not in allowed and method not in ('POST', 'PUT', 'PATCH'):
+                post_allowed = False
+
+            if post_allowed:
+                tried_any = True
+                form_keys = param_candidates[:6] if not fast else param_candidates[:3]
+                form_body = {k: p for k in form_keys}
+
+                try:
+                    self._throttle(domain)
+                    r = self.session.post(base, data=form_body, timeout=(3, max(self.timeout, 10)), allow_redirects=False)
+
+
+                    if r.status_code == 400:
+                        server_header = r.headers.get('Server', '').lower()
+                        body_low = (r.text or '').lower()
+
+                        if 'openresty' in server_header or 'bad request' in body_low:
+                            self._log(
+                                f'POST input filtering detected - {attack_type.upper()} blocked',
+                                base + ' (POST)',
+                                'Low',
+                                payload=p[:100],
+                                response=r,
+                                extra={
+                                    'attack_type': attack_type,
+                                    'method': 'POST',
+                                    'server': server_header,
+                                    'note': '400 Bad Request on POST with suspicious input'
+                                }
+                            )
+
+
+                    if self._is_injection_successful(r, attack_type, payload=p):
+                        self._log(f'Possible {attack_type.upper()} injection', base + ' (form)', 'Critical', payload=p, response=r)
+                        return
+                except Exception as req_err:
+                    self._log('POST injection test failed', base, 'Info',
+                            extra={'error': str(req_err), 'type': attack_type})
+
+            if '%7B' in test_url.lower() and '%7D' in test_url.lower():
+                attack_url = re.sub(r'%7B[^%]+%7D', urlparse.quote_plus(p), test_url, count=1, flags=re.I)
+                try:
+                    self._throttle(domain)
+                    r = self.session.get(attack_url, timeout=(3, self.timeout), allow_redirects=False)
+
+
+                    if r.status_code == 400:
+                        server_header = r.headers.get('Server', '').lower()
+                        body_low = (r.text or '').lower()
+
+                        if 'openresty' in server_header or 'bad request' in body_low:
+                            self._log(
+                                f'Template parameter filtering - {attack_type.upper()} blocked',
+                                attack_url,
+                                'Low',
+                                payload=p[:100],
+                                response=r,
+                                extra={
+                                    'attack_type': attack_type,
+                                    'server': server_header,
+                                    'note': '400 Bad Request on template parameter injection'
+                                }
+                            )
+
+
+                    if self._is_injection_successful(r, attack_type, payload=p):
+                        self._log(f'Possible {attack_type.upper()} injection', attack_url, 'Critical', payload=p, response=r)
+                        return
+                except Exception as req_err:
+                    self._log('Template injection test failed', attack_url, 'Info',
+                            extra={'error': str(req_err), 'type': attack_type})
+
+            if not tried_any:
+                self._log('Injection test skipped (no method)', test_url, 'Info')
+        except Exception as exc:
+            self._log('Injection test failed', test_url, 'Info', extra={'error': str(exc), 'type': attack_type})
+
+
+    #================ _is_injection_successful description ##########
+    def _is_injection_successful(self, response: requests.Response, attack_type: str, *, baseline_latency: float = 0.5, payload: str = '') -> bool:
         if response is None:
             return False
 
@@ -1498,47 +3333,53 @@ class SafeConsumptionAuditor:
         low = text.lower()
 
 
-        if status in {400, 422} and self._is_parse_error(response):
+        server_header = response.headers.get('Server', '').lower()
+
+        if status == 400 and 'openresty' in server_header and 'bad request' in low:
+
             return False
 
+
+        if status in [403, 406, 429, 400] and any(waf_indicator in low for waf_indicator in [
+            'access denied', 'request blocked', 'forbidden',
+            'security violation', 'mod_security', 'cloudflare'
+        ]):
+
+            return False
+
+
+        if status in {400, 422} and self._is_parse_error(response):
+            return False
 
         if attack_type == 'nosql':
             if any(p in low for p in self.NOSQL_NEGATIVE_PATTERNS):
                 return False
 
-
         if attack_type == 'sql':
-            if self._has_sql_evidence(text):
+            if self._has_sql_evidence_improved(text):
                 return True
             try:
                 elapsed = response.elapsed.total_seconds() if response.elapsed else 0.0
             except Exception:
                 elapsed = 0.0
-
-
             return False
-
 
         if status >= 500:
             if attack_type == 'nosql':
-
                 return any((k in low for k in self.NOSQL_ERROR_KEYWORDS)) or self._has_engine_marker(low, 'nosql')
             if attack_type in {'ssti', 'ldap', 'xxe'}:
                 return self._has_engine_marker(low, attack_type)
             return False
-
 
         if attack_type == 'nosql':
             specific = any((re.search(p, low) for p in ('mongo.*error', 'mongodb.*error', 'bson.*error')))
             keywords = any((k in low for k in self.NOSQL_ERROR_KEYWORDS))
             return specific or keywords or self._has_engine_marker(low, 'nosql')
 
-
         if attack_type == 'xss':
             if not payload or payload.lower() not in low:
                 return False
             return any((s in text for s in (f'="{payload}"', f'>{payload}<', f"'{payload}'", f'`{payload}`'))) or self._is_payload_reflected(text, payload)
-
 
         if attack_type == 'xxe':
             ctype = (response.headers.get('Content-Type') or '').lower()
@@ -1568,18 +3409,138 @@ class SafeConsumptionAuditor:
 
         return False
 
+    #================ _has_engine_marker description ##########
+    def _has_engine_marker(self, text: str, attack_type: str) -> bool:
+        t = text.lower()
+        if attack_type == 'sql':
+            return any((k in t for k in self.SQL_ENGINE_MARKERS | self.STACKTRACE_MARKERS))
+        if attack_type == 'nosql':
+            return any((k in t for k in self.NOSQL_ENGINE_MARKERS | self.STACKTRACE_MARKERS))
+        if attack_type == 'ssti':
+            return any((k in t for k in self.SSTI_MARKERS | self.STACKTRACE_MARKERS))
+        if attack_type == 'ldap':
+            return any((k in t for k in self.LDAP_ERROR_KEYWORDS | self.STACKTRACE_MARKERS))
+        if attack_type == 'xxe':
+            return any((k in t for k in self.XXE_ERROR_KEYWORDS | self.STACKTRACE_MARKERS))
+        return False
 
-    #================funtion _is_false_positive description =============
-    def _is_false_positive(self, response: requests.Response) -> bool:
-        content = (response.text or '').lower()
-        false_positive_indicators = ['cloudflare', 'akamai', 'waf', 'firewall', 'access denied', 'forbidden', 'security policy', 'page not found', 'error occurred', 'try again', 'not found', 'invalid request', 'bad request']
-        waf_patterns = ('cloudflare', 'akamaighost', 'imperva', 'barracuda', 'fortinet')
-        has_fp_indicator = any((indicator in content for indicator in false_positive_indicators))
-        has_waf_pattern = any((re.search(pattern, content) for pattern in waf_patterns))
-        return has_fp_indicator or has_waf_pattern
+    SQL_ENGINE_MARKERS = {'sqlsyntaxerror', 'psql:', 'psycopg2', 'org.hibernate', 'mysql server version', 'sqlite error', 'sqlserverexception', 'odbc sql', 'syntax error at or near', 'unclosed quotation mark', 'ora-', 'pls-', 'ora-00933', 'ora-01756'}
+    NOSQL_ENGINE_MARKERS = {'mongoerror', 'bson', 'cast to objectid', 'pymongo.errors', 'elasticsearch_exception'}
+    SSTI_MARKERS = {'jinja2.exceptions', 'freemarker.core', 'mustache', 'thymeleaf'}
+    LDAP_ERROR_KEYWORDS = {'ldaperror', 'invalid dn', 'bad search filter', 'unbalanced parenthesis', 'javax.naming.directory'}
+    XXE_ERROR_KEYWORDS = {'entity not defined', 'saxparseexception', 'xerces', 'external entity', 'disallow-doctype', 'dtd is prohibited', 'doctype is not allowed'}
+    STACKTRACE_MARKERS = {'traceback (most recent call last)', 'java.lang.', 'nullpointerexception', 'indexerror', 'keyerror'}
+    JSON_PARSE_ERRORS = {'invalid character', 'unexpected token', 'json parse error', 'malformed json', 'no json object could be decoded', 'cannot deserialize instance of', 'body contains invalid json'}
+    WAF_PATTERNS = {'access denied', 'request blocked', 'akamai ghost', 'mod_security', 'cloudflare', 'your request was blocked', 'bot protection', 'forbidden by rule'}
+    IGNORE_NETWORK_TIMEOUTS = True
+    NETWORK_TIMEOUT_PATTERNS = ('httpconnectionpool', 'read timed out', 'connect timeout', 'connecttimeout', 'write timeout', 'newconnectionerror', 'failed to establish a new connection', 'max retries exceeded', 'temporarily unavailable')
+    GENERIC_4XX = {400, 401, 403, 404, 405, 406, 409, 415, 422, 429}
 
 
-    #================funtion _detect_server_errors description =============
+    #================ _is_parse_error description ##########
+    def _is_parse_error(self, response: requests.Response) -> bool:
+        try:
+            ctype = (response.headers.get('Content-Type') or '').lower()
+        except Exception:
+            ctype = ''
+        body = (response.text or '').lower()
+        return any((p in body for p in self.JSON_PARSE_ERRORS)) or ('application/json' in ctype and response.status_code == 400)
+
+
+    #================ _looks_like_waf description ##########
+    def _looks_like_waf(self, response: requests.Response) -> bool:
+        body = (response.text or '').lower()
+        return response.status_code in {403, 406, 429} or any((p in body for p in self.WAF_PATTERNS))
+
+
+    #================ _is_generic_400_bad_request description ##########
+    def _is_generic_400_bad_request(self, r: requests.Response) -> bool:
+        try:
+            if getattr(r, "status_code", 0) != 400:
+                return False
+
+            server = (r.headers.get("Server") or "").lower()
+            ctype = (r.headers.get("Content-Type") or "").lower()
+            body = (r.text or "").strip().lower()
+
+
+            if "text/html" not in ctype and not body.startswith("<html"):
+                return False
+
+            if len(body) > 4096:
+                return False
+
+
+            markers = (
+                "<title>400 bad request</title>",
+                "<h1>400 bad request</h1>",
+            )
+            if not any(m in body[:1200] for m in markers):
+                return False
+
+
+            if "openresty" in server or "nginx" in server:
+                return True
+            if "openresty/" in body or "nginx/" in body:
+                return True
+
+            return False
+        except Exception:
+            return False
+
+
+    #================ _is_generic_html_error description ##########
+    def _is_generic_html_error(self, response) -> bool:
+        try:
+            status = int(getattr(response, 'status_code', 0))
+        except Exception:
+            status = 0
+        try:
+            ctype = (response.headers.get('Content-Type') or '').lower()
+        except Exception:
+            ctype = ''
+        body = getattr(response, 'text', '') or ''
+        head = body.strip()[:200].lower()
+        title_low = ''
+        try:
+            import re as _re
+            m = _re.search('<title>([^<]+)</title>', body, _re.I)
+            title_low = (m.group(1) if m else '').strip().lower()
+        except Exception:
+            title_low = ''
+        looks_html = 'text/html' in ctype or head.startswith('<!doctype html') or head.startswith('<html')
+        looks_error = 'error' in title_low or 'server error' in head or 'internal server error' in head
+        return status >= 500 and looks_html and looks_error
+
+
+    #================ _payload_reflected description ##########
+    def _payload_reflected(self, payload: str, response_text: str) -> bool:
+        if not payload:
+            return False
+        t = (response_text or '').lower()
+        from urllib.parse import quote
+        variants = {payload.lower(), quote(payload).lower(), quote(payload, safe='').lower()}
+        return any((v in t for v in variants))
+
+
+    #================ _is_payload_reflected description ##########
+    def _is_payload_reflected(self, text: str, payload: str) -> bool:
+        if not payload or not text:
+            return False
+        return payload.lower() in text.lower()
+
+
+    #================ classify_transport_anomaly description ##########
+    def classify_transport_anomaly(self, url: str, method: str, exc: Exception | None, elapsed: float) -> str:
+        e = (str(exc) if exc else '').lower()
+        if 'hpe_invalid' in e or 'invalid chunk size' in e or 'http/1.1 400 bad request' in e:
+            return 'Medium'
+        if elapsed > 8.0 and (not e):
+            return 'Info'
+        return 'Info'
+
+
+    #================ _detect_server_errors description ##########
     def _detect_server_errors(self, endpoint: str) -> None:
         prov = getattr(self, 'server_log_provider', None)
         if callable(prov):
@@ -1592,392 +3553,8 @@ class SafeConsumptionAuditor:
                     self._log('SQL error detected in server logs', endpoint, 'High', extra={'error': error})
 
 
-    #================funtion _test_basic_security description =============
-    def _test_basic_security(self, endpoint: str) -> None:
-        try:
-            r = self.session.get(endpoint, timeout=(3, self.timeout), allow_redirects=False)
-        except Exception as e:
-            self._log('Request failed (network/timeout)', endpoint, 'Info', extra={'error': str(e)})
-            return
-        status = r.status_code
-        ctype = (r.headers.get('Content-Type') or '').lower()
-        is_textual = 'application/json' in ctype or ctype.startswith('text/') or 'application/xml' in ctype or ('application/javascript' in ctype)
-        if 200 <= status < 300:
-            return
-        if status in {401, 403}:
-            self._log('Auth required / forbidden (expected)', endpoint, 'Info', response=r)
-            return
-        if status in {404}:
-            self._log('Not found (expected)', endpoint, 'Info', response=r)
-            return
-        if status in {405}:
-            allow = r.headers.get('Allow')
-            self._log('Method not allowed (use correct verb)', endpoint, 'Info', extra={'allow': allow} if allow else None, response=r)
-            return
-        if status in {422}:
-            self._log('Unprocessable entity (expected validation)', endpoint, 'Info', response=r)
-            return
-        if 300 <= status < 400:
-            loc = r.headers.get('Location')
-            self._log('Redirect response', endpoint, 'Info', extra={'location': loc} if loc else None, response=r)
-            return
-        if status >= 500:
-            self._log('Server error (5xx) observed', endpoint, 'Info', extra={'content_type': ctype} if ctype else None, response=r)
-            return
-        if 400 <= status < 500:
-            self._log('Client error without evidence', endpoint, 'Info', response=r)
-            return
-        self._log('Unexpected response status', endpoint, 'Info', response=r)
-
-
-    #================funtion _test_crlf_injection description =============
-    def _test_crlf_injection(self, endpoint: str) -> None:
-        if stop_requested.is_set():
-            return
-        try:
-            parsed = urlparse.urlparse(endpoint)
-            domain = parsed.netloc or parsed.hostname or ''
-            if not domain:
-                self._log('CRLF test invalid host', endpoint, 'Low')
-                return
-            canary_name = 'X-CRLF-Canary'
-            canary_val = f'apiscan-{self.generate_random_id(8)}'
-            canary_cookie = f'{canary_name}={canary_val}'
-            canary_path = f'/{canary_val}'
-            canary_loc = f'https://example.com{canary_path}'
-            base_variants = [f'%0d%0a{canary_name}: {canary_val}', f'%0d%0aSet-Cookie: {canary_cookie}', f'%0d%0aLocation: {canary_loc}', f'%0d%0aX-Accel-Redirect: {canary_path}']
-            extra_variants = []
-            try:
-                for p in self.CRLF_PAYLOADS or []:
-                    if 'X-Injected:' in p:
-                        extra_variants.append(p.replace('X-Injected: header', f'{canary_name}: {canary_val}'))
-                    else:
-                        extra_variants.append(p)
-            except Exception:
-                pass
-            variants = base_variants + extra_variants
-            params_to_try = ['q', 'search', 'redirect', 'url', 'return', 'next']
-
-            #================funtion _all_headers description =============
-            def _all_headers(resp: requests.Response) -> List[Tuple[str, str]]:
-                try:
-                    return _headers_to_list(resp.raw.headers)
-                except Exception:
-                    return list(resp.headers.items())
-            for param in params_to_try:
-                if stop_requested.is_set():
-                    return
-                for inj in variants:
-                    if stop_requested.is_set():
-                        return
-                    url = f'{endpoint}'
-                    sep = '&' if '?' in url else '?'
-                    test_url = f'{url}{sep}{param}=test{inj}'
-                    try:
-                        self._throttle(domain)
-                        r = self.session.get(test_url, timeout=(3, self.timeout), allow_redirects=False)
-                        hdrs = _all_headers(r)
-                        hdrs_dict = {k.lower(): v for k, v in hdrs}
-                        body_low = (r.text or '').lower()
-                        if canary_name.lower() in hdrs_dict and canary_val in hdrs_dict[canary_name.lower()]:
-                            self._log('CRLF injection (response header injection)', test_url, 'High', payload=inj, response=r, extra={'param': param, 'injected_header': canary_name, 'value': canary_val})
-                            continue
-                        loc = r.headers.get('Location', '')
-                        if loc and canary_val in loc:
-                            self._log('CRLF injection (Location header poisoned)', test_url, 'High', payload=inj, response=r, extra={'param': param, 'location': loc})
-                            continue
-                        set_cookie_lines = [v for k, v in hdrs if k.lower() == 'set-cookie']
-                        if any((canary_name.lower() in v.lower() and canary_val in v for v in set_cookie_lines)):
-                            self._log('CRLF injection (Set-Cookie poisoned)', test_url, 'High', payload=inj, response=r, extra={'param': param, 'set_cookie': set_cookie_lines[:2]})
-                            continue
-                        if f'{canary_name.lower()}: {canary_val.lower()}' in body_low:
-                            self._log('CRLF header string reflected in body', test_url, 'Info', payload=inj, response=r, extra={'param': param})
-                            continue
-                    except Exception as e:
-                        sev = self.classify_transport_anomaly(endpoint, 'GET', e, 0.0)
-                        self._log('CRLF test failed', test_url, sev, extra={'error': str(e), 'param': param, 'payload': inj})
-        except Exception as e:
-            self._log('CRLF test setup failed', endpoint, 'Medium', extra={'error': str(e)})
-
-
-    #================funtion _test_ssrf description =============
-    def _test_ssrf(self, endpoint: str) -> None:
-        return
-
-
-    #================funtion _is_ssrf_successful description =============
-    def _is_ssrf_successful(self, response: requests.Response, payload: str) -> bool:
-        return
-
-    @staticmethod
-
-
-    #================funtion generate_random_id description =============
-    def generate_random_id(length: int=8) -> str:
-        return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length))
-
-
-    #================funtion _test_graphql_introspection description =============
-    def _test_graphql_introspection(self, endpoint: str) -> None:
-        if stop_requested.is_set():
-            return
-        try:
-            domain = urlparse.urlparse(endpoint).netloc or ''
-            for path in ('/graphql', '/v1/graphql', '/api/graphql'):
-                url = f"{endpoint.rstrip('/')}{path}"
-                try:
-                    self._throttle(domain)
-                    r = self.session.post(url, json={'query': self.GRAPHQL_INTROSPECTION_QUERY}, timeout=(3, self.timeout))
-                    if r.status_code == 200 and '__schema' in (r.text or ''):
-                        self._log('GraphQL introspection enabled', endpoint, 'Medium', response=r)
-                        break
-                except Exception:
-                    continue
-        except Exception as e:
-            self._log('GraphQL test failed', endpoint, 'Info', extra={'error': str(e)})
-
-
-    #================funtion _test_hpp description =============
-    def _test_hpp(self, endpoint: str) -> None:
-        if stop_requested.is_set():
-            return
-        try:
-            domain = urlparse.urlparse(endpoint).netloc or ''
-            try:
-                self._throttle(domain)
-                options_response = self.session.request('OPTIONS', endpoint, timeout=(2, 3), allow_redirects=False)
-                allowed_methods = {m.strip().upper() for m in options_response.headers.get('Allow', '').split(',') if m}
-                if 'GET' not in allowed_methods and options_response.status_code != 200:
-                    return
-            except Exception:
-                pass
-            for param in self.HPP_PARAMS:
-                url = f'{endpoint}?{param}=1&{param}=2'
-                try:
-                    self._throttle(domain)
-                    r = self.session.get(url, timeout=(3, self.timeout), allow_redirects=False)
-                    if r.status_code == 405:
-                        continue
-                    body = r.text or ''
-                    body_has_combo = '1,2' in body or ',1' in body
-                    param_reflected = any([f'{param}=1' in body and f'{param}=2' in body, f'{param}=1,2' in body, f'{param}=2,1' in body, f'{param}[]=1' in body and f'{param}[]=2' in body])
-                    if body_has_combo or param_reflected:
-                        severity = 'Medium' if r.status_code < 300 and (body_has_combo or param_reflected) else 'Info'
-                        self._log('HPP detected', url, severity, response=r, extra={'parameter': param})
-                except Exception as e:
-                    self._log('HPP test failed', url, 'Info', extra={'error': str(e)})
-        except Exception as e:
-            self._log('HPP test setup failed', endpoint, 'Info', extra={'error': str(e)})
-
-
-    #================funtion _test_directory_traversal description =============
-    def _test_directory_traversal(self, endpoint: str) -> None:
-        if stop_requested.is_set():
-            return
-        try:
-            parsed = urlparse.urlparse(endpoint)
-            domain = parsed.netloc or parsed.hostname or ''
-
-
-            repl_index   = int(os.getenv('APISCAN_TRAV_REPLACE_INDEX', '-2'))
-            ins_before   = int(os.getenv('APISCAN_TRAV_INSERT_BEFORE_INDEX', '-1'))
-            max_dot      = int(os.getenv('APISCAN_TRAV_MAX_DOT', '3'))
-            max_ddot     = int(os.getenv('APISCAN_TRAV_MAX_DDOT', '3'))
-            max_ellipsis = int(os.getenv('APISCAN_TRAV_MAX_ELLIPSIS', '2'))
-
-            rep_variants = build_traversal_variants_segment_replace(endpoint, repl_index, max_dot, max_ddot, max_ellipsis)
-            ins_variants = build_traversal_variants_insert_between(endpoint, ins_before, max_dot, max_ddot, max_ellipsis)
-
-            if getattr(self, 'fast_mode', False):
-                rep_variants = rep_variants[:min(4, len(rep_variants))]
-                ins_variants = ins_variants[:min(4, len(ins_variants))]
-
-
-            extra = []
-            for v in (rep_variants + ins_variants):
-                pv = v if v.endswith('/') else v + '/'
-                extra.extend([pv + 'etc/passwd', pv + 'WEB-INF/web.xml', pv + 'windows/win.ini'])
-
-            strong_indicators = [
-                'root:x:0:0:', 'daemon:x:1:1:', 'index of /', '<title>index of',
-                'parent directory', 'directory listing for', 'directory of ',
-                '[extensions]', 'for 16-bit app support'
-            ]
-            weak_indicators = [
-                '/etc/passwd', 'bin:x:', 'boot.ini', ':\\windows\\', 'web-inf/web.xml'
-            ]
-
-            #================funtion is_likely_false_positive description =============
-            def is_likely_false_positive(resp, body_text: str) -> bool:
-                if not resp:
-                    return False
-                ctype = (resp.headers.get('Content-Type') or '').lower()
-                if resp.status_code in (401, 403):
-                    low = (body_text or '').lower()
-                    if any(t in low for t in ['invalid token', 'unauthorized', 'authentication', 'crapiresponse']):
-                        return True
-                if 'application/json' in ctype and resp.status_code >= 400:
-                    return True
-                if ctype.startswith(('image/', 'video/', 'audio/')) or 'application/octet-stream' in ctype:
-                    return True
-                return False
-
-            #================funtion looks_interesting description =============
-            def looks_interesting(text: str) -> tuple[bool, str]:
-                if not text:
-                    return (False, 'none')
-                low = text.lower()
-                for ind in strong_indicators:
-                    if ind in low:
-                        return (True, 'high')
-                weak_count = sum(1 for ind in weak_indicators if ind in low)
-                if weak_count >= 2:
-                    return (True, 'medium')
-                if weak_count == 1:
-                    has_links = any(m in low for m in ['<a href="', '&lt;a href=', 'href="', '>../<', '>..</a>'])
-                    has_sizes = re.search(r'\b\d+\s*(bytes?|kb|mb|gb)\b', low)
-                    if has_links or has_sizes:
-                        return (True, 'medium')
-                return (False, 'none')
-
-            #================funtion do_req description =============
-            def do_req(url, label):
-                try:
-                    self._throttle(domain)
-                    hdrs = dict(getattr(self.session, 'headers', {}))
-                    hdrs['X-APISCAN-Payload'] = url
-                    r = self.session.get(url, headers=hdrs, timeout=(3, getattr(self, 'timeout', 10)), allow_redirects=False)
-                    body = r.text or ''
-
-                    if is_likely_false_positive(r, body):
-                        return
-
-                    is_interesting, confidence = looks_interesting(body)
-                    ctype = (r.headers.get('Content-Type') or '').lower()
-                    is_binary = ctype.startswith(('image/', 'video/', 'audio/')) or 'application/octet-stream' in ctype
-                    if is_binary:
-                        return
-
-                    if r.status_code == 200 and is_interesting:
-                        sev = 'High' if confidence == 'high' else ('Medium' if confidence == 'medium' else 'Low')
-                        self._log(f'Directory traversal ({label}) [{r.status_code}]', url, sev,
-                                payload=url, response=r,
-                                extra={'vector': 'dirtrav', 'base_endpoint': endpoint, 'confidence': confidence})
-
-                    elif r.status_code in (301, 302, 307, 308):
-                        loc = (r.headers.get('Location') or '').lower()
-                        if any(p in loc for p in ('../', '..\\', '%2e%2e', 'etc/passwd', 'web-inf')):
-                            self._log(f'Directory traversal ({label}) - suspicious redirect [{r.status_code}]',
-                                    url, 'Medium', payload=url, response=r,
-                                    extra={'vector': 'dirtrav', 'base_endpoint': endpoint, 'location': loc})
-
-                    elif r.status_code in (401, 403) and is_interesting and confidence == 'high':
-                        self._log(f'Directory traversal ({label}) [{r.status_code}]', url, 'Low',
-                                payload=url, response=r,
-                                extra={'vector': 'dirtrav', 'base_endpoint': endpoint, 'confidence': confidence})
-
-                except Exception as e:
-                    self._log('Directory traversal request error', url, 'Info',
-                            extra={'error': str(e), 'vector': 'dirtrav', 'base_endpoint': endpoint})
-
-            variants = [('segment replace', u) for u in rep_variants] + [('segment insert', u) for u in ins_variants]
-            variants += [('suffix', u) for u in extra]
-
-
-            seen = set()
-            filtered = []
-            orig_path = urlparse.urlsplit(endpoint).path
-            for label, u in variants:
-                vp = urlparse.urlsplit(u).path
-                key = (label, vp)
-                if vp != orig_path and key not in seen:
-                    filtered.append((label, u))
-                    seen.add(key)
-
-            workers = min(8, max(1, len(filtered)))
-            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-                futures = []
-                for label, u in filtered:
-                    if stop_requested.is_set():
-                        break
-                    futures.append(executor.submit(do_req, u, label))
-                for f in concurrent.futures.as_completed(futures):
-                    try:
-                        f.result()
-                    except Exception:
-                        pass
-
-        except Exception as e:
-            self._log('Directory traversal test setup failed', endpoint, 'Info',
-                    extra={'error': str(e), 'vector': 'dirtrav', 'base_endpoint': endpoint})
-
-
-    #================funtion _test_docker_api description =============
-    def _test_docker_api(self, endpoint: str) -> None:
-        if stop_requested.is_set():
-            return
-        try:
-            host = urlparse.urlparse(endpoint).hostname
-            if not host:
-                self._log('Docker test invalid host', endpoint, 'Low')
-                return
-            self._throttle(host)
-            r = self.session.get(f'http://{host}:2375/version', timeout=(3, self.timeout))
-            if r.status_code == 200:
-                self._log('Docker Remote API open', f'http://{host}:2375/version', 'High', response=r)
-        except Exception as e:
-            self._log('Docker test failed', f'http://{host}:2375/version', 'Info', extra={'error': str(e)})
-
-
-    #================funtion _test_kubernetes_api description =============
-    def _test_kubernetes_api(self, endpoint: str) -> None:
-        if stop_requested.is_set():
-            return
-        try:
-            host = urlparse.urlparse(endpoint).hostname
-            if not host:
-                self._log('Kubernetes test invalid host', endpoint, 'Low')
-                return
-            for port in (6443, 2379):
-                if stop_requested.is_set():
-                    break
-                try:
-                    self._throttle(host)
-                    url = f'https://{host}:{port}/version'
-                    r = self.session.get(url, timeout=(3, self.timeout), verify=False)
-                    if r.status_code == 200:
-                        self._log('Kubernetes API open', url, 'High', response=r)
-                except Exception as e:
-                    self._log('Kubernetes test failed', url, 'Info', extra={'error': str(e)})
-        except Exception as e:
-            self._log('Kubernetes test setup failed', endpoint, 'Info', extra={'error': str(e)})
-
-
-    #================funtion _test_sensitive_data_exposure description =============
-    def _test_sensitive_data_exposure(self, endpoint: str) -> None:
-        if stop_requested.is_set():
-            return
-        try:
-            domain = urlparse.urlparse(endpoint).netloc or ''
-            self._throttle(domain)
-            url = f'{self.base_url}/api/v1/config' if endpoint == self.base_url else f'{endpoint}/api/v1/config'
-            r = self.session.get(url, timeout=(3, self.timeout))
-            if getattr(r, 'status_code', 0) >= 400:
-                return
-            content = (r.text or '').lower()
-            for term in ('password', 'secret', 'token', 'key', 'credential'):
-                if term in content:
-                    self._log('Sensitive data exposure', url, 'High', response=r)
-                    break
-        except Exception as e:
-            self._log('Sensitive data test failed', endpoint, 'Info', extra={'error': str(e), 'status_code': 0})
-
-
-    #================funtion _is_endpoint_reachable description =============
+    #================ _is_endpoint_reachable description ##########
     def _is_endpoint_reachable(self, endpoint: str) -> bool:
-        """Quick reachability check to avoid spending time on dead endpoints.
-        Returns True when the endpoint does not look like a hard 404.
-        """
         try:
             domain = urlparse.urlparse(endpoint).netloc or ""
             self._throttle(domain)
@@ -1991,268 +3568,28 @@ class SafeConsumptionAuditor:
         except Exception:
             return False
 
-    #================funtion test_endpoints description =============
-    def test_endpoints(self, endpoints: List[str]) -> List[Issue]:
-        MAX_WORKERS = self.max_workers
-        print(f'{Fore.CYAN}[INFO] Starting full scan with {MAX_WORKERS} workers - Perry Mertens pamsniffer@gmail.com 2025 (C) {Style.RESET_ALL}')
-        global stop_requested
-        stop_requested.clear()
-        reachable_endpoints = []
-        with tqdm(total=len(endpoints), desc='Pre-scanning') as pbar:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as pre_executor:
-                future_to_ep = {pre_executor.submit(self._is_endpoint_reachable, ep): ep for ep in endpoints}
-                for future in concurrent.futures.as_completed(future_to_ep):
-                    if stop_requested.is_set():
-                        for f in future_to_ep:
-                            f.cancel()
-                        break
-                    ep = future_to_ep[future]
-                    try:
-                        if future.result(timeout=self.timeout * 2):
-                            reachable_endpoints.append(ep)
-                    except Exception as e:
-                        self._log(f'Pre-scan failed for {ep}', str(e), 'Info')
-                    finally:
-                        pbar.update(1)
-        if stop_requested.is_set():
-            return self.issues
 
-        base_core_tests = 8
-
-        base_core_tests += 1
-
-        opt_traversal = 0
-        if hasattr(self, '_test_directory_traversal'):
-            opt_traversal += 1
-        if hasattr(self, '_test_directory_traversal_body'):
-            opt_traversal += 1
-
-        tests_per_endpoint = base_core_tests + opt_traversal + len(self.INJECTION_PAYLOADS)
-        total_tasks = len(reachable_endpoints) * tests_per_endpoint
-        with tqdm(total=total_tasks, desc=f'Scanning endpoints ({len(reachable_endpoints)})') as pbar:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as main_executor:
-                all_tasks = []
-                for ep in reachable_endpoints:
-                    if stop_requested.is_set():
-                        break
-                    test_fns = [partial(self._test_basic_security, ep), partial(self._test_crlf_injection, ep), partial(self._test_hpp, ep), partial(self._test_sensitive_data_exposure, ep), partial(self._test_graphql_introspection, ep), partial(self._test_header_manipulation, ep)] + [partial(self._test_blind_sqli, ep)]
-                    if hasattr(self, '_test_directory_traversal'):
-                        test_fns.append(partial(self._test_directory_traversal, ep))
-                    if hasattr(self, '_test_directory_traversal_body'):
-                        test_fns.append(partial(self._test_directory_traversal_body, ep))
-                    for t in self.INJECTION_PAYLOADS:
-                        test_fns.append(partial(self._run_injection_tests_parallel, ep, t))
-                    for fn in test_fns:
-                        if stop_requested.is_set():
-                            break
-                        all_tasks.append(main_executor.submit(fn))
-                for future in concurrent.futures.as_completed(all_tasks):
-                    if stop_requested.is_set():
-                        for task in all_tasks:
-                            task.cancel()
-                        break
-                    try:
-                        future.result(timeout=self.timeout * 20)
-                    except concurrent.futures.TimeoutError:
-                        self._log('Test timeout', 'N/A', 'Info')
-                    except Exception as e:
-                        self._log('Test failed', 'N/A', 'Info', extra={'error': str(e)})
-                    finally:
-                        pbar.update(1)
-        print(f'{Fore.CYAN}[INFO] Scan completed. Found {len(self.issues)} issues.{Style.RESET_ALL}')
-        try:
-            summary = self.counts_by_category(include_info=False)
-            print(f'{Fore.CYAN}[SUMMARY] Findings by category (actionable):{Style.RESET_ALL}')
-            for k, v in summary.items():
-                print(f'  - {k}: {v}')
-            summary_all = self.counts_by_category(include_info=True)
-            print(f'{Fore.CYAN}[SUMMARY] Findings by category (all severities):{Style.RESET_ALL}')
-            for k, v in summary_all.items():
-                print(f'  - {k}: {v}')
-        except Exception:
-            pass
-        return self.issues
-
-
-#================funtion _response_signature description =============
-def _response_signature(self, resp: requests.Response | None) -> tuple[int, int, str]:
-    if resp is None:
-        return (0, 0, "")
-    try:
-        status = int(getattr(resp, "status_code", 0))
-    except Exception:
-        status = 0
-    try:
-        body = getattr(resp, "text", "") or ""
-        blen = len(body)
-    except Exception:
-        blen = 0
-    try:
-        ctype = (resp.headers.get("Content-Type") or "").split(";", 1)[0].lower()
-    except Exception:
-        ctype = ""
-    return (status, blen, ctype)
-
-
-#================funtion _sig_diff description =============
-def _sig_diff(self, a: tuple[int, int, str], b: tuple[int, int, str]) -> int:
-
-    score = 0
-    if a[0] != b[0]:
-        score += 3
-
-    if abs(a[1] - b[1]) > max(50, int(0.15 * max(a[1], b[1], 1))):
-        score += 2
-    if a[2] != b[2]:
-        score += 1
-    return score
-
-
-#================funtion _request_with_timing description =============
-def _request_with_timing(self, method: str, url: str, *, params=None, json_body=None) -> tuple[requests.Response | None, float]:
-    self._throttle(urlparse.urlparse(url).netloc if hasattr(urlparse, "urlparse") else urlparse.urlparse(url).netloc)
-    try:
-        r = self.session.request(
-            method.upper(),
-            url,
-            params=params,
-            json=json_body,
-            timeout=(3, max(self.timeout, 12)),
-            allow_redirects=False
-        )
-        try:
-            elapsed = r.elapsed.total_seconds() if r.elapsed else 0.0
-        except Exception:
-            elapsed = 0.0
-        return r, float(elapsed)
-    except Exception:
-        return None, 0.0
-
-
-#================funtion _test_blind_sqli description =============
-def _test_blind_sqli(self, endpoint: str) -> None:
-    """Blind SQL injection heuristics (boolean-based + optional time-based).
-
-    This does NOT require HTTP 200. We compare response signatures against a baseline.
-    """
-    if stop_requested.is_set():
-        return
-
-    base = endpoint
-
-    param_names = ["id", "q", "search", "query", "name", "input", "user", "email", "ref", "next", "return"]
-    true_payloads = ["' OR 1=1--", "\" OR 1=1--", "') OR ('1'='1", "1 OR 1=1"]
-    false_payloads = ["' OR 1=2--", "\" OR 1=2--", "') OR ('1'='2", "1 OR 1=2"]
-
-
-    p0 = {param_names[0]: "1"}
-    r0, t0 = self._request_with_timing("GET", base, params=p0)
-    sig0 = self._response_signature(r0)
-
-
-    best = None
-    for pn in param_names:
-        if stop_requested.is_set():
-            return
-        for tp, fp in zip(true_payloads, false_payloads):
-            rT, _ = self._request_with_timing("GET", base, params={pn: tp})
-            rF, _ = self._request_with_timing("GET", base, params={pn: fp})
-            sigT = self._response_signature(rT)
-            sigF = self._response_signature(rF)
-
-            diff_tf = self._sig_diff(sigT, sigF)
-            diff_t0 = self._sig_diff(sigT, sig0)
-            diff_f0 = self._sig_diff(sigF, sig0)
-            score = diff_tf + max(diff_t0, diff_f0)
-            if best is None or score > best[0]:
-                best = (score, pn, tp, fp, sigT, sigF, rT, rF)
-
-    if best and best[0] >= 5:
-        _, pn, tp, fp, sigT, sigF, rT, rF = best
-        desc = f"Boolean-based response difference for parameter '{pn}'. TRUE({tp}) vs FALSE({fp}). baseline={sig0}, true={sigT}, false={sigF}"
-
-        self._log("Possible Blind SQL Injection", base, desc, "High", payload=tp, response=rT)
-
-
-    time_payloads = [
-        ("';SELECT SLEEP(5)--", 4.0),
-        ("';SELECT pg_sleep(5)--", 4.0),
-        ("';WAITFOR DELAY '0:0:5'--", 4.0),
-    ]
-
-    b_times = []
-    for _ in range(2):
-        _, bt = self._request_with_timing("GET", base, params=p0)
-        if bt:
-            b_times.append(bt)
-    if not b_times:
-        return
-    b_avg = sum(b_times) / len(b_times)
-
-    for pn in param_names[:4]:
-        for payload, min_delta in time_payloads:
-            if stop_requested.is_set():
-                return
-
-            delays = []
-            for _ in range(2):
-                rD, td = self._request_with_timing("GET", base, params={pn: payload})
-                if td:
-                    delays.append(td)
-            if len(delays) == 2 and all((d - b_avg) >= min_delta for d in delays):
-                desc = f"Time-based delay detected for parameter '{pn}'. baseline_avg={b_avg:.2f}s delays={delays}"
-                self._log("Possible Time-based Blind SQL Injection", base, desc, "Critical", payload=payload, response=rD)
-                return
-    #================funtion _has_sql_evidence description =============
-    def _has_sql_evidence(self, body: str) -> bool:
-        low = (body or '').lower()
-        if any((k in low for k in self.SQL_ENGINE_MARKERS)):
-            return True
-        if any((rx.search(low) for rx in getattr(self, 'SQL_ERROR_RX', []))):
-            return True
-        if any((k in low for k in self.SQL_ERROR_KEYWORDS)):
-            sqlish = (' sql ', 'sqlsyntaxerror', 'syntax error at or near', 'mysql', 'postgres', 'psql', 'psycopg', 'odbc', 'oracle', 'ora-', 'unclosed quotation mark', 'incorrect syntax near')
-            if any((t in low for t in sqlish)):
-                return True
-        return False
-
-
-    #================funtion _is_endpoint_reachable description =============
-    def _is_endpoint_reachable(self, endpoint: str) -> bool:
-
-        #================funtion _ok description =============
-        def _ok(code: int) -> bool:
-            return (200 <= code < 400) or code in (401, 403, 405)
-
-        sess = getattr(self, "session", None) or getattr(self, "sess", None)
-        if sess is None:
-            return True
-
-        try:
-            r = sess.head(endpoint, timeout=self.timeout, allow_redirects=True)
-            if _ok(getattr(r, "status_code", 0)):
-                return True
-            r2 = sess.get(endpoint, timeout=self.timeout, allow_redirects=True)
-            return _ok(getattr(r2, "status_code", 0))
-        except Exception:
-            try:
-                r2 = sess.get(endpoint, timeout=self.timeout, allow_redirects=True)
-                return _ok(getattr(r2, "status_code", 0))
-            except Exception:
-                return False
-
-
-    #================funtion _filter_issues description =============
+    #================ _filter_issues description ##########
     def _filter_issues(self) -> list[dict]:
         cleaned, seen = ([], set())
 
         IGNORE_TIMEOUTS = bool(getattr(self, 'IGNORE_NETWORK_TIMEOUTS', True))
         NETWORK_TIMEOUT_PATTERNS = tuple(getattr(self, 'NETWORK_TIMEOUT_PATTERNS', (
-            'httpconnectionpool', 'read timed out', 'connect timeout', 'connecttimeout',
-            'write timeout', 'newconnectionerror', 'failed to establish a new connection',
-            'max retries exceeded', 'temporarily unavailable', 'winerror 10060', 'winerror 10061'
+            'httpconnectionpool',
+            'read timed out',
+            'connect timeout',
+            'connecttimeout',
+            'write timeout',
+            'newconnectionerror',
+            'failed to establish a new connection',
+            'max retries exceeded',
+            'temporarily unavailable',
+            'winerror 10060',
+            'winerror 10061',
         )))
-        GENERIC_4XX = {400, 401, 403, 404, 405, 406, 409, 415, 422, 429}
+        GENERIC_4XX = set(getattr(self, 'GENERIC_4XX', {
+            400, 401, 403, 404, 405, 406, 409, 415, 422, 429
+        }))
 
         for issue in self.issues:
             desc_text = str(issue.get('description', ''))
@@ -2260,6 +3597,22 @@ def _test_blind_sqli(self, endpoint: str) -> None:
             err_low = str(issue.get('error', '')).lower()
             body = issue.get('response_body') or ''
             body_low = body.lower()
+            is_waf_detection = any(term in desc_low for term in [
+                'waf detected',
+                'input filtering detected',
+                'openresty',
+                'cloudflare',
+                'akamai',
+                'mod_security'
+            ])
+
+            if is_waf_detection:
+
+                if issue.get('severity') in ['Info', 'Low']:
+                    issue['severity'] = 'Low'
+                cleaned.append(issue)
+                continue
+
 
             if 'failed to parse' in desc_low or "name 'parsed' is not defined" in desc_low:
                 continue
@@ -2267,8 +3620,7 @@ def _test_blind_sqli(self, endpoint: str) -> None:
             if any(p in err_low for p in NETWORK_TIMEOUT_PATTERNS):
                 if IGNORE_TIMEOUTS:
                     continue
-                else:
-                    issue['severity'] = 'Info'
+                issue['severity'] = 'Info'
 
             try:
                 status = int(issue.get('status_code', 0))
@@ -2288,7 +3640,7 @@ def _test_blind_sqli(self, endpoint: str) -> None:
                 except Exception:
                     hdrs_map = {}
 
-            #================funtion _h description =============
+            #================ _h description ##########
             def _h(name: str) -> str:
                 return (hdrs_map.get(name) or hdrs_map.get(name.title()) or '').lower()
 
@@ -2298,80 +3650,137 @@ def _test_blind_sqli(self, endpoint: str) -> None:
             cdisp = _h('Content-Disposition')
             loc_low = _h('Location')
 
+            issue_name = (issue.get('issue') or '').lower()
+            vector_name = (issue.get('vector') or '').lower()
 
-            if issue.get('issue', '').startswith('Possible SQL injection'):
+            if issue_name.startswith('possible sql injection'):
+                has_evidence = False
                 try:
-                    has_evidence = bool(self._has_sql_evidence(body))
+                    if hasattr(self, '_has_sql_evidence_improved'):
+                        has_evidence = bool(self._has_sql_evidence_improved(body))
                 except Exception:
                     has_evidence = False
-
 
                 if status in GENERIC_4XX or 'application/problem+json' in ctype:
                     if not has_evidence:
                         issue['severity'] = 'Info'
-                        issue['issue'] = 'Possible SQL injection (blocked/validated)'
-                        issue['description'] = 'Request rejected (4xx/problem+json) without SQL/DB error markers'
+                        issue['issue'] = 'Possible SQL injection (blocked or validated)'
+                        issue['description'] = (
+                            'Request rejected (4xx/problem+json) without SQL or database error markers'
+                        )
                         issue['confidence'] = issue.get('confidence') or 'low'
                     cleaned.append(issue)
                     continue
 
-
                 if status >= 500 and not has_evidence:
                     issue['severity'] = 'Info'
                     issue['issue'] = 'Server error without SQL evidence'
-                    issue['description'] = 'Generic 5xx response without SQL/DB markers'
+                    issue['description'] = 'Generic 5xx response without SQL or database error markers'
                     cleaned.append(issue)
                     continue
-
 
                 if not has_evidence:
                     continue
 
-
-            if ('nosql' in desc_low) or issue.get('issue', '').lower().startswith('possible nosql'):
-
-                if any(p in body_low for p in self.NOSQL_NEGATIVE_PATTERNS):
+            if ('nosql' in desc_low) or issue_name.startswith('possible nosql'):
+                neg_patterns = getattr(self, 'NOSQL_NEGATIVE_PATTERNS', ())
+                if any(p in body_low for p in neg_patterns):
                     continue
-
                 if status in GENERIC_4XX and 'application/json' in ctype:
                     issue['severity'] = 'Info'
 
+            if issue_name.startswith('directory traversal'):
+                confidence = (issue.get('confidence') or '').lower()
+
+                if vector_name == 'dirtrav-auth':
+                    if status in (200, 201, 202, 204, 206, 301, 302, 303, 307, 308):
+                        if issue.get('severity') in (None, 'Low', 'Info'):
+                            issue['severity'] = 'High' if confidence == 'high' else 'Medium'
+                        if not issue_name.startswith('access control bypass'):
+                            issue['issue'] = (
+                                'Access control bypass via directory traversal to auth endpoint'
+                            )
+                    elif status in (401, 403):
+                        if confidence == 'high' and issue.get('severity') in (None, 'Low', 'Info'):
+                            issue['severity'] = 'Medium'
+                        if not issue_name.startswith('access control bypass'):
+                            issue['issue'] = (
+                                'Access control bypass via directory traversal to auth endpoint'
+                            )
+                else:
+                    if status in (401, 403) and any(
+                        s in body_low for s in ('unauthorized', 'invalid token', 'authentication')
+                    ):
+                        if confidence != 'high':
+                            continue
+
+                    if 'application/json' in ctype and status >= 400 and confidence != 'high':
+                        continue
+
+                    if confidence == 'low' and issue.get('severity') in ('High', 'Medium'):
+                        issue['severity'] = 'Low'
 
             if desc_low.startswith('possible ssrf'):
-                generic_err = ('connection refused', 'timed out', 'no route to host', 'dns error', 'invalid host')
+                generic_err = (
+                    'connection refused',
+                    'timed out',
+                    'no route to host',
+                    'dns error',
+                    'invalid host',
+                )
                 if any(g in body_low for g in generic_err) or status in {400, 404, 405}:
                     issue['severity'] = 'Info'
 
-
             if desc_low.startswith('possible access control bypass via spoofed header'):
                 is_json = 'application/json' in ctype
-                admin_hit = re.search('(?i)(<title>[^<]*admin[^<]*</title>|\\badmin\\s*panel\\b|href=["\\\']/admin)', body) is not None
-                if is_json and (not loc_low):
+                admin_hit = False
+                try:
+                    import re as _re
+                    admin_hit = _re.search(
+                        r'(?i)(<title>[^<]*admin[^<]*</title>|\badmin\s*panel\b|href=["\']/admin)',
+                        body,
+                    ) is not None
+                except Exception:
+                    admin_hit = False
+
+                if is_json and not loc_low:
                     issue['severity'] = 'Info'
                 elif not admin_hit and '/admin' not in loc_low:
                     issue['severity'] = 'Info'
 
-
-            if issue.get('issue', '').lower().startswith('broad cors policy'):
-                is_static = ctype.startswith(('image/', 'video/', 'audio/', 'font/')) or 'application/octet-stream' in ctype or 'application/pdf' in ctype or ('filename=' in cdisp)
-                if is_static and acac != 'true' and (issue.get('severity') in (None, 'Low', 'Info')):
+            if issue_name.startswith('broad cors policy'):
+                is_static = (
+                    ctype.startswith(('image/', 'video/', 'audio/', 'font/'))
+                    or 'application/octet-stream' in ctype
+                    or 'application/pdf' in ctype
+                    or 'filename=' in cdisp
+                )
+                if is_static and acac != 'true' and issue.get('severity') in (None, 'Low', 'Info'):
                     continue
 
-            if status == 404:
-
-
-                if not any(s in body_low for s in (
-                    'root:x:0:0:', 'daemon:x:', 'index of /', '<web-app', '[extensions]'
-                )):
+            if status == 404 and 'directory traversal' not in issue_name:
+                interesting_markers = (
+                    'root:x:0:0:',
+                    'daemon:x:',
+                    'index of /',
+                    '<web-app',
+                    '[extensions]',
+                )
+                if not any(s in body_low for s in interesting_markers):
                     continue
                 if issue.get('severity') in ('High', 'Critical'):
                     issue['severity'] = 'Info'
 
-            if issue.get('status_code') == '-' or 'timeout' in err_low:
+            if issue.get('status_code') in ('-', None) or 'timeout' in err_low:
                 issue['severity'] = 'Info'
 
-            dedup_key = (issue.get('method'), issue.get('path') or issue.get('endpoint'),
-                        issue.get('status_code'), issue.get('issue'), issue.get('payload'))
+            dedup_key = (
+                issue.get('method'),
+                issue.get('path') or issue.get('endpoint'),
+                issue.get('status_code'),
+                issue.get('issue'),
+                issue.get('payload'),
+            )
             if dedup_key in seen:
                 continue
             seen.add(dedup_key)
@@ -2382,38 +3791,94 @@ def _test_blind_sqli(self, endpoint: str) -> None:
         return self.issues
 
 
-    #================funtion _filtered description =============
-    def _filtered(self) -> list[dict]:
-        return self._filter_issues()
+    #================ _dedupe_issues description ##########
+    def _dedupe_issues(self) -> None:
+        #================ _canon description ##########
+        def _canon(f: dict) -> tuple:
+            issue = (f.get('issue') or '').lower()
+            desc = (f.get('description') or '').lower()
+            method = (f.get('method') or 'GET').upper()
+            path = f.get('path') or f.get('endpoint') or f.get('url') or ''
+            status = f.get('status_code')
+            payload = f.get('payload') or ''
+            vector = (f.get('vector') or '').lower()
+
+            if (
+                vector == 'generic-5xx'
+                or 'server error without sql evidence' in issue
+                or 'generic 5xx response without sql/db markers' in desc
+            ):
+                return ('generic-5xx', method, path, status)
+
+            if vector in ('dirtrav', 'dirtrav-auth') or issue.startswith('directory traversal'):
+                base_ep = f.get('base_endpoint') or path
+                sev = f.get('severity')
+                key_kind = 'dirtrav-auth' if vector == 'dirtrav-auth' or 'auth' in issue else 'dirtrav'
+                return (key_kind, method, base_ep, sev)
+
+            if vector == 'cors' or issue == 'broad cors policy':
+                return ('cors', method, path, 200)
+
+            return ('default', method, path, status, issue, payload)
+
+        merged: dict[tuple, dict] = {}
+
+        for f in self.issues:
+            k = _canon(f)
+            cur = merged.get(k)
+
+            if cur is None:
+                f['duplicates'] = 0
+
+                v = (f.get('vector') or '').lower()
+                if v in ('dirtrav', 'dirtrav-auth'):
+                    urls: list[str] = []
+                    u = f.get('url') or f.get('endpoint')
+                    if u:
+                        urls.append(u)
+                    f['evidence_urls'] = urls
+                elif v == 'cors':
+                    origins: list[str] = []
+                    o = f.get('origin')
+                    if o:
+                        origins.append(o)
+                    f['evidence_origins'] = origins
+                elif v == 'generic-5xx':
+                    payloads: list[str] = []
+                    pld = f.get('payload')
+                    if pld:
+                        payloads.append(pld)
+                    f['evidence_payloads'] = payloads
+
+                merged[k] = f
+            else:
+                cur['duplicates'] = int(cur.get('duplicates', 0)) + 1
+                v = (f.get('vector') or '').lower()
+
+                if v in ('dirtrav', 'dirtrav-auth'):
+                    urls = cur.setdefault('evidence_urls', [])
+                    u = f.get('url') or f.get('endpoint')
+                    if u and u not in urls and len(urls) < 10:
+                        urls.append(u)
+                elif v == 'cors':
+                    origins = cur.setdefault('evidence_origins', [])
+                    o = f.get('origin')
+                    if o and o not in origins and len(origins) < 10:
+                        origins.append(o)
+                elif v == 'generic-5xx':
+                    payloads = cur.setdefault('evidence_payloads', [])
+                    pld = f.get('payload')
+                    if pld and pld not in payloads and len(payloads) < 10:
+                        payloads.append(pld)
+
+        self.issues = list(merged.values())
 
 
-    #================funtion _looks_like_secret description =============
-    def _looks_like_secret(self, text: str) -> bool:
-        if not text:
-            return False
-        t = text.strip()
-        b64 = re.findall('[A-Za-z0-9+/=]{24,}', t)
-        hx = re.findall('\\b[0-9a-fA-F]{32,}\\b', t)
-        prefixes = ('AKIA', 'ASIA', 'sk_live_', 'sk_test_', 'xoxb-', 'xoxp-', 'ghp_', 'gho_', 'ghu_', 'eyJ')
-        has_prefix = any((p in t for p in prefixes))
-
-        #================funtion _entropy description =============
-        def _entropy(s: str) -> float:
-            from math import log2
-            if not s:
-                return 0.0
-            from collections import Counter
-            counts = Counter(s)
-            n = len(s)
-            return -sum((c / n * log2(c / n) for c in counts.values()))
-        candidates = b64 + hx
-        high_entropy = any((_entropy(c) >= 3.0 for c in candidates if len(c) >= 24))
-        return bool(candidates) or has_prefix or high_entropy
-
-
-    #================funtion _category_of_issue description =============
+    #================ _category_of_issue description ##########
     def _category_of_issue(self, text: str) -> str:
         t = (text or '').lower()
+        if any(term in t for term in ['waf detected', 'input filtering', 'openresty', 'mod_security']):
+            return 'WAF/Filtering'
         if 'sql injection' in t or 'sqli' in t:
             return 'SQLi'
         if 'nosql' in t:
@@ -2451,7 +3916,7 @@ def _test_blind_sqli(self, endpoint: str) -> None:
         return 'Other'
 
 
-    #================funtion counts_by_category description =============
+    #================ counts_by_category description ##########
     def counts_by_category(self, include_info: bool=False) -> dict:
         out = {}
         for f in self.issues:
@@ -2463,349 +3928,102 @@ def _test_blind_sqli(self, endpoint: str) -> None:
         return dict(sorted(out.items(), key=lambda kv: kv[0].lower()))
 
 
-    #================funtion generate_report description =============
+    #================ generate_report description ##########
     def generate_report(self) -> str:
         self._filter_issues()
-        gen = ReportGenerator(issues=self.issues, scanner='SafeConsumption (API10)', base_url=self.base_url)
+        gen = ReportGenerator(issues=self.issues, scanner='SafeConsumption Enhanced/4.0', base_url=self.base_url)
         return gen.generate_html()
 
 
-    #================funtion save_report description =============
+    #================ save_report description ##########
     def save_report(self, path: str, fmt: str='html') -> None:
-        ReportGenerator(issues=self._filter_issues(), scanner='SafeConsumption (API10)', base_url=self.base_url).save(path, fmt=fmt)
+        ReportGenerator(issues=self._filter_issues(), scanner='SafeConsumption Enhanced/4.0', base_url=self.base_url).save(path, fmt=fmt)
 
+    #================ generate_random_id description ##########
     @staticmethod
 
+    def generate_random_id(length: int=8) -> str:
+        return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length))
 
-    #================funtion xml_endpoints_from_openapi description =============
-    def xml_endpoints_from_openapi(spec: dict, base_url: str, sec_cfg: 'OASSecurityConfig | None'=None) -> list[str]:
-        if not globals().get('_HAS_OAS_UNIVERSAL', False):
-            raise RuntimeError('openapi_universal is not available')
-        eps: set[str] = set()
-        for op in oas_iter_ops(spec):
-            rb = op.get('requestBody') or {}
-            content = rb.get('content') or {} if isinstance(rb, dict) else {}
-            cts = {ct.lower() for ct in content.keys()} if isinstance(content, dict) else set()
-            accepts_xml = any((ct in cts for ct in ('application/xml', 'text/xml', 'application/soap+xml')))
-            if not accepts_xml:
+    #================ endpoints_from_swagger description ##########
+    @staticmethod
+
+    def endpoints_from_swagger(swagger_path: str):
+        pairs = SafeConsumptionAuditor.endpoints_from_swagger_with_methods(swagger_path)
+        urls = []
+        seen = set()
+        for url, _m in pairs:
+            if url in seen:
                 continue
-            try:
-                req = oas_build_request(spec, base_url, op, sec_cfg)
-                url = req.get('url')
-                if isinstance(url, str) and url:
-                    eps.add(url.rstrip('/'))
-            except Exception:
-                continue
-        return sorted(eps)
+            seen.add(url)
+            urls.append(url)
+        return urls
 
+    #================ endpoints_from_swagger_with_methods description ##########
+    @staticmethod
 
-    #================funtion _test_directory_traversal description =============
-    def _test_directory_traversal(self, endpoint: str) -> None:
-        if stop_requested.is_set():
-            return
-        try:
-            parts = urlparse.urlsplit(endpoint)
-            base_path = parts.path or '/'
-            if not base_path or base_path == '/':
-                return
-            domain = parts.netloc or parts.hostname or ''
-            #================funtion join description =============
-            def join(path):
-                return urlparse.urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
+    def endpoints_from_swagger_with_methods(swagger_path: str):
+        from pathlib import Path
+        import json
 
-            seeds = [base_path.rstrip('/'), base_path.rstrip('/') + '/']
-            variants = set()
-            for s in seeds:
-                for inj in ('./', '../', '..%2F', '%2e/', '%2e%2e/', '%2e%2e%2f', '..%252f'):
-                    variants.add(s + inj)
+        raw = Path(swagger_path).read_text(encoding="utf-8")
+        spec = json.loads(raw)
 
-            suffixes = ['etc/passwd', 'WEB-INF/web.xml', 'windows/win.ini']
-            test_urls = []
-            for v in variants:
-                p = v if v.endswith('/') else v + '/'
-                for suf in suffixes:
-                    test_urls.append(join(p + suf))
-
-            strong = ['root:x:0:0:', 'daemon:x:1:1:', 'Index of /', '<title>Index of', 'Parent Directory', 'Directory listing for', 'Directory of ', '[extensions]', 'for 16-bit app support']
-            weak = ['/etc/passwd', 'bin:x:', 'boot.ini', '\\Windows\\', 'WEB-INF/web.xml']
-
-            #================funtion looks_interesting description =============
-            def looks_interesting(text: str):
-                if not text:
-                    return (False, 'none')
-                low = text.lower()
-                for s in strong:
-                    if s.lower() in low:
-                        return (True, 'high')
-                wc = sum(1 for w in weak if w.lower() in low)
-                if wc >= 2:
-                    return (True, 'medium')
-                if wc == 1 and (('href="' in low) or ('>../<' in low) or ('>..</a>' in low)):
-                    return (True, 'medium')
-                return (False, 'none')
-
-            for u in test_urls:
-                if stop_requested.is_set():
-                    return
-                try:
-                    self._throttle(domain)
-                    hdrs = dict(getattr(self.session, 'headers', {}))
-                    hdrs['X-APISCAN-Payload'] = u
-                    r = self.session.get(u, headers=hdrs, timeout=(3, getattr(self, 'timeout', 10)), allow_redirects=False)
-                    body = r.text or ''
-                    ctype = (r.headers.get('Content-Type') or '').lower()
-                    if ctype.startswith(('image/','video/','audio/')) or 'application/octet-stream' in ctype:
-                        continue
-
-                    low = body.lower()
-                    if r.status_code in (401, 403) and any(t in low for t in ('invalid token','unauthorized','authentication')):
-                        continue
-                    if 'application/json' in ctype and r.status_code >= 400:
-                        continue
-
-                    interesting, conf = looks_interesting(body)
-                    if not interesting:
-                        continue
-
-                    if r.status_code == 200:
-                        sev = 'High' if conf == 'high' else ('Medium' if conf == 'medium' else 'Low')
-                    elif r.status_code in (301,302,307,308) and any(k in (r.headers.get('Location','').lower()) for k in ('../','%2e%2e','etc/passwd','web-inf')):
-                        sev = 'Medium'
-                    else:
-                        sev = 'Low'
-
-                    self._log('Directory traversal (suffix)', u, sev, payload=u, response=r,
-                              extra={'vector':'dirtrav','base_endpoint': endpoint, 'confidence': conf, 'request_body_preview': None})
-                except Exception as e:
-                    self._log('Directory traversal request error', u, 'Info', extra={'error': str(e), 'vector': 'dirtrav', 'base_endpoint': endpoint})
-        except Exception as e:
-            self._log('Directory traversal test setup failed', endpoint, 'Info', extra={'error': str(e), 'vector': 'dirtrav', 'base_endpoint': endpoint})
-
-
-    #================funtion _is_injection_successful description =============
-    def _is_injection_successful(
-        self,
-        response: requests.Response,
-        attack_type: str,
-        *,
-        baseline_latency: float = 0.5,
-        payload: str = ''
-    ) -> bool:
-        if response is None:
-            return False
-
-        try:
-            status = int(getattr(response, 'status_code', 0))
-        except Exception:
-            status = 0
-
-        text = response.text or ''
-        low = text.lower()
-
-
-        if status in {400, 422} and self._is_parse_error(response):
-            return False
-
-
-        if attack_type == 'nosql':
-            if any(p in low for p in self.NOSQL_NEGATIVE_PATTERNS):
-                return False
-
-
-        if attack_type == 'sql':
-            if self._has_sql_evidence(text):
-                return True
-            try:
-                elapsed = response.elapsed.total_seconds() if response.elapsed else 0.0
-            except Exception:
-                elapsed = 0.0
-            return False
-
-
-        if status >= 500:
-            if attack_type == 'nosql':
-                return any((k in low for k in self.NOSQL_ERROR_KEYWORDS)) or self._has_engine_marker(low, 'nosql')
-            if attack_type in {'ssti', 'ldap', 'xxe'}:
-                return self._has_engine_marker(low, attack_type)
-            return False
-
-
-        if attack_type == 'nosql':
-            specific = any((re.search(p, low) for p in ('mongo.*error', 'mongodb.*error', 'bson.*error')))
-            keywords = any((k in low for k in self.NOSQL_ERROR_KEYWORDS))
-            return specific or keywords or self._has_engine_marker(low, 'nosql')
-
-
-        if attack_type == 'xss':
-            if not payload or payload.lower() not in low:
-                return False
-            return any((s in text for s in (f'="{payload}"', f'>{payload}<', f"'{payload}'", f'`{payload}`'))) or self._is_payload_reflected(text, payload)
-
-
-        if attack_type == 'xxe':
-            ctype = (response.headers.get('Content-Type') or '').lower()
-            CONTENT_MARKERS = ('root:x:0:0:', 'daemon:x:', '/bin/bash', 'for 16-bit app support', '[extensions]')
-            PATH_ONLY_MARKERS = ('/etc/passwd', '/etc/hosts', 'c:\\\\windows\\\\win.ini', 'file:///etc/passwd', 'file:///etc/hosts')
-
-            if any(ind in low for ind in CONTENT_MARKERS):
-                if not ('text/html' in ctype and '<html' in low):
-                    return True
-            if any(ind in low for ind in PATH_ONLY_MARKERS):
-                return False
-
-            blocked_patterns = (r'doctype.*(disallowed|prohibit|denied)', r'entity\\s+.*(not\\s+defined|cannot\\s+be\\s+resolved)')
-            if any((re.search(pat, low) for pat in blocked_patterns)):
-                return False
-
-            specific = any((re.search(p, low) for p in (r'xxe', r'xml.*parser.*error', r'entity.*reference', r'doctype.*not.*allowed')))
-            return specific or self._has_engine_marker(low, 'xxe')
-
-        return False
-
-    #================funtion _filter_issues description =============
-    def _filter_issues(self) -> list[dict]:
-        cleaned, seen = ([], set())
-
-        IGNORE_TIMEOUTS = bool(getattr(self, 'IGNORE_NETWORK_TIMEOUTS', True))
-        NETWORK_TIMEOUT_PATTERNS = tuple(getattr(self, 'NETWORK_TIMEOUT_PATTERNS', (
-            'httpconnectionpool', 'read timed out', 'connect timeout', 'connecttimeout',
-            'write timeout', 'newconnectionerror', 'failed to establish a new connection',
-            'max retries exceeded', 'temporarily unavailable', 'winerror 10060', 'winerror 10061'
-        )))
-        GENERIC_4XX = {400, 401, 403, 404, 405, 406, 409, 415, 422, 429}
-
-        for issue in self.issues:
-            desc_text = str(issue.get('description', ''))
-            desc_low = desc_text.lower()
-            err_low = str(issue.get('error', '')).lower()
-            body = issue.get('response_body') or ''
-            body_low = body.lower()
-
-            if 'failed to parse' in desc_low or "name 'parsed' is not defined" in desc_low:
+        servers = []
+        for srv in (spec.get("servers") or []):
+            u = (srv.get("url") or "").strip()
+            if not u:
                 continue
 
-            if any(p in err_low for p in NETWORK_TIMEOUT_PATTERNS):
-                if IGNORE_TIMEOUTS:
+            if u.endswith("/"):
+                u = u[:-1]
+            servers.append(u)
+
+        paths = spec.get("paths") or {}
+        out = []
+        for path, ops in paths.items():
+            if not isinstance(ops, dict):
+                continue
+
+            if not path.startswith("/"):
+                path = "/" + path
+            for method, op in ops.items():
+                m = (method or "").upper()
+                if m not in ("GET","POST","PUT","PATCH","DELETE","OPTIONS","HEAD"):
                     continue
+                if servers:
+                    for s in servers:
+                        out.append((f"{s}{path}", m))
                 else:
-                    issue['severity'] = 'Info'
+                    out.append((path, m))
+        return out
 
-            try:
-                status = int(issue.get('status_code', 0))
-            except (ValueError, TypeError):
-                status = 0
+    #================ third_party_hosts_from_swagger description ##########
+    @staticmethod
 
-            hdrs_map = {}
-            rh = issue.get('response_headers')
-            if isinstance(rh, dict):
-                hdrs_map = {str(k): str(v) for k, v in rh.items()}
-            elif isinstance(rh, list):
-                hdrs_map = {str(k): str(v) for k, v in rh}
-            else:
-                rh_list = issue.get('response_headers_list') or []
-                try:
-                    hdrs_map = {str(k): str(v) for k, v in rh_list}
-                except Exception:
-                    hdrs_map = {}
-
-            #================funtion _h description =============
-            def _h(name: str) -> str:
-                return (hdrs_map.get(name) or hdrs_map.get(name.title()) or '').lower()
-
-            ctype = _h('Content-Type')
-            acao = _h('Access-Control-Allow-Origin')
-            acac = _h('Access-Control-Allow-Credentials')
-            cdisp = _h('Content-Disposition')
-            loc_low = _h('Location')
+    def third_party_hosts_from_swagger(swagger_path: str) -> List[str]:
+        from pathlib import Path
+        import json
+        spec = json.loads(Path(swagger_path).read_text(encoding='utf-8'))
+        hosts: Set[str] = set()
+        for srv in spec.get('servers', []):
+            url = srv.get('url')
+            if url:
+                parsed = urlparse.urlparse(url)
+                if parsed.netloc:
+                    hosts.add(parsed.netloc.split(':')[0])
 
 
-            if issue.get('issue', '').startswith('Possible SQL injection'):
-                try:
-                    has_evidence = bool(self._has_sql_evidence(body))
-                except Exception:
-                    has_evidence = False
+        #================ walk description ##########
+        def walk(node: Any):
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    if k == '$ref' and isinstance(v, str) and v.startswith('http'):
+                        hosts.add(urlparse.urlparse(v).netloc.split(':')[0])
+                    walk(v)
+            elif isinstance(node, list):
+                for item in node:
+                    walk(item)
 
-
-                if status in GENERIC_4XX or 'application/problem+json' in ctype:
-                    if not has_evidence:
-                        issue['severity'] = 'Info'
-                        issue['issue'] = 'Possible SQL injection (blocked/validated)'
-                        issue['description'] = 'Request rejected (4xx/problem+json) without SQL/DB error markers'
-                        issue['confidence'] = issue.get('confidence') or 'low'
-                    cleaned.append(issue)
-                    continue
-
-
-                if status >= 500 and not has_evidence:
-                    issue['severity'] = 'Info'
-                    issue['issue'] = 'Server error without SQL evidence'
-                    issue['description'] = 'Generic 5xx response without SQL/DB markers'
-                    cleaned.append(issue)
-                    continue
-
-
-                if not has_evidence:
-                    continue
-
-
-            if ('nosql' in desc_low) or issue.get('issue', '').lower().startswith('possible nosql'):
-                if any(p in body_low for p in self.NOSQL_NEGATIVE_PATTERNS):
-                    continue
-                if status in GENERIC_4XX and 'application/json' in ctype:
-                    issue['severity'] = 'Info'
-
-
-            issue_name = (issue.get('issue') or '').lower()
-            if issue_name.startswith('directory traversal'):
-                confidence = (issue.get('confidence') or '').lower()
-                if status in (401, 403) and any(s in body_low for s in ('unauthorized', 'invalid token', 'authentication')):
-                    if confidence != 'high':
-                        continue
-                if 'application/json' in ctype and status >= 400 and confidence != 'high':
-                    continue
-                if confidence == 'low' and issue.get('severity') in ('High', 'Medium'):
-                    issue['severity'] = 'Low'
-
-
-            if desc_low.startswith('possible ssrf'):
-                generic_err = ('connection refused', 'timed out', 'no route to host', 'dns error', 'invalid host')
-                if any(g in body_low for g in generic_err) or status in {400, 404, 405}:
-                    issue['severity'] = 'Info'
-
-
-            if desc_low.startswith('possible access control bypass via spoofed header'):
-                is_json = 'application/json' in ctype
-                admin_hit = re.search('(?i)(<title>[^<]*admin[^<]*</title>|\\badmin\\s*panel\\b|href=[\"\\\']/admin)', body) is not None
-                if is_json and (not loc_low):
-                    issue['severity'] = 'Info'
-                elif not admin_hit and '/admin' not in loc_low:
-                    issue['severity'] = 'Info'
-
-
-            if issue.get('issue', '').lower().startswith('broad cors policy'):
-                is_static = ctype.startswith(('image/', 'video/', 'audio/', 'font/')) or 'application/octet-stream' in ctype or 'application/pdf' in ctype or ('filename=' in cdisp)
-                if is_static and acac != 'true' and (issue.get('severity') in (None, 'Low', 'Info')):
-                    continue
-
-            if status == 404:
-
-
-                if not any(s in body_low for s in (
-                    'root:x:0:0:', 'daemon:x:', 'index of /', '<web-app', '[extensions]'
-                )):
-                    continue
-                if issue.get('severity') in ('High', 'Critical'):
-                    issue['severity'] = 'Info'
-
-            if issue.get('status_code') == '-' or 'timeout' in err_low:
-                issue['severity'] = 'Info'
-
-            dedup_key = (issue.get('method'), issue.get('path') or issue.get('endpoint'), issue.get('status_code'), issue.get('issue'), issue.get('payload'))
-            if dedup_key in seen:
-                continue
-            seen.add(dedup_key)
-            cleaned.append(issue)
-
-        self.issues = cleaned
-        self._dedupe_issues()
-        return self.issues
+        walk(spec)
+        return list(hosts)

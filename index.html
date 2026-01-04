@@ -4,13 +4,13 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta content="VvYq2k5BFp5dpIL6JpQhoe90sWEXZTEBbaynlEKCWRE" name="google-site-verification">
-  <meta name="description" content="APISCAN v3.1 AI-enhanced OWASP APIscanner by Perry Mertens" />
-  <meta property="og:title" content="APISCAN v3.1 OWASP APIScanner by Perry Mertens license AGPL-v3.0" />
+  <meta name="description" content="APISCAN v3.2 AI-enhanced OWASP APIscanner by Perry Mertens" />
+  <meta property="og:title" content="APISCAN v3.2 OWASP APIScanner by Perry Mertens license AGPL-v3.0" />
   <meta property="og:description" content="Extensible, AI-aware apiscanner for OWASP API Security Top 10 with Swagger/OpenAPI support, multiauth flows, and rich HTML reporting." />
   <meta property="og:type" content="website" />
   <meta property="og:image" content="./apiscan_logo.jpg" />
   <meta name="theme-color" content="#0ea5e9" />
-  <title>APISCAN v3.1 is an OWASP API scanner designed to detect API vulnerabilities</title>
+  <title>APISCAN v3.2 is an OWASP API scanner designed to detect API vulnerabilities</title>
   <style>
     :root{
       --bg: #0b1220;
@@ -94,6 +94,7 @@
       <div class="actions">
         <a class="btn" href="https://github.com/perrym/apiscanner" target="_blank" rel="noopener">GitHub</a>
         <a class="btn primary" href="#install">Get Started</a>
+        <a class="btn" href="#setup-tools">Setup and AI config</a>
       </div>
     </div>
   </header>
@@ -102,12 +103,12 @@
     <section class="hero">
       <div>
         <span class="pill">AI-aware Swagger/OpenAPI HTML reports</span>
-        <h2>APISCAN v3.1  AI-enhanced OWASP API Security Scanner. </h2>
+        <h2>APISCAN v3.2  AI-enhanced OWASP API Security Scanner. </h2>
         <p>APIscan is an API vulnerability scanner that proactively identifies security risks by testing against the OWASP API Security Top 10 (2023). It uses your OpenAPI/Swagger specification to generate realistic attack payloads and detect issues such as Broken Object Level Authorization (BOLA), Broken Authentication, Excessive Data Exposure, and other critical API vulnerabilities. APIscan supports OAuth 2.0, Bearer, mTLS, and API key authentication, generates realistic requests, runs scans in parallel, and offers optional AI-assisted review.</p>
         <div class="cta">
           <a class="btn primary" href="https://github.com/perrym/apiscanner" target="_blank" rel="noopener"> Star on GitHub</a>
           <a class="btn" href="#whatsnew">What's new</a>
-          <span class="pill">Version 3.1</span>
+          <span class="pill">Version 3.2</span>
         </div>
       </div>
       <div class="hero-logo">
@@ -117,10 +118,10 @@
     </section>
 
     <section id="whatsnew">
-      <h2>What's new in v3.1</h2>
+      <h2>What's new in v3.2</h2>
       <div style="margin:1rem 0 2rem;display:flex;justify-content:center;">
         <img src="apiscan_v3_dashboard.jpg"
-             alt="APISCAN v3.1 findings dashboard"
+             alt="APISCAN v3.2 findings dashboard"
              style="max-width:100%;border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,0.35);">
       </div>
       <div class="grid features">
@@ -166,6 +167,38 @@ python apiscan.py --url https://api.example.com \
     </section>
 
     <section id="features">
+    <section id="setup-tools">
+      <h2>Setup and LLM helper scripts</h2>
+      <div class="grid features">
+        <article class="card">
+          <h3>Environment and dependency setup (setup.py)</h3>
+          <p>The setup wizard installs or verifies Python dependencies, creates requirements.txt and .env.example, checks environment variables, and prints a summary with next steps.</p>
+          <pre><code># Run full setup
+python setup.py
+
+# Skip dependency install, only check config
+python setup.py --skip-deps
+
+# Minimal mode, no quick start guide
+python setup.py --minimal</code></pre>
+        </article>
+
+        <article class="card">
+          <h3>LLM and AI configuration (llmsetup.py)</h3>
+          <p>The LLM setup script configures one or more AI providers (Ollama, OpenAI, Anthropic, DeepSeek), writes a .env file plus shell specific helper scripts, and generates test_env.py for validation.</p>
+          <pre><code># Start interactive LLM and environment setup
+python llmsetup.py
+
+# Typical flow
+# 1) Select providers (for example: Ollama and OpenAI)
+# 2) Choose a default model per provider
+# 3) Generate .env and apiscan_env.* scripts
+# 4) Load the script in your shell, then run:
+python test_env.py</code></pre>
+        </article>
+      </div>
+    </section>
+
       <h2>Core Features</h2>
       <div class="feature-grid">
         <div class="feature-card">

@@ -1,7 +1,17 @@
-# Networking & HTTP
+# APISCAN - Complete Requirements
+# Core dependencies
 requests>=2.31.0
 urllib3>=2.2.0
+colorama>=0.4.6
 tqdm>=4.66.0
+python-dateutil>=2.8.2
+PyYAML>=6.0.2
+
+# Networking & HTTP
+aiohttp>=3.9.0
+cachetools>=5.3.0
+tenacity>=8.2.0
+
 
 # Authentication
 requests_ntlm>=1.2.0
@@ -13,20 +23,18 @@ sslyze>=6.2.0
 # Parsing & HTML
 beautifulsoup4>=4.12.2
 lxml>=4.9.3
-
-# Output & kleur
-colorama>=0.4.6
-markdown2>=2.4.10
 bs4>=0.0.1
+markdown2>=2.4.10
 
-# AI Client
-openai>=1.0.0
-
-# Typing & util
-python-dateutil>=2.8.2
-typing_extensions>=4.11.0
-PyYAML>=6.0.2
-Hyper>=0.7.0
-h2>= 2.0.0
+# AI & Machine Learning
+openai>=1.0.0,<2.0.0
 anthropic>=0.67.0
+
+# Validation & Typing
+typing_extensions>=4.11.0
 openapi-spec-validator>=0.7.2
+pydantic>=2.0.0
+
+# Development
+python-dotenv>=1.0.0
+h2>=2.4.0,<3.0.0

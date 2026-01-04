@@ -399,16 +399,21 @@
       border-radius: 8px;
       background: #ffffff;
       border: 1px solid #d1d5db;
+
+      display: none;             
+      flex-direction: column;     
       max-height: 200px;
-      display: none;
+      min-height: 0;             
     }
 
     .riskinfo-scroll {
+      flex: 1;                    
+      min-height: 0;              
       overflow-y: auto;
-      max-height: 170px;
       font-size: 12px;
       line-height: 1.35;
     }
+
 
     pre {
       background: #f3f4f6;
@@ -482,17 +487,20 @@
       }
     }
   #inventory-root{display:none !important;}
-    </style>
+    
+    .btn-link{display:inline-block;padding:10px 12px;border:1px solid #2a2f3a;border-radius:10px;background:#10131a;color:#e5e7eb;text-decoration:none;font-weight:700;}
+    .btn-link:hover{background:#151a24;}
+</style>
 </head>
 <body>
   <header class="page-header">
-    <h1>APISCAN - Findings dashboard - APISCAN BY PERRY MERTENS 2025 (Copyright) - </h1>
+    <h1>APISCAN - Findings dashboard - APISCAN BY PERRY MERTENS 2026 (Copyright) - </h1>
     <div style="display:flex; align-items:center; gap:10px;">
       <div class="meta" id="meta-info"></div>
       <div class="page-header-actions">
         <button type="button" onclick="openCombinedReport()">Open combined report</button>
         <button type="button" onclick="printCombinedReport()">Print combined report</button>
-      </div>
+       </div>
     </div>
   </header>
 
@@ -1106,7 +1114,7 @@
       const riskScroll = document.getElementById("riskinfo-scroll");
       if (riskContainer && riskScroll) {
         if (riskInfo) {
-          riskContainer.style.display = "block";
+          riskContainer.style.display = "flex";
           let riskHtml = "<strong>" + escapeHtml(riskInfo.title) + "</strong><br><br>";
           riskHtml += "<div>" + escapeHtml(riskInfo.description) + "</div>";
           if (Array.isArray(riskInfo.recommendation) && riskInfo.recommendation.length) {

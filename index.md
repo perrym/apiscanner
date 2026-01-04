@@ -1,5 +1,5 @@
 ---
-title: APISCAN v3.1 – AI‑enhanced OWASP APIScanner by Perry Mertens (AGPL-v3.0)
+title: APISCAN v3.2 – AI‑enhanced OWASP APIScanner by Perry Mertens (AGPL-v3.0)
 description: Free and open-source APIscanner built in Python with multi-auth, OpenAPI/Swagger support, sanitizer/rewrites, and rich CSV/HTML reporting.
 ---
 
@@ -14,7 +14,7 @@ It understands **OpenAPI/Swagger**, supports **multiple authentication flows**, 
 
 This page is the generic, customer-agnostic documentation corresponding to the v3.0 GitHub Pages landing (`index.html`).
 
-![APISCAN v3.1 dashboard](./apiscan_v3_dashboard.jpg)
+![APISCAN v3.2 dashboard](./apiscan_v3_dashboard.jpg)
 
 ---
 
@@ -28,9 +28,9 @@ Use APISCAN only on systems and APIs for which you have explicit authorization.
 
 ---
 
-## What’s new in v3.1
+## What’s new in v3.2
 
-v3.1 focuses on better planning, headers, and robustness for enterprise scans:
+v3.2 focuses on better planning, headers, and robustness for enterprise scans:
 
 - **Generic sanitizer (no hardcodes)**  
   Collapses duplicate path segments, normalizes `/vN` → `/vN.00`, trims trailing slashes.  
@@ -79,6 +79,56 @@ pip install -r requirements.txt
 ```
 
 ---
+
+
+## Setup helpers (setup.py & llmsetup.py)
+
+Two helper scripts are included to make environment and LLM configuration easier and repeatable.
+
+### Environment & dependencies: `setup.py`
+
+`setup.py` can:
+- Create or update `requirements.txt` and `.env.example`
+- Install or verify Python dependencies
+- Perform basic environment checks (Python version, venv, OS)
+- Print a short summary with next steps
+
+Typical usage:
+
+```bash
+# Run full setup (create venv, install deps, show summary)
+python setup.py
+
+# Skip dependency installation, only check config and files
+python setup.py --skip-deps
+
+# Minimal mode without the extended quickstart text
+python setup.py --minimal
+```
+
+### LLM & AI configuration: `llmsetup.py`
+
+`llmsetup.py` configures one or more AI providers (Ollama, OpenAI, Anthropic, DeepSeek) and writes a ready-to-use `.env` plus shell helpers.
+
+It can:
+- Ask which providers you want to enable
+- Store API keys / base URLs in `.env`
+- Generate shell helpers like `apiscan_env.ps1` / `apiscan_env.sh`
+- Create a `test_env.py` helper to validate your configuration
+
+Typical flow:
+
+```bash
+# Start interactive LLM setup
+python llmsetup.py
+
+# After running the wizard:
+# 1) Load the generated env helper in your shell
+# 2) Run the environment test
+python test_env.py
+```
+
+After that, you can run `apiscan.py` as usual with your configured LLM(s).
 
 ## Quick start
 

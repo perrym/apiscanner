@@ -1,8 +1,8 @@
 ########################################################
 # APISCAN - API Security Scanner                       #
-# Licensed under the AGPL-v3.0                          #
+# Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 3.1 14-12-2025                               #
+# version 3.2 1-4-2026                                 #
 ########################################################
 
 from __future__ import annotations
@@ -137,7 +137,52 @@ def _extract_status_code(res_headers: Any, res_body: Any) -> int | None:
     if st is not None:
         return st
     return None
+#================funtion  Safe errors handeling =============
 
+SAFE_IGNORE = {
+    400: (
+        "Failed to read request",
+        "400 Bad Request",
+        "<h1>400 Bad Request</h1>",
+        "openresty/",
+        "unexpected end of JSON input",
+        "invalid json",
+        "cannot parse json",
+    ),
+    401: ("Unauthorized", "Missing token", "invalid token"),
+    403: ("Forbidden",),
+    404: ("Not Found",),
+    405: (
+        "Method Not Allowed",
+        "Method 'GET' is not supported.",
+        'Method "POST" not allowed.',
+        'Method "GET" not allowed.',
+        "not allowed.",
+    ),
+}
+
+def is_expected_behavior(method: str, status: int | None, body: Any) -> bool:
+    if not status:
+        return False
+
+    body_text = "" if body is None else str(body)
+    body_lower = body_text.lower()
+
+    msgs = SAFE_IGNORE.get(status)
+    if msgs:
+        for msg in msgs:
+            if msg.lower() in body_lower:
+                return True
+
+    if status == 405:
+        # JSON/body variants
+        if "method" in body_lower and "not allowed" in body_lower:
+            return True
+        # some frameworks return empty body
+        if not body_text.strip():
+            return True
+
+    return False
 
 #================funtion _map_severity _map_severity =============
 def _map_severity(s: str | None) -> str:
@@ -175,40 +220,52 @@ def _map_status(s: str | None) -> str:
 
 
 #================funtion _db_items_for_template _db_items_for_template =============
-def _db_items_for_template(db_path: Path, run_id: str | None=None) -> list[dict]:
+def _db_items_for_template(db_path: Path, run_id: str | None = None) -> list[dict]:
     with sqlite3.connect(str(db_path)) as c:
         c.row_factory = sqlite3.Row
-        q = 'SELECT id, run_id, risk_key, title, description, category, severity, status, method, endpoint, req_headers, req_body, res_headers, res_body, res_status, created_at FROM finding'
+        q = (
+            "SELECT id, run_id, risk_key, title, description, category, "
+            "severity, status, method, endpoint, req_headers, req_body, "
+            "res_headers, res_body, res_status, created_at "
+            "FROM finding"
+        )
         params: tuple = ()
         if run_id:
-            q += ' WHERE run_id = ?'
+            q += " WHERE run_id = ?"
             params = (run_id,)
-        q += ' ORDER BY id ASC'
+        q += " ORDER BY id ASC"
         rows = c.execute(q, params).fetchall()
+
     items: list[dict] = []
+
     for r in rows:
-        _res_headers = r['res_headers']
-        _res_body = r['res_body']
+        _res_headers = r["res_headers"]
+        _res_body = r["res_body"]
+
         try:
-            if isinstance(_res_headers, str) and _res_headers.strip().startswith(('{', '[')):
+            if isinstance(_res_headers, str) and _res_headers.strip().startswith(("{", "[")):
                 _res_headers = json.loads(_res_headers)
         except Exception:
             pass
+
         try:
-            if isinstance(_res_body, str) and _res_body.strip().startswith(('{', '[')):
+            if isinstance(_res_body, str) and _res_body.strip().startswith(("{", "[")):
                 _res_body = json.loads(_res_body)
         except Exception:
             pass
-        method = (r['method'] or 'GET').upper()
-        endpoint = r['endpoint'] or ''
-        title = r['title'] or f'{method} {endpoint}'
+
+        method = (r["method"] or "GET").upper()
+        endpoint = r["endpoint"] or ""
+        title = r["title"] or f"{method} {endpoint}"
+
         status_code: int | None = None
-        if r['res_status'] is not None:
+        if r["res_status"] is not None:
             try:
-                v = int(r['res_status'])
+                v = int(r["res_status"])
                 status_code = v if v > 0 else None
             except (ValueError, TypeError):
                 status_code = None
+
         if status_code is None:
             try:
                 status_code = _extract_status_code(_res_headers, _res_body)
@@ -216,7 +273,37 @@ def _db_items_for_template(db_path: Path, run_id: str | None=None) -> list[dict]
                     status_code = None
             except Exception:
                 status_code = None
-        items.append({'id': r['id'], 'title': title, 'description': r['description'] or '', 'endpoint': endpoint, 'url': endpoint, 'method': method, 'category': r['category'] or (r['risk_key'] or ''), 'severity': _map_severity_canon(r['severity']), 'status': _map_status(r['status']), 'date': r['created_at'] or '', 'request': {'headers': _maybe_headers_to_text(r['req_headers']), 'body': r['req_body'] or ''}, 'response': {'status': int(status_code) if isinstance(status_code, int) and status_code > 0 else '', 'headers': _maybe_headers_to_text(_res_headers), 'body': _res_body if isinstance(_res_body, str) else json.dumps(_res_body, ensure_ascii=False)}, 'risk_key': r['risk_key'] or ''})
+
+        if status_code is not None and is_expected_behavior(method, status_code, _res_body):
+            continue
+
+        items.append(
+            {
+                "id": r["id"],
+                "title": title,
+                "description": r["description"] or "",
+                "endpoint": endpoint,
+                "url": endpoint,
+                "method": method,
+                "category": r["category"] or (r["risk_key"] or ""),
+                "severity": _map_severity_canon(r["severity"]),
+                "status": _map_status(r["status"]),
+                "date": r["created_at"] or "",
+                "request": {
+                    "headers": _maybe_headers_to_text(r["req_headers"]),
+                    "body": r["req_body"] or "",
+                },
+                "response": {
+                    "status": int(status_code) if isinstance(status_code, int) and status_code > 0 else "",
+                    "headers": _maybe_headers_to_text(_res_headers),
+                    "body": _res_body
+                    if isinstance(_res_body, str)
+                    else json.dumps(_res_body, ensure_ascii=False),
+                },
+                "risk_key": r["risk_key"] or "",
+            }
+        )
+
     return items
 
 
@@ -283,10 +370,13 @@ def _normalize_for_ui(it: dict) -> dict:
     out['response']['body'] = _to_text(out['response'].get('body'))
     out['category'] = out.get('category') or out.get('risk_key') or ''
     risk_key = (out.get('risk_key') or out.get('category') or '').strip()
-    info = RISK_INFO.get(risk_key)
+    info = _risk_info_lookup(risk_key)
     if info:
         out['risk_info'] = info
+
     return out
+
+
 _MINIMAL_TEMPLATE = '<!doctype html>\n<html lang="en">\n<head>\n  <meta charset="utf-8" />\n  <meta name="viewport" content="width=device-width, initial-scale=1" />\n  <title>API Scan Review by Perry Mertens 2025 pamsniffer@gmail.com</title>\n  <style>\n    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }\n    h1 { margin-bottom: 8px; }\n    .meta { color: #666; margin-bottom: 16px; }\n    .item { border: 1px solid #ddd; border-radius: 8px; padding: 12px 16px; margin: 10px 0; }\n    .pill { display:inline-block; padding:2px 8px; border-radius: 999px; font-size:12px; margin-left: 6px; }\n    .sev-critical { background:#fee; color:#c00; }\n    .sev-high { background:#ffe9e9; color:#b00; }\n    .sev-medium { background:#fff3cd; color:#9a6; }\n    .sev-low { background:#e7f3ff; color:#06c; }\n    .sev-info { background:#eef2f7; color:#345; }\n    .signal-pill { display:inline-block; padding:1px 6px; border-radius: 4px; font-size:10px; margin-left: 4px; background:#e0e0e0; color:#333; }\n    pre { background:#f6f8fa; padding:10px; border-radius:6px; overflow:auto; }\n    .cols { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; }\n    .k { color:#666; }\n  </style>\n</head>\n<body>\n  <h1>API Scan Review</h1>\n  <div class="meta">Generated: <span id="ts"></span> — Items: <span id="cnt"></span></div>\n  <div id="list"></div>\n  <script id="data" type="application/json"></script>\n  <script>\n    const items = window.__APISCAN_ITEMS__ || JSON.parse(document.getElementById("data").textContent || "[]");\n    document.getElementById("ts").textContent = new Date().toISOString().slice(0,19).replace("T"," ");\n    document.getElementById("cnt").textContent = items.length;\n    const m = {"critical":"sev-critical","high":"sev-high","medium":"sev-medium","low":"sev-low","info":"sev-info"};\n    const list = document.getElementById("list");\n    for (const it of items) {\n      const div = document.createElement("div");\n      div.className = "item";\n      const sev = (it.severity||"info").toLowerCase();\n      const signals = it.signals || [];\n      const signalPills = signals.map(s => `<span class="signal-pill">${s}</span>`).join("");\n      div.innerHTML = `\n        <div><strong>${it.title || ""}</strong>\n          <span class="pill ${m[sev]||"sev-info"}">${sev}</span>\n          <span class="pill">${it.method || ""}</span>\n          <span class="pill">${it.response?.status || ""}</span>\n          ${signalPills}\n        </div>\n        <div class="k">${it.category || ""} — ${it.date || ""}</div>\n        <div class="cols">\n          <div>\n            <h4>Request</h4>\n            <pre>${(it.request?.headers||"")}</pre>\n            <pre>${(it.request?.body||"")}</pre>\n          </div>\n          <div>\n            <h4>Response</h4>\n            <pre>${(it.response?.headers||"")}</pre>\n            <pre>${(it.response?.body||"")}</pre>\n          </div>\n        </div>\n      `;\n      list.appendChild(div);\n    }\n  </script>\n</body>\n</html>'
 
 
@@ -322,6 +412,31 @@ def _inject_two_payloads(template_str: str, items: list[dict], endpoints: list[d
         return s.replace('</body>', ep_script + '</body>')
     return s + ep_script
 RISK_INFO = {'BOLA': {'title': 'API1:2023 - Broken Object Level Authorization', 'description': 'APIs often expose object identifiers such as user IDs or document IDs within request paths or parameters. If proper authorization checks are not implemented, attackers can modify these identifiers to access data that does not belong to them. This leads to unauthorized access or data leakage. The risk is especially high in RESTful APIs where object references are part of the URL structure.', 'recommendation': '- Implement object-level authorization checks on every request\n- Use unpredictable IDs (UUID) instead of sequential integers\n- Verify the requester has ownership/access rights for each object\n- Centralize authorization logic\n- Log and alert on failed authorization attempts'}, 'BrokenAuth': {'title': 'API2:2023 - Broken Authentication', 'description': 'Authentication mechanisms that are poorly designed or misconfigured allow attackers to compromise tokens, bypass login flows, or hijack user sessions. This includes flaws in token generation, session expiration, credential storage, or password reset logic. The impact can range from unauthorized access to full account takeover.', 'recommendation': '- Use MFA for sensitive actions\n- Work with short-lived, cryptographically signed tokens\n- Secure password/token recovery flows\n- Temporarily lock accounts after too many failed attempts\n- Never expose credentials in URLs or error messages'}, 'Property': {'title': 'API3:2023 - Broken Object Property Level Authorization', 'description': "APIs that expose internal object properties without proper access control allow clients to view or manipulate data they shouldn't have access to. This includes over-sharing in API responses and accepting unexpected or sensitive fields in client submissions, known as mass assignment vulnerabilities. Attackers can exploit this to alter read-only or admin-level fields.", 'recommendation': '- Explicitly define which fields are visible/editable per role\n- Validate request and response payloads with schemas\n- Filter sensitive fields server-side before sending\n- Use different DTOs for different access levels\n- Strictly separate public and private properties'}, 'Resource': {'title': 'API4:2023 - Unrestricted Resource Consumption', 'description': 'Lack of proper resource management allows attackers to overload the system with excessive requests, large payloads, or expensive operations. This can lead to denial of service (DoS), service degradation, or increased operational costs. APIs that allow unlimited requests, nested queries, or unbounded filters are particularly vulnerable.', 'recommendation': '- Implement rate limiting and quotas\n- Set maximum payload sizes\n- Use pagination or partial responses\n- Monitor abnormal consumption\n- Cache expensive operations where possible'}, 'AdminAccess': {'title': 'API5:2023 - Broken Function Level Authorization', 'description': 'APIs may expose administrative or privileged operations without enforcing strict access control. Attackers can escalate privileges by calling hidden or undocumented functions. These issues often stem from complex role hierarchies, inconsistent policy enforcement, or a lack of centralized authorization checks.', 'recommendation': '- Use RBAC or ABAC with deny-by-default\n- Centralize authorization logic\n- Thoroughly test ALL admin functions\n- Require step-up authentication for critical actions\n- Document and encrypt sensitive admin flows'}, 'BusinessFlows': {'title': 'API6:2023 - Unrestricted Access to Sensitive Business Flows', 'description': 'APIs that expose key business processes such as financial transactions, bookings, or account changes are attractive targets for abuse. If such flows lack business logic validation or abuse protection (e.g. rate limiting, anomaly detection), they may be exploited through automation, leading to financial loss or fraud.', 'recommendation': '- Add business context validations (e.g. balance, limits)\n- Use CAPTCHA/rate limiting against bots\n- Detect and block abnormal patterns\n- Require step-up authentication for risky actions\n- Monitor critical flows in real-time'}, 'SSRF': {'title': 'API7:2023 - Server Side Request Forgery', 'description': 'If an API accepts URLs or user-defined targets and then performs server-side requests, attackers may exploit this functionality to access internal services, scan the network, or retrieve sensitive metadata. SSRF can also be used as a pivot point in multi-stage attacks against internal infrastructure or cloud metadata endpoints.', 'recommendation': "- Validate & sanitize all provided URLs\n- Use an allow-list of permitted domains\n- Don't follow redirects or limit the number of hops\n- Segment internal networks; block outgoing requests where possible\n- Apply egress firewall rules"}, 'Misconfig': {'title': 'API8:2023 - Security Misconfiguration', 'description': 'Misconfigured HTTP headers, CORS policies, verbose error messages, and leftover debug endpoints are common in APIs and can be exploited to gain insight into backend systems or bypass protections. Misconfigurations may also lead to data exposure, unauthorized access, or weakened transport security.', 'recommendation': '- Harden systems according to security baselines\n- Disable unnecessary HTTP methods\n- Remove debug/test endpoints in production\n- Set strict CORS policies\n- Regularly review & patch configurations'}, 'Inventory': {'title': 'API9:2023 - Improper Inventory Management', 'description': "Organizations often lose track of API versions, staging/test environments, and undocumented endpoints. These shadow or zombie APIs may be exposed to the internet and remain unprotected. Without proper inventory, you can't assess security posture, enforce updates, or manage deprecations effectively.", 'recommendation': '- Maintain an up-to-date inventory of all endpoints\n- Carefully deprecate & remove old versions\n- Document each endpoint with purpose & owner\n- Implement clear versioning strategy\n- Proactively scan for undocumented APIs'}, 'UnsafeConsumption': {'title': 'API10:2023 - Unsafe Consumption of APIs', 'description': 'Trusting third-party or upstream APIs without proper validation introduces significant risks. These include injection attacks, unexpected responses, and business logic flaws. If these dependencies are not handled defensively, they can cause data corruption, denial of service, or unauthorized access to internal systems.', 'recommendation': '- Validate & sanitize all data from third-party APIs\n- Set time limits & retries\n- Fail safely: handle external errors gracefully\n- Keep third-party credentials secret & rotate regularly\n- Continuously monitor external service behavior'}, 'Authentication': {'title': 'Authentication & Transport Security', 'description': 'This finding indicates weaknesses in authentication- or transport-related controls, such as HTTP endpoints reachable without HTTPS redirection or exposure of sensitive files supporting authentication (e.g. .env with secrets). These issues can lead to credential theft, session hijacking or manipulation of traffic in transit.', 'recommendation': '- Enforce HTTPS for all API endpoints; redirect HTTP to HTTPS\n- Use HSTS (HTTP Strict Transport Security) for public domains\n- Never expose .env or other config files over HTTP\n- Store secrets only in secure vaults, not in web root\n- Regularly test authentication and TLS configuration with automated scanners'}}
+_RISK_INFO_ALIASES = {
+    # OWASP 2023 labels → interne keys
+    "API1:2023 - Broken Object Level Authorization": "BOLA",
+    "API2:2023 - Broken Authentication": "BrokenAuth",
+    "API3:2023 - Broken Object Property Level Authorization": "Property",
+    "API4:2023 - Unrestricted Resource Consumption": "Resource",
+    "API5:2023 - Broken Function Level Authorization": "AdminAccess",
+    "API6:2023 - Unrestricted Access to Sensitive Business Flows": "BusinessFlows",
+    "API7:2023 - Server Side Request Forgery": "SSRF",
+    "API8:2023 - Security Misconfiguration": "Misconfig",
+    "API9:2023 - Improper Inventory Management": "Inventory",
+    "API10:2023 - Unsafe Consumption of APIs": "UnsafeConsumption",
+
+    # Short/human variants → interne keys
+    "Unsafe Consumption of APIs": "UnsafeConsumption",
+    "UnsafeConsumption": "UnsafeConsumption",
+    "API10": "UnsafeConsumption",
+}
+
+
+def _risk_info_lookup(key: str):
+    k = (key or "").strip()
+    k = _RISK_INFO_ALIASES.get(k, k)
+    return RISK_INFO.get(k)
+
 _HTTP0_ALLOWED_KINDS = {'secure_transport', 'tls', 'hsts', 'cipher', 'hostname', 'dns', 'timeout'}
 _PII_IBAN_NL = re.compile('\\bNL[0-9]{2}[A-Z]{4}[0-9]{10}\\b', re.I)
 _PII_IBAN_GENERIC = re.compile('\\b[A-Z]{2}[0-9]{2}[\\sA-Z0-9]{10,30}\\b', re.I)
@@ -398,51 +513,81 @@ def _txt_hdrs(it: dict) -> str:
 #================funtion _detect_risk_signals _detect_risk_signals =============
 def _detect_risk_signals(item: dict) -> list[str]:
     signals: list[str] = []
-    category = (item.get('category') or '').lower()
-    risk_key = (item.get('risk_key') or '').lower()
-    if any((kind in category or kind in risk_key for kind in _HTTP0_ALLOWED_KINDS)):
-        signals.append('transport')
+
+    category = (item.get("category") or "").lower()
+    risk_key = (item.get("risk_key") or "").lower()
+
+    if any(kind in category or kind in risk_key for kind in _HTTP0_ALLOWED_KINDS):
+        signals.append("transport")
     response_body = _txt_body(item)
     response_headers = _txt_hdrs(item)
-    request_headers = item.get('request', {}).get('headers', '')
-    request_body = item.get('request', {}).get('body', '')
-    endpoint = item.get('endpoint', '')
-    all_text = ' '.join([response_body, response_headers, request_headers, request_body, endpoint])
+    request_headers = item.get("request", {}).get("headers", "") or ""
+    request_body = item.get("request", {}).get("body", "") or ""
+    endpoint = item.get("endpoint", "") or ""
+    all_text = " ".join([str(response_body), str(response_headers), str(request_headers), str(request_body), str(endpoint)])
+    all_lower = all_text.lower()
     if _PII_IBAN_NL.search(all_text):
-        signals.append('IBAN')
+        signals.append("IBAN")
     if _PII_IBAN_GENERIC.search(all_text):
-        signals.append('IBAN-generic')
+        signals.append("IBAN-generic")
+
     bsn_matches = _PII_BSN.findall(all_text)
     for bsn in bsn_matches:
         if _is_valid_bsn(bsn):
-            signals.append('BSN')
+            signals.append("BSN")
             break
     if _PII_EMAIL.search(all_text):
-        signals.append('email')
-    cleaned = all_text.replace(' ', '').replace('-', '')
+        signals.append("email")
+    cleaned = all_text.replace(" ", "").replace("-", "")
     cc_matches = _PII_CREDITCARD.findall(cleaned)
     for cc in cc_matches:
         if _luhn_check(cc):
-            signals.append('creditcard')
+            signals.append("creditcard")
             break
     if _SECRET_JWT.search(all_text):
-        signals.append('JWT')
+        signals.append("JWT")
     if _SECRET_API_KEY.search(all_text):
-        signals.append('API-key')
+        signals.append("API-key")
     if _SECRET_AWS_KEY.search(all_text):
-        signals.append('AWS-key')
-    if _has_duplicate_params(endpoint):
-        signals.append('dup-params')
-    if _VERBOSE_ERROR_RE.search(all_text):
-        signals.append('verbose-error')
-    status = _status_int(item)
-    if status and status >= 500:
-        user_input_indicators = ['input', 'parameter', 'query', 'body', 'form', 'json', 'payload']
-        request_text = (request_headers + ' ' + request_body).lower()
-        if any((indicator in request_text for indicator in user_input_indicators)):
-            signals.append('5xx-input')
-    return signals
+        signals.append("AWS-key")
 
+    if _has_duplicate_params(endpoint):
+        signals.append("dup-params")
+
+    if _VERBOSE_ERROR_RE.search(all_text):
+        signals.append("verbose-error")
+    hdr_lower = response_headers.lower()
+    if "access-control-allow-origin: *" in hdr_lower:
+        signals.append("cors-wildcard")
+    if "access-control-allow-headers" in hdr_lower and "authorization" in hdr_lower:
+        signals.append("cors-authorization")
+    if (
+        "crapi-identity:" in all_lower
+        or re.search(r"\b[a-z0-9-]+\.(svc|cluster\.local)\b", all_lower)
+        or re.search(r"\b[a-z0-9-]+:\d{2,5}\b", all_lower)  
+    ):
+        
+        if any(x in all_lower for x in ("svc", "cluster.local", "crapi-", "identity", "internal")):
+            signals.append("internal-host-leak")
+
+    status = _status_int(item)
+    if status in (400, 414, 431):
+        if "server: openresty" in all_lower or "server: nginx" in all_lower:
+            signals.append("proxy-reject")
+        if "<h1>400 bad request</h1>" in all_lower or "400 bad request" in all_lower:
+            signals.append("proxy-reject")
+    if status == 405:
+        if "allow:" in hdr_lower:
+            signals.append("method-enforced")
+        if "not allowed" in all_lower and "method" in all_lower:
+            signals.append("method-enforced")
+    if status and status >= 500:
+        user_input_indicators = ("input", "parameter", "query", "body", "form", "json", "payload")
+        request_text = (request_headers + " " + request_body).lower()
+        if any(ind in request_text for ind in user_input_indicators):
+            signals.append("5xx-input")
+
+    return signals
 
 #================funtion _has_http0_allowlist_kind _has_http0_allowlist_kind =============
 def _has_http0_allowlist_kind(item: dict) -> bool:
@@ -615,6 +760,10 @@ def build_review(db_path: Path, out_path: Path, template: Path | None=None, run_
     filtered_items = []
     for it in items:
         status_unknown = _is_unknown_status(it.get('response', {}).get('status'))
+        category = (it.get('category') or '').lower()
+        if 'ai-owasp' in category or 'ai' in category:
+            filtered_items.append(it)
+            continue
         signals = _detect_risk_signals(it)
         it['signals'] = signals
         try:
@@ -639,6 +788,12 @@ def build_review(db_path: Path, out_path: Path, template: Path | None=None, run_
     html_out = _inject_two_payloads(tpl, items, endpoints)
     html_out = _postprocess_review_html_for_info(html_out)
     out_path.write_text(html_out, encoding='utf-8')
+    try:
+        combined_path = out_path.parent / 'combined_report.html'
+        if combined_path.resolve() != out_path.resolve():
+            combined_path.write_text(html_out, encoding='utf-8')
+    except Exception:
+        pass
     print(f'[build_review] Wrote: {out_path} (items: {len(items)})')
     return out_path
 

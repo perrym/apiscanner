@@ -1,8 +1,8 @@
 ########################################################
 # APISCAN - API Security Scanner                       #
-# Licensed under the AGPL-v3.0                          #
+# Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 3.1 14-12-2025                               #
+# version 3.2 1-4-2026                                 #
 ########################################################                                             
 from __future__ import annotations
 import json
@@ -107,6 +107,10 @@ class MisconfigurationAuditorPro:
         self.logger = logging.getLogger(__name__)
         if debug:
             self.logger.setLevel(logging.DEBUG)
+        
+        # Error suppressie attributen
+        self._endpoint_error_counts = {}
+        self._param_error_logged = set()
 
     #================funtion _tw logging wrapper ##########
     def _tw(self, message: str, level: str = "info") -> None:
@@ -348,6 +352,17 @@ class MisconfigurationAuditorPro:
             self._last_request_time = time.time()
 
                                                                                
+    #================funtion _suppress_excessive_errors prevent error spam ##########
+    def _suppress_excessive_errors(self, endpoint_method, endpoint_path):
+        """Suppress error logging after too many consecutive errors on same endpoint"""
+        with self._lock:
+            key = f"{endpoint_method} {endpoint_path}"
+            self._endpoint_error_counts[key] = self._endpoint_error_counts.get(key, 0) + 1
+            
+            # Als we meer dan 3 errors hebben op hetzelfde endpoint, log minder
+            if self._endpoint_error_counts[key] > 3:
+                return self._endpoint_error_counts[key] % 10 == 0  # Log elke 10e error
+            return True  # Log alle errors
                                                                                          
     #================funtion _test_single_endpoint probe one endpoint and run analyzers ##########
     def _test_single_endpoint(self, ep: Endpoint, pbar: Optional[tqdm] = None) -> None:
@@ -355,25 +370,35 @@ class MisconfigurationAuditorPro:
             method = ep["method"]
             path   = ep["path"]
             base   = ep.get("base") or self.base_url
+            
+            error_key = f"{method} {path}"
+            with self._lock:
+                if self._endpoint_error_counts.get(error_key, 0) >= 5:
+                    if pbar:
+                        pbar.update(1)
+                    return
+            
             full_url = urljoin(base, path.lstrip("/"))
+            
             if "{" in path and "}" in path:
                 path = re.sub(r"\{[^}]+\}", "123", path)
                 full_url = urljoin(base, path.lstrip("/"))
+            
             host_key = urlparse(full_url).netloc.lower()
+            
             if self.debug:
                 self._tw(f"Testing {method} {path}", level="debug")
+
             seq = []
-            if method != "HEAD":
+            if method == "GET":
                 seq.append("HEAD")
             if method not in ("HEAD", "OPTIONS"):
                 seq.append("OPTIONS")
             seq.append(method)
             seen = set()
             seq = [m for m in seq if not (m in seen or seen.add(m))]
-
             with self._lock:
                 host_already_reported = (host_key in self._reported_header_hosts)
-
             for m in seq:
                 try:
                     self._enforce_rate_limit()
@@ -381,14 +406,43 @@ class MisconfigurationAuditorPro:
                     headers = dict(getattr(self.session, "headers", {}) or {})
                     if m in ("HEAD", "OPTIONS"):
                         headers.pop("Authorization", None)
-                    resp = self.session.request(m, full_url, headers=headers, timeout=self.timeout, allow_redirects=True)
+                        headers.pop("X-API-Key", None)
+                        headers.pop("X-Auth-Token", None)
+                    resp = self.session.request(
+                        m, 
+                        full_url, 
+                        headers=headers, 
+                        timeout=self.timeout, 
+                        allow_redirects=True
+                    )
                     dur = time.time() - start
                     self._request_counter += 1
+                    
+                    with self._lock:
+                        if error_key in self._endpoint_error_counts:
+                            del self._endpoint_error_counts[error_key]
+                    
                 except requests.RequestException as e:
                     self._error_count += 1
-                    self._tw(f"{m} failed for {method} {path}: {e}", "error")
+                    with self._lock:
+                        self._endpoint_error_counts[error_key] = \
+                            self._endpoint_error_counts.get(error_key, 0) + 1
+                    if self._suppress_excessive_errors(method, path):
+                        error_msg = str(e)
+                        if "500" in error_msg or "Internal Server Error" in error_msg:
+                            self._tw(f"{m} 500 error for {method} {path}", "warn")
+                        else:
+                            self._tw(f"{m} failed for {method} {path}: {e}", "error")
+                    if self._error_count >= self.RATE_LIMIT_AFTER_ERRORS:
+                        self._tw("Many errors, cooling down 1s", "warn")
+                        time.sleep(1.0)
+                        self._error_count = 0
+                    if m == "OPTIONS" and self._endpoint_error_counts.get(error_key, 0) >= 2:
+                        continue
+                    if m == method and self._endpoint_error_counts.get(error_key, 0) >= 5:
+                        break
                     continue
-
+                
                 if not host_already_reported:
                     f = self._security_header_analyzer(ep, f"<{m}>", resp, dur)
                     if f:
@@ -396,7 +450,6 @@ class MisconfigurationAuditorPro:
                     with self._lock:
                         self._reported_header_hosts.add(host_key)
                         host_already_reported = True
-
                 for analyzer in self._response_analyzers:
                     if host_already_reported and analyzer == self._security_header_analyzer:
                         continue
@@ -405,78 +458,140 @@ class MisconfigurationAuditorPro:
                         if f:
                             self._record_finding(f)
                     except Exception as ex:
-                        self._tw(f"Analyzer {analyzer.__name__} on {m} {path}: {ex}", "error")
-
+                        self._tw(f"Analyzer {analyzer.__name__} on {m} {path}: {ex}", "debug")
             if method not in ("HEAD", "OPTIONS"):
+                with self._lock:
+                    if self._endpoint_error_counts.get(error_key, 0) >= 3:
+                        if pbar:
+                            pbar.update(1)
+                        return
+                
                 probe_names = getattr(self, "PARAM_PROBE_NAMES", [
                     "probe", "debug", "verbose", "pretty", "format", "fields",
                     "sort", "expand", "include", "lang", "locale", "cache",
                     "nocache", "trace", "test"
                 ])
                 probe_vals = getattr(self, "PARAM_PROBE_VALUES", ["1", "true", "*"])
-
-                for name in probe_names:
-                    for val in probe_vals:
+                
+                max_probes = 3 if self._error_count > 0 else len(probe_names)
+                
+                for i, name in enumerate(probe_names[:max_probes]):
+                    with self._lock:
+                        if self._endpoint_error_counts.get(error_key, 0) >= 3:
+                            break
+                    
+                    for val in probe_vals[:2]:
                         try:
                             self._enforce_rate_limit()
+                            
                             u = urlparse(full_url)
                             q = dict(parse_qsl(u.query, keep_blank_values=True))
                             q[name] = val
                             crafted = u._replace(query=urlencode(q, doseq=True)).geturl()
+                            
                             start = time.time()
-                            resp = self.session.request(method, crafted, timeout=self.timeout, allow_redirects=True)
+                            resp = self.session.request(
+                                method, 
+                                crafted, 
+                                timeout=self.timeout, 
+                                allow_redirects=True
+                            )
                             dur = time.time() - start
                             self._request_counter += 1
-
+                            
+                            with self._lock:
+                                if error_key in self._endpoint_error_counts:
+                                    del self._endpoint_error_counts[error_key]
+                            
                             for analyzer in self._response_analyzers:
                                 if host_already_reported and analyzer == self._security_header_analyzer:
                                     continue
                                 f = analyzer(ep, f"{name}={val}", resp, dur)
                                 if f:
                                     self._record_finding(f)
-
+                            
                             if self._request_counter % self.RANDOM_SLEEP_AFTER_REQUESTS == 0:
                                 time.sleep(random.uniform(0.1, 0.3))
-
+                                
                         except requests.RequestException as e:
                             self._error_count += 1
-                            self._tw(f"Param probe failed ({name}={val}) on {method} {path}: {e}", "error")
+                            
+                            with self._lock:
+                                self._endpoint_error_counts[error_key] = \
+                                    self._endpoint_error_counts.get(error_key, 0) + 1
+                            
+                            param_error_key = f"param-{method}-{path}"
+                            with self._lock:
+                                if param_error_key not in self._param_error_logged:
+                                    error_msg = str(e)
+                                    if "500" in error_msg or "Internal Server Error" in error_msg:
+                                        try:
+                                            mock_resp = type('MockResponse', (), {
+                                                'status_code': 500,
+                                                'headers': {},
+                                                'text': str(e),
+                                                'request': type('MockRequest', (), {
+                                                    'method': method,
+                                                    'url': crafted
+                                                })()
+                                            })()
+                                            
+                                            finding = self._build_finding(
+                                                ep,
+                                                f"{name}={val}",
+                                                mock_resp,
+                                                0.0,
+                                                f"500 error on parameter probe: {name}={val}",
+                                                "Medium"
+                                            )
+                                            self._record_finding(finding)
+                                        except Exception:
+                                            pass
+                                        
+                                        self._tw(f"Param probe 500 error on {method} {path} ({name}={val})", "warn")
+                                    else:
+                                        self._tw(f"Param probe failing on {method} {path}: {e}", "error")
+                                    self._param_error_logged.add(param_error_key)
+                            
                             if self._error_count >= self.RATE_LIMIT_AFTER_ERRORS:
                                 self._tw("Many errors, cooling down 1s", "warn")
                                 time.sleep(1.0)
                                 self._error_count = 0
-
+                            
+                            with self._lock:
+                                if self._endpoint_error_counts.get(error_key, 0) >= 3:
+                                    break
+                        
         except Exception as e:
-            self._tw(f"Unexpected test error at {ep.get('method')} {ep.get('path')}: {e}", "error")
+            if self._suppress_excessive_errors(method, path):
+                self._tw(f"Unexpected test error at {method} {path}: {e}", "error")
         finally:
             if pbar:
-                pbar.update(1)
-
-                                                                               
-                                                                                             
+                pbar.update(1)                              
+                                                                                                
     #================funtion _security_header_analyzer detect missing security headers ##########
     def _security_header_analyzer(self, ep, payload, resp, dur):
-                                                                
         if self._is_api_json(resp):
             return None
-                                                
+            
         path = (ep.get("path") if isinstance(ep, dict) else str(ep) or "").lower()
         if re.search(r"/auth|/login|/signup|check-otp|verify-email-token", path):
             return None
-                                                    
+            
         if str(self.base_url).lower().startswith("http://"):
             return None
+        
         hdrs = resp.headers or {}
-        missing = []
         low_keys = {k.lower(): v for k, v in hdrs.items()}
+        missing = []
 
         if "strict-transport-security" not in low_keys:
             missing.append("HSTS")
-        if str(hdrs.get("X-Content-Type-Options", "")).lower() != "nosniff":
+        if low_keys.get("x-content-type-options", "").lower() != "nosniff":
             missing.append("X-Content-Type-Options")
-        if "X-Frame-Options" not in hdrs:
+        if "x-frame-options" not in low_keys:
             missing.append("X-Frame-Options")
-        if "Content-Security-Policy" not in hdrs:
+        if "content-security-policy" not in low_keys:
             missing.append("CSP")
 
         if not missing:
@@ -487,9 +602,8 @@ class MisconfigurationAuditorPro:
             "Missing: " + ", ".join(missing),
             "Low",
         )
-
                                                                                   
-        #================funtion _cors_analyzer analyze CORS exposure ##########
+    #================funtion _cors_analyzer analyze CORS exposure ##########
     def _cors_analyzer(self, ep, payload, resp, dur):
         hdrs = resp.headers or {}
         acao = (hdrs.get("Access-Control-Allow-Origin", "") or "").strip()
@@ -507,22 +621,24 @@ class MisconfigurationAuditorPro:
 
         method = getattr(getattr(resp, "request", None), "method", "GET").upper()
 
+        # Default severity
         sev = "Info"
         desc_parts = [f"ACAO={acao}", f"ACAC={acac or 'false'}"]
-
+        
         if "," in acao:
             sev = "Medium"
-            desc_parts.append("Non-standard: multiple origins in ACAO")
+            desc_parts.append("Multiple origins in ACAO")
         elif acao == "*" and acac == "true":
             sev = "High"
+            desc_parts.append("Wildcard with credentials")
         elif req_origin and acao == req_origin:
             sev = "Medium" if "origin" not in vary else "Low"
             desc_parts.append("ACAO reflects request Origin")
-        elif acao == "*" and acac != "true":
-            sev = "Info" if method == "OPTIONS" else "Low"
+        elif acao == "*":
+            sev = "Low" if method != "OPTIONS" else "Info"
+            desc_parts.append("Wildcard CORS")
 
         return self._build_finding(ep, payload, resp, dur, ", ".join(desc_parts), sev)
-
 
     #================funtion _server_error_analyzer flag 5xx server errors ########## flag 5xx server errors ##########
     def _server_error_analyzer(self, ep, payload, resp, dur):
@@ -660,6 +776,10 @@ class MisconfigurationAuditorPro:
             endpoints = self.endpoints_from_spec_universal()
         if not endpoints:
             return []
+
+        # Reset error tracking voor nieuwe scan
+        self._endpoint_error_counts = {}
+        self._param_error_logged = set()
 
         with ThreadPoolExecutor(max_workers=self.concurrency) as pool:
             futures = [pool.submit(self._test_single_endpoint, ep) for ep in endpoints]

@@ -150,6 +150,6 @@ python apiscan.py --url https://api.example.com --swagger openapi.json --api11
 - Contact: pamsniffer@gmail.com
 
 ---
-© 2026 Perry Mertens. Released under the AGPL-v3.0 License.
+© 2026 Perry Mertens pamsniffer@gmail.com. Released under the AGPL-v3.0 License.
 
 ---

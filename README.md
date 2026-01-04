@@ -148,3 +148,8 @@ python apiscan.py --url https://api.example.com --swagger openapi.json --api11
 - Medium article: https://medium.com/@PerryPM/apiscan-a-practical-approach-to-api-security-testing-by-perry-mertens-96b5e676c071
 - GitHub: https://github.com/perrym/apiscanner
 - Contact: pamsniffer@gmail.com
+
+---
+© 2026 Perry Mertens. Released under the AGPL-v3.0 License.
+
+---

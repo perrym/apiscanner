@@ -9,6 +9,7 @@ import os
 import subprocess
 import platform
 from pathlib import Path
+
 # ==========================================================
 # DEFAULT CONFIG / FALLBACK STRINGS
 # ==========================================================
@@ -62,14 +63,38 @@ For help:
    python apiscan.py --help
 """
 
-# Requirements fallback (only used if no requirements.txt exists)
-requirements = """requests>=2.31.0
-aiohttp>=3.9.0
+# NOTE: This is the single fallback source of truth for dependencies.
+requirements = """# Networking & HTTP
+requests>=2.31.0
+urllib3>=2.2.0
 tqdm>=4.66.0
-tenacity>=8.2.0
+
+# Authentication
+requests_ntlm>=1.2.0
+requests-oauthlib>=1.3.1
+oauthlib>=3.2.2
+PyJWT>=2.8.0
+sslyze>=6.2.0
+
+# Parsing & HTML
+beautifulsoup4>=4.12.2
+lxml>=4.9.3
+
+# Output
+colorama>=0.4.6
+markdown2>=2.4.10
+
+# AI Clients
 openai>=1.0.0,<2.0.0
+anthropic>=0.67.0
+
+# Typing & util
+python-dateutil>=2.8.2
+typing_extensions>=4.15.0
+PyYAML>=6.0.2
+openapi-spec-validator>=0.7.2
+tenacity>=8.2.0
 python-dotenv>=1.0.0
-colorama>=0.4.0
 pydantic>=2.0.0
 """
 
@@ -83,48 +108,75 @@ class Colors:
     BOLD = '\033[1m'
     END = '\033[0m'
 
+
 #================ print_header ##########
 def print_header(text):
     print(f"\n{Colors.CYAN}{'='*60}{Colors.END}")
     print(f"{Colors.BOLD}{Colors.BLUE}{text.center(60)}{Colors.END}")
     print(f"{Colors.CYAN}{'='*60}{Colors.END}")
 
+
 #================ print_success ##########
 def print_success(text):
     print(f"{Colors.GREEN}{text}{Colors.END}")
+
 
 #================ print_warning ##########
 def print_warning(text):
     print(f"{Colors.YELLOW}{text}{Colors.END}")
 
+
 #================ print_error ##########
 def print_error(text):
     print(f"{Colors.RED}{text}{Colors.END}")
+
 
 #================ print_info ##########
 def print_info(text):
     print(f"{Colors.CYAN}{text}{Colors.END}")
 
+
 #================ check_python_version ##########
 def check_python_version():
     print_header("PYTHON VERSION CHECK")
-    
+
     required = (3, 8)
     current = sys.version_info[:2]
-    
+
     print_info(f"Python version: {sys.version}")
-    
+
     if current >= required:
         print_success(f"Python {current[0]}.{current[1]} meets minimum requirement {required[0]}.{required[1]}")
         return True
-    else:
-        print_error(f"Python {current[0]}.{current[1]} is too old. Minimum is {required[0]}.{required[1]}")
-        return False
+
+    print_error(f"Python {current[0]}.{current[1]} is too old. Minimum is {required[0]}.{required[1]}")
+    return False
+
+
+#================ _parse_fallback_requirements ##########
+def _parse_fallback_requirements(req_text: str) -> list[str]:
+    deps: list[str] = []
+    for raw in req_text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        deps.append(line)
+    return deps
+
+
+#================ _package_name_from_spec ##########
+def _package_name_from_spec(spec: str) -> str:
+    
+    for sep in ["==", ">=", "<=", "!=", "~=", ">", "<"]:
+        if sep in spec:
+            return spec.split(sep, 1)[0].strip()
+    return spec.strip()
+
 
 #================ install_dependencies ##########
 def install_dependencies():
     print_header("INSTALLING DEPENDENCIES")
-    
+
     def get_installed_version(package_name):
         try:
             import importlib.metadata
@@ -183,38 +235,22 @@ def install_dependencies():
                 used_requirements = True
             except subprocess.CalledProcessError as e:
                 print_error(f"Failed to install from {req_file}: {e}")
-                print_warning("Falling back to internal core/optional dependency lists")
+                print_warning("Falling back to internal requirements list")
                 fail_count += 1
 
+       
         if not used_requirements:
-            core_deps = [
-                "requests>=2.31.0",
-                "aiohttp>=3.9.0",
-                "tqdm>=4.66.0",
-                "tenacity>=8.2.0",
-                "openai>=1.0.0,<2.0.0",
-            ]
+            deps = _parse_fallback_requirements(requirements)
 
-            optional_deps = [
-                "python-dotenv>=1.0.0",
-                "colorama>=0.4.0",
-                "pydantic>=2.0.0",
-            ]
-
-            print_info("Core dependencies for APISCAN:")
-            for dep in core_deps:
-                print(f"  - {dep}")
-            
-            print_info("\nOptional dependencies (recommended):")
-            for dep in optional_deps:
+            print_info("Fallback dependency list (requirements.txt not used):")
+            for dep in deps:
                 print(f"  - {dep}")
 
-            print_info("\nInstalling ALL dependencies (core + optional)...")
-            _, core_fail = install_package_list(core_deps, "Installing core dependencies...")
-            _, opt_fail = install_package_list(optional_deps, "Installing optional dependencies...")
-            fail_count += core_fail + opt_fail
+            print_info("\nInstalling fallback dependencies...")
+            _, dep_fail = install_package_list(deps, "Installing dependencies...")
+            fail_count += dep_fail
 
-        # Ensure OpenAI 1.x for compatibility
+
         openai_version = get_installed_version("openai")
         if openai_version:
             if openai_version.startswith("2."):
@@ -236,18 +272,8 @@ def install_dependencies():
             print_warning("OpenAI not found after installation, consider installing it manually")
 
         print_header("INSTALLATION VERIFICATION")
-
-        # Basic verification set. This can be extended if needed.
-        packages_to_check = [
-            "requests",
-            "aiohttp",
-            "tqdm",
-            "tenacity",
-            "openai",
-            "python-dotenv",
-            "colorama",
-            "pydantic",
-        ]
+        deps_for_check = _parse_fallback_requirements(requirements)
+        packages_to_check = [_package_name_from_spec(d) for d in deps_for_check]
 
         verified = []
         failed = []
@@ -282,25 +308,26 @@ def install_dependencies():
         traceback.print_exc()
         return False
 
+
 #================ check_environment ##########
 def check_environment():
     print_header("ENVIRONMENT CHECK")
-    
+
     issues = []
     warnings = []
-    
+
     if Path(".env").exists():
         print_success(".env file found")
     else:
         warnings.append("No .env file found")
         print_warning("No .env file - create a .env with your configuration")
-    
+
     env_checks = [
         ("LLM_API_KEY", "For AI analysis", False, None),
         ("LLM_PROVIDER", "For LLM choice", True, "openai_compat"),
         ("APISCAN_BASE_URL", "For live scanning", False, None),
     ]
-    
+
     for var, description, required, default in env_checks:
         value = os.getenv(var)
         if value:
@@ -315,33 +342,34 @@ def check_environment():
         else:
             print_warning(f"{var}: Not set ({description})")
             warnings.append(var)
-    
+
     return issues, warnings
+
 
 #================ create_example_env ##########
 def create_example_env():
     print_header("CREATING .ENV EXAMPLE")
-    
-    # env_example and gitignore are expected to be defined elsewhere in this file
+
     env_path = Path(".env.example")
     env_path.write_text(env_example, encoding="utf-8")
     print_success(f".env.example created at {env_path}")
-    
+
     if not Path(".gitignore").exists():
         Path(".gitignore").write_text(gitignore, encoding="utf-8")
         print_success(".gitignore created")
 
+
 #================ check_custom_modules ##########
 def check_custom_modules():
     print_header("CUSTOM MODULES CHECK")
-    
+
     modules = [
         ("report_utils", "For advanced reporting", False),
         ("build_review", "For review dashboards", False),
     ]
-    
+
     missing = []
-    
+
     for module, description, required in modules:
         try:
             __import__(module)
@@ -352,59 +380,58 @@ def check_custom_modules():
                 missing.append(module)
             else:
                 print_warning(f"{module}: Not found ({description})")
-    
+
     return missing
+
 
 #================ create_requirements_txt ##########
 def create_requirements_txt():
     print_header("CREATING REQUIREMENTS.TXT")
-    
-    # requirements string is expected to be defined elsewhere in this file
+
     req_path = Path("requirements.txt")
     req_path.write_text(requirements, encoding="utf-8")
     print_success(f"requirements.txt created at {req_path}")
 
+
 #================ show_quick_start ##########
 def show_quick_start():
     print_header("QUICK START GUIDE")
-    
-    # guide string is expected to be defined elsewhere in this file
     print(guide)
+
 
 #================ main ##########
 def main():
     print(f"{Colors.BOLD}{Colors.CYAN}")
     print("")
-    print("                APISCAN SETUP WIZARD                      ")
+    print("                APISCAN SETUP WIZARD  BY Perry Mertens (c) 2026                     ")
     print("                    v4.0                                  ")
     print("")
     print(f"{Colors.END}")
-    
+
     skip_deps = "--skip-deps" in sys.argv
     create_examples = "--create-examples" in sys.argv
     minimal = "--minimal" in sys.argv
-    
+
     if not check_python_version():
         print_error("Python version does not meet requirements.")
         sys.exit(1)
-    
+
     if not skip_deps:
         if not install_dependencies():
             print_error("Dependency installation failed.")
             sys.exit(1)
     else:
         print_warning("Dependency check skipped")
-    
+
     if create_examples or not Path(".env.example").exists():
         create_example_env()
         create_requirements_txt()
-    
+
     issues, warnings = check_environment()
-    
     missing_modules = check_custom_modules()
-    
+
     print_header("SETUP SUMMARY")
-    
+
     if issues:
         print_error(f"{len(issues)} critical issues found:")
         for issue in issues:
@@ -417,23 +444,24 @@ def main():
                 print(f"  - Configure {issue} in .env file")
     else:
         print_success("No critical issues found!")
-    
+
     if warnings:
         print(f"\n{Colors.YELLOW}{len(warnings)} warnings:{Colors.END}")
         for warning in warnings:
             print(f"  - {warning}")
-    
+
     if missing_modules:
         print(f"\n{Colors.YELLOW}{len(missing_modules)} missing modules:{Colors.END}")
         for module in missing_modules:
             print(f"  - {module}")
         print("  These modules are needed for full functionality")
-    
+
     if not minimal:
         show_quick_start()
-    
+
     print(f"\n{Colors.GREEN}{Colors.BOLD}Setup completed!{Colors.END}")
     print(f"{Colors.CYAN}Start with: python apiscan.py --url https://api.sample.com --swagger file.xxx --flow token --token any... {Colors.END}")
+
 
 if __name__ == "__main__":
     try:

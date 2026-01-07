@@ -2,6 +2,9 @@
 Version:3.2 release 1-4-2026
 Author: Perry Mertens pamsniffer@gmail.com
 
+7-1-2026
+- solved error PIP install h2 and hyper
+
 1-4-2026
 - much beter scanner
 - beter report function

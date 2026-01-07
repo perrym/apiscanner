@@ -4,6 +4,8 @@ Author: Perry Mertens pamsniffer@gmail.com
 
 7-1-2026
 - solved error PIP install h2 and hyper
+- setup.py some fixes
+- disable h2 fixed in next version
 
 1-4-2026
 - much beter scanner

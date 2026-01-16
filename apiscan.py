@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0 License                 #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2026  #
-# version 3.2 4-1-2026                                 #
+# version 3.2.1 1-16-2026                                 #
 ########################################################
 
 """APISCAN is a private and proprietary API security tool, developed independently for internal use and research purposes.

@@ -79,6 +79,7 @@ sslyze>=6.2.0
 # Parsing & HTML
 beautifulsoup4>=4.12.2
 lxml>=4.9.3
+httpx>=0.27.0
 
 # Output
 colorama>=0.4.6

@@ -1,6 +1,13 @@
 # APISCAN - CHANGELOG
-Version:3.2 release 1-4-2026
+Version:3.2.1 release 1-16-2026
 Author: Perry Mertens pamsniffer@gmail.com
+
+16-1-2026
+- Risk rating errors solved
+- Beter payloads
+- setup.py some fixes
+- disable h2 en use modern version for http/2
+- fix many bug fixes
 
 7-1-2026
 - solved error PIP install h2 and hyper

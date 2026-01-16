@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 3.2 1-4-2026                                  #
+# version 3.2.1 16-11-2026                             #
 ########################################################
 
 from __future__ import annotations
@@ -55,10 +55,11 @@ except ImportError:
     HAS_TQDM = False
 
 try:
-    from hyper.contrib import HTTP20Adapter
-    _HAS_H2 = True
+    import httpx
+    _HAS_HTTPX = True
 except Exception:
-    _HAS_H2 = False
+    httpx = None
+    _HAS_HTTPX = False
 try:
     from openapi_universal import iter_operations as oas_iter_ops, build_request as oas_build_request, SecurityConfig as OASSecurityConfig
     _HAS_OAS_UNIVERSAL = True
@@ -82,6 +83,9 @@ os.environ.setdefault('APISCAN_ADAPTIVE', '1')
 os.environ.setdefault('APISCAN_NO_TQDM', '0')
 os.environ.setdefault('APISCAN_DIRTRAV_PROGRESS', '1')
 os.environ.setdefault('APISCAN_DIRTRAV_WORKERS', '8')
+os.environ.setdefault("APISCAN_PAYLOADS_PATH", r"data/injection_payloads.json")
+# fast payload scan, if needed # os.environ.setdefault("APISCAN_PAYLOADS_PATH", r"data/injection_payloads_fast.json")
+
 
 
 
@@ -304,6 +308,81 @@ class ProgressBar:
         self.close()
 
 
+class HttpxSessionWrapper:
+    #================ __init__ description ##########
+    def __init__(
+        self,
+        *,
+        headers: dict[str, str] | None = None,
+        http2: bool = False,
+        retries: int = 2,
+        status_forcelist: set[int] | None = None,
+        verify: bool = True,
+        max_connections: int = 400,
+        max_keepalive: int = 400,
+    ) -> None:
+        if not _HAS_HTTPX:
+            raise RuntimeError("httpx is not available, cannot use HTTP/2 client")
+
+        self._retries = max(0, int(retries))
+        self._status_forcelist = status_forcelist or {500, 502, 503}
+        limits = httpx.Limits(max_connections=max_connections, max_keepalive_connections=max_keepalive)
+        self._client = httpx.Client(http2=http2, headers=headers or {}, verify=verify, limits=limits, follow_redirects=False)
+
+    #================ close description ##########
+    def close(self) -> None:
+        try:
+            self._client.close()
+        except Exception:
+            pass
+
+    #================ _to_httpx_timeout description ##########
+    @staticmethod
+    def _to_httpx_timeout(timeout: object) -> "httpx.Timeout | None":
+        if timeout is None:
+            return None
+        if isinstance(timeout, (int, float)):
+            return httpx.Timeout(timeout)
+        if isinstance(timeout, tuple) and len(timeout) >= 2:
+            connect_t = timeout[0]
+            read_t = timeout[1]
+            try:
+                return httpx.Timeout(connect=connect_t, read=read_t, write=read_t, pool=connect_t)
+            except Exception:
+                return httpx.Timeout(None)
+        return None
+
+    #================ request description ##########
+    def request(self, method: str, url: str, **kwargs):
+        allow_redirects = bool(kwargs.pop("allow_redirects", False))
+        timeout = self._to_httpx_timeout(kwargs.pop("timeout", None))
+        kwargs.setdefault("follow_redirects", allow_redirects)
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+
+        for attempt in range(self._retries + 1):
+            try:
+                resp = self._client.request(method, url, **kwargs)
+                if resp.status_code in self._status_forcelist and attempt < self._retries:
+                    continue
+                return resp
+            except Exception:
+                if attempt >= self._retries:
+                    raise
+        raise RuntimeError("unreachable")
+
+    #================ get description ##########
+    def get(self, url: str, **kwargs):
+        return self.request("GET", url, **kwargs)
+
+    #================ post description ##########
+    def post(self, url: str, **kwargs):
+        return self.request("POST", url, **kwargs)
+
+    #================ options description ##########
+    def options(self, url: str, **kwargs):
+        return self.request("OPTIONS", url, **kwargs)
+
 class SafeConsumptionAuditor:
     NOSQL_NEGATIVE_PATTERNS = (
         'mongo: no documents in result',
@@ -417,12 +496,40 @@ class SafeConsumptionAuditor:
         self.canary_domain: str = os.getenv('APISCAN_CANARY', '').strip('.')
         self.endpoint_cache = {}
         self.param_cache = {}
+        env_payloads = os.getenv("APISCAN_PAYLOADS_PATH", "").strip()
+        base = Path(__file__).resolve().parent
 
-        json_path = Path(__file__).parent / 'data' / 'injection_payloads.json'
-        if not json_path.exists():
-            print(f'{Colors.RED}Error: {json_path} not found. Module cannot continue.{Colors.RESET}')
+        def resolve_payload(p: str) -> Path:
+            if not p:
+                raise FileNotFoundError(
+                    "APISCAN_PAYLOADS_PATH is not set or empty. "
+                    "Expected e.g. 'data/injection_payloads_fast.json' "
+                    "or 'data/injection_payloads.json'."
+                )
+
+            path = Path(p)
+            if not path.is_absolute():
+                path = (base / path).resolve()
+            else:
+                path = path.resolve()
+
+            if not path.is_file():
+                raise FileNotFoundError(f"Payload file not found: {path}")
+
+            return path
+
+        try:
+            
+            json_path = resolve_payload(env_payloads)
+        except FileNotFoundError as e:
+            print(f"{Colors.RED}[CONFIG ERROR] {e}{Colors.RESET}")
             sys.exit(1)
 
+        print(f"{Colors.CYAN}[PAYLOADS] Using payload file: {json_path}{Colors.RESET}")
+
+                
+        
+        
         try:
             with json_path.open('r', encoding='utf-8') as f:
                 payloads_data = json.load(f)
@@ -437,8 +544,10 @@ class SafeConsumptionAuditor:
             self.SQL_ERROR_RX = [re.compile(p, re.I) for p in self.SQL_ERROR_REGEX]
             self.DIR_TRAVERSAL_PAYLOADS = payloads_data.get('directory_traversal_payloads', [])
             self.DIR_TRAVERSAL_FILES = payloads_data.get('directory_traversal_files', [])
-
-
+            self.OPEN_REDIRECT_PAYLOADS = payloads_data.get('open_redirect_payloads', [])
+            self.HOST_HEADER_PAYLOADS = payloads_data.get('host_header_payloads', [])
+            self.FORWARDED_HEADER_SETS = payloads_data.get('forwarded_header_sets', [])
+            self.GRAPHQL_EXTRA_QUERIES = payloads_data.get('graphql_extra_queries', [])
             self.JWT_ERROR_KEYWORDS = payloads_data.get('jwt_error_keywords', [
                 'jwt', 'token invalid', 'signature invalid', 'malformed token',
                 'token expired', 'invalid signature', 'alg none'
@@ -499,21 +608,49 @@ class SafeConsumptionAuditor:
     @staticmethod
 
     def _create_secure_session() -> requests.Session:
+        use_http2 = os.getenv('APISCAN_HTTP2', '0').strip().lower() in ('1', 'true', 'yes', 'on')
+        verify_tls = os.getenv('APISCAN_TLS_VERIFY', '1').strip().lower() in ('1', 'true', 'yes', 'on')
+
+        headers = {
+            'User-Agent': 'safe_consumption_enhanced/4.0',
+            'Accept': 'application/json, */*;q=0.1',
+            'Accept-Encoding': 'gzip, deflate',
+            'Connection': 'keep-alive',
+        }
+
+        # Prefer modern HTTP/2 stack when requested: httpx (h2-based)
+        if use_http2 and _HAS_HTTPX:
+            try:
+                return HttpxSessionWrapper(
+                    headers=headers,
+                    http2=True,
+                    retries=2,
+                    status_forcelist={500, 502, 503},
+                    verify=verify_tls,
+                    max_connections=400,
+                    max_keepalive=400,
+                )
+            except Exception:
+                pass
+
+        # Fallback: requests (HTTP/1.1)
         s = requests.Session()
-        retries = Retry(total=2, connect=2, read=2, backoff_factor=0.2, status_forcelist=[500, 502, 503], allowed_methods=['HEAD', 'GET', 'OPTIONS', 'POST', 'PUT', 'DELETE', 'PATCH'], raise_on_status=False, raise_on_redirect=False)
+        retries = Retry(
+            total=2,
+            connect=2,
+            read=2,
+            backoff_factor=0.2,
+            status_forcelist=[500, 502, 503],
+            allowed_methods=['HEAD', 'GET', 'OPTIONS', 'POST', 'PUT', 'DELETE', 'PATCH'],
+            raise_on_status=False,
+            raise_on_redirect=False,
+        )
         adapter = HTTPAdapter(max_retries=retries, pool_connections=400, pool_maxsize=400, pool_block=True)
         s.mount('http://', adapter)
         s.mount('https://', adapter)
-        use_http2 = os.getenv('APISCAN_HTTP2', '0') == '1'
-        if use_http2 and _HAS_H2:
-            try:
-                s.mount('https://', HTTP20Adapter())
-            except Exception:
-                pass
-        s.headers.update({'User-Agent': 'safe_consumption_enhanced/4.0', 'Accept': 'application/json, */*;q=0.1', 'Accept-Encoding': 'gzip, deflate', 'Connection': 'keep-alive'})
+        s.headers.update(headers)
+        s.verify = verify_tls
         return s
-
-
     #================ _throttle description ##########
     def _throttle(self, domain: str) -> None:
         sem = self.host_semaphores[domain]
@@ -590,6 +727,139 @@ class SafeConsumptionAuditor:
                         extra = {}
                     extra['note'] = 'Downgraded: binary response (image/pdf/zip)'
 
+        # --- Severity gating to reduce false positives (generic & audit-friendly) ---
+        # 1) Treat common "defensive" statuses as non-findings unless data is actually returned.
+        # 2) Keep CORS wildcard findings at Medium only when 200 OK and sensitive-ish JSON is returned.
+        #    Otherwise downgrade to Low/Info.
+        try:
+            sev_rank = {'Info': 0, 'Low': 1, 'Medium': 2, 'High': 3, 'Critical': 4}
+
+            def _norm_sev(s: str) -> str:
+                s = (s or '').strip().lower()
+                if s in ('critical',): return 'Critical'
+                if s in ('high',): return 'High'
+                if s in ('medium',): return 'Medium'
+                if s in ('low',): return 'Low'
+                return 'Info'
+
+            def _sev_at_most(cur: str, cap: str) -> str:
+                cur = _norm_sev(cur)
+                cap = _norm_sev(cap)
+                return cur if sev_rank[cur] <= sev_rank[cap] else cap
+
+            def _sev_at_least(cur: str, floor: str) -> str:
+                cur = _norm_sev(cur)
+                floor = _norm_sev(floor)
+                return cur if sev_rank[cur] >= sev_rank[floor] else floor
+
+            def _safe_text(resp) -> str:
+                try:
+                    t = resp.text or ''
+                except Exception:
+                    try:
+                        t = resp.content.decode('utf-8', 'replace')
+                    except Exception:
+                        t = ''
+                return t[:4096] if t else ''
+
+            def _has_sensitive_jsonish(text: str) -> bool:
+                if not text:
+                    return False
+                low = text.lower()
+                # pragmatic indicators; keeps it generic across APIs
+                indicators = (
+                    '"email"', '"role"', '"token"', '"jwt"', '"credit"', '"account"', '"user"', '"id"', '"phone"', '"number"'
+                )
+                return any(k in low for k in indicators)
+
+            def _is_error_only_json(resp, text: str) -> bool:
+                if not text:
+                    return False
+                try:
+                    ct = (resp.headers.get('Content-Type') or '').lower()
+                except Exception:
+                    ct = ''
+                if 'json' not in ct:
+                    return False
+                try:
+                    obj = json.loads(text)
+                except Exception:
+                    return False
+
+                # Allow common error envelope keys (varies across APIM/WSO2/custom gateways)
+                allowed_keys = {
+                    'error', 'message', 'errors', 'detail', 'details', 'code', 'status',
+                    'timestamp', 'path', 'traceid', 'requestid', 'correlationid', 'type', 'title'
+                }
+
+                def _keys_only(o):
+                    if isinstance(o, dict):
+                        return set(str(k).lower() for k in o.keys())
+                    return set()
+
+                keys = _keys_only(obj)
+                if not keys:
+                    # some APIs return JSON strings like "Forbidden"
+                    if isinstance(obj, str) and obj.strip():
+                        return True
+                    return False
+
+                # Error-only JSON means keys are a subset of allowed keys and it does not contain obvious data
+                return keys.issubset(allowed_keys)
+
+            def _is_cors_wildcard(resp) -> bool:
+                try:
+                    acao = (resp.headers.get('Access-Control-Allow-Origin') or '').strip()
+                except Exception:
+                    acao = ''
+                return acao == '*'
+
+            severity = _norm_sev(severity)
+
+            if response is not None:
+                sc = getattr(response, 'status_code', None)
+                body_preview = _safe_text(response)
+
+                # SAFE_STATUSES (400/401/403/404/405/422) are usually expected defenses.
+                # Downgrade them unless we actually got content back that looks like data exposure.
+                if isinstance(sc, int) and sc in SAFE_STATUSES:
+
+                    # Defensive statuses are usually expected, but do not downgrade if we still see data exposure.
+
+                    if _has_sensitive_jsonish(body_preview):
+
+                        severity = _sev_at_least(severity, 'Medium')
+
+                    elif _is_error_only_json(response, body_preview):
+
+                        # JSON error envelope (e.g., {"error":"Forbidden"}) -> expected behavior
+
+                        severity = _sev_at_most(severity, 'Info')
+
+                    elif body_preview and len(body_preview.strip()) > 0:
+
+                        severity = _sev_at_most(severity, 'Low')
+
+                    else:
+
+                        severity = _sev_at_most(severity, 'Info')
+# Special-case: CORS wildcard + 200 + JSON-ish data => keep at least Medium.
+                # If it's not 200 or there's no data, it should not be Medium.
+                low_issue = (issue or '').lower()
+                if 'cors' in low_issue:
+                    if sc == 200 and _is_cors_wildcard(response) and _has_sensitive_jsonish(body_preview):
+                        severity = _sev_at_least(severity, 'Medium')
+                    else:
+                        severity = _sev_at_most(severity, 'Low')
+
+                # "Request smuggling borderline/timeout" without clear desync signal should be informational.
+                if 'request smuggling' in low_issue and isinstance(sc, int) and sc >= 500:
+                    severity = _sev_at_most(severity, 'Info')
+        except Exception:
+            # Do not break scanning if severity gating fails for any reason.
+            pass
+
+
         entry = {
             'issue': issue,
             'description': issue,
@@ -653,7 +923,7 @@ class SafeConsumptionAuditor:
         with self.issues_lock:
             self.issues.append(entry)
 
-        if severity in ['Critical', 'High', 'Medium']:
+        if entry.get('severity') in ['Critical', 'High', 'Medium']:
             self._print_issue_to_console(entry)
 
         if getattr(self, 'log_monitor', None):
@@ -710,40 +980,41 @@ class SafeConsumptionAuditor:
 
 
 
-        #================ _print_issue_to_console description ##########
-        def _print_issue_to_console(self, issue: dict):
-            severity = issue.get('severity', 'Info')
-            issue_text = issue.get('issue', 'Unknown')
-            url = issue.get('url', issue.get('target', 'Unknown'))
-            status = issue.get('status_code', '?')
-            risk_score = issue.get('risk_score', 0)
 
-            url_display = url
-            if len(url_display) > 150:
-                url_display = url_display[:147] + "..."
+    #================ _print_issue_to_console description ##########
+    def _print_issue_to_console(self, issue: dict):
+        severity = issue.get('severity', 'Info')
+        issue_text = issue.get('issue', 'Unknown')
+        url = issue.get('url', issue.get('target', 'Unknown'))
+        status = issue.get('status_code', '?')
+        risk_score = issue.get('risk_score', 0)
 
-            color = Colors.YELLOW
-            symbol = "Medium "
-            if severity == 'Critical':
-                color = Colors.RED
-                symbol = "!!!"
-            elif severity == 'High':
-                color = Colors.RED
-                symbol = "High "
-            elif severity == 'Low':
-                color = Colors.BLUE
-                symbol = "Low  "
-            elif severity == 'Info':
-                color = Colors.CYAN
-                symbol = "Info "
+        url_display = url
+        if len(url_display) > 150:
+            url_display = url_display[:147] + "..."
 
-            risk_str = f" [Risk:{risk_score:.1f}]" if risk_score > 0 else ""
+        color = Colors.YELLOW
+        symbol = "Medium "
+        if severity == 'Critical':
+            color = Colors.RED
+            symbol = "!!!"
+        elif severity == 'High':
+            color = Colors.RED
+            symbol = "High "
+        elif severity == 'Low':
+            color = Colors.BLUE
+            symbol = "Low  "
+        elif severity == 'Info':
+            color = Colors.CYAN
+            symbol = "Info "
 
-            self._console_write(f"{color}{symbol} {severity:8}{risk_str} {issue_text}")
-            self._console_write(f"     {Colors.WHITE}URL: {url_display}")
-            if status != '?':
-                self._console_write(f"     Status: {status}{Colors.RESET}")
-            self._console_write("")
+        risk_str = f" [Risk:{risk_score:.1f}]" if risk_score > 0 else ""
+
+        self._console_write(f"{color}{symbol} {severity:8}{risk_str} {issue_text}")
+        self._console_write(f"     {Colors.WHITE}URL: {url_display}")
+        if status != '?':
+            self._console_write(f"     Status: {status}{Colors.RESET}")
+        self._console_write("")
 
 
 
@@ -1008,6 +1279,135 @@ class SafeConsumptionAuditor:
 
         except Exception as e:
             self._log('Business logic test failed', endpoint, 'Info', extra={'error': str(e)})
+    #================ _test_open_redirect description ##########
+    def _test_open_redirect(self, endpoint: str) -> None:
+        if stop_requested.is_set():
+            return
+
+        payloads = getattr(self, 'OPEN_REDIRECT_PAYLOADS', []) or []
+        if not payloads:
+            return
+
+        try:
+            parsed = urlparse.urlparse(endpoint)
+            domain = parsed.netloc or parsed.hostname or ''
+            params = self._discover_parameters(endpoint)
+
+            redirect_param_candidates = {
+                'redirect', 'redirecturi', 'redirect_uri', 'return', 'returnurl', 'return_url',
+                'next', 'url', 'target', 'dest', 'destination', 'continue', 'callback'
+            }
+            test_params = [p for p in params if p.lower() in redirect_param_candidates]
+            if not test_params:
+                test_params = ['redirect', 'returnUrl', 'next']
+
+            for p in test_params[:5]:
+                for pay in payloads[: min(10, len(payloads))]:
+                    if stop_requested.is_set():
+                        return
+                    try:
+                        self._throttle(domain)
+
+                        if '?' in endpoint:
+                            test_url = f"{endpoint}&{urlparse.quote(p)}={urlparse.quote(str(pay))}"
+                        else:
+                            test_url = f"{endpoint}?{urlparse.quote(p)}={urlparse.quote(str(pay))}"
+
+                        r = self.session.get(test_url, timeout=(3, self.timeout), allow_redirects=False)
+
+                        location = (r.headers.get('Location') or '').strip()
+                        loc_low = location.lower()
+
+                        if 300 <= int(getattr(r, 'status_code', 0)) < 400 and location:
+                            if 'evil.example' in loc_low or loc_low.startswith('//evil.example') or loc_low.startswith('https://evil.example') or loc_low.startswith('http://evil.example'):
+                                self._log(
+                                    'Possible open redirect',
+                                    test_url,
+                                    'Medium',
+                                    payload=pay,
+                                    response=r,
+                                    extra={'parameter': p, 'location': location[:500], 'confidence': 'medium'}
+                                )
+                                continue
+
+                        body_low = (r.text or '').lower()
+                        if 'evil.example' in body_low and not location:
+                            self._log(
+                                'Potential redirect parameter reflection',
+                                test_url,
+                                'Low',
+                                payload=pay,
+                                response=r,
+                                extra={'parameter': p, 'confidence': 'low'}
+                            )
+                    except Exception:
+                        continue
+
+        except Exception as e:
+            self._log('Open redirect test failed', endpoint, 'Info', extra={'error': str(e)})
+
+
+    #================ _test_host_header_injection description ##########
+    def _test_host_header_injection(self, endpoint: str) -> None:
+        if stop_requested.is_set():
+            return
+
+        header_sets = getattr(self, 'FORWARDED_HEADER_SETS', []) or []
+        host_values = getattr(self, 'HOST_HEADER_PAYLOADS', []) or []
+
+        if not header_sets and not host_values:
+            return
+
+        try:
+            parsed = urlparse.urlparse(endpoint)
+            domain = parsed.netloc or parsed.hostname or ''
+
+            tests = []
+            for hs in header_sets[:10]:
+                if isinstance(hs, dict) and hs:
+                    tests.append(hs)
+
+            for hv in host_values[:5]:
+                tests.append({'X-Forwarded-Host': str(hv)})
+                tests.append({'X-Forwarded-Server': str(hv)})
+                tests.append({'X-Host': str(hv)})
+
+            for headers in tests:
+                if stop_requested.is_set():
+                    return
+                try:
+                    self._throttle(domain)
+                    r = self.session.get(endpoint, headers=headers, timeout=(3, self.timeout), allow_redirects=False)
+
+                    suspicious = False
+                    evidence = {}
+
+                    location = (r.headers.get('Location') or '').strip()
+                    if location and any(v in location.lower() for v in ('evil.example', 'internal.service', 'localhost', '127.0.0.1')):
+                        suspicious = True
+                        evidence['location'] = location[:500]
+
+                    body_low = (r.text or '').lower()
+                    if 'evil.example' in body_low:
+                        suspicious = True
+                        evidence['body_reflection'] = 'evil.example'
+
+                    if suspicious:
+                        self._log(
+                            'Possible host header / forwarded header injection',
+                            endpoint,
+                            'Low',
+                            payload=headers,
+                            response=r,
+                            extra={'headers': headers, **evidence, 'confidence': 'low'}
+                        )
+                except Exception:
+                    continue
+
+        except Exception as e:
+            self._log('Host header injection test failed', endpoint, 'Info', extra={'error': str(e)})
+
+
 
 
     #================ _discover_parameters description ##########
@@ -1289,9 +1689,9 @@ class SafeConsumptionAuditor:
         fast_tests = [
             partial(self._test_basic_security),
             partial(self._test_header_manipulation),
-            partial(self._test_crlf_injection)
+            partial(self._test_crlf_injection),
+            partial(self._test_open_redirect),
         ]
-
         completed = 0
         total_tasks = len(sample_endpoints) * len(fast_tests)
 
@@ -1578,6 +1978,8 @@ class SafeConsumptionAuditor:
             self._test_sensitive_data_exposure,
             self._test_graphql_introspection,
             self._test_header_manipulation,
+            self._test_open_redirect,
+            self._test_host_header_injection,
             self._test_blind_sqli,
             self._test_directory_traversal,
             self._test_directory_traversal_body,

@@ -647,11 +647,25 @@ def _reclassify(it: dict) -> str:
     title = (it.get('title') or '') + ' ' + (it.get('category') or '')
     signals = it.get('signals', [])
 
+
+    # Control/blocked signals should not inflate severity (false-positive reduction)
+    tlow = title.lower()
+
+    # If a WAF or input filter blocks payloads (4xx), treat as security control observed (Info)
+    if st and 400 <= st < 500:
+        if ('waf detected' in tlow) or ('input filtering detected' in tlow) or ('blocked' in tlow and 'waf' in tlow):
+            return 'info'
+
+    # CORS signals are contextual; 4xx responses are usually enforcement/validation noise
+    cors_only = {'cors-wildcard', 'cors-authorization', 'cors-reflect', 'jwt', 'proxy-reject'}
+    if st and 400 <= st < 500:
+        if signals and set([s.lower() for s in signals]).issubset(cors_only):
+            return 'info'
     if any((kind in cat.lower() for kind in ['secure_transport', 'tls', 'hsts', 'cipher'])):
         if sev in ('info', 'low'):
             sev = 'medium'
 
-    pii_indicators = {'IBAN', 'IBAN-generic', 'BSN', 'email', 'creditcard', 'JWT', 'API-key', 'AWS-key'}
+    pii_indicators = {'IBAN','IBAN-generic','BSN','email','creditcard','API-key','AWS-key'}
     if any((signal in signals for signal in pii_indicators)):
         if sev in ('info', 'low'):
             sev = 'medium'

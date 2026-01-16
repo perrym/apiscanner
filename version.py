@@ -4,4 +4,4 @@
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2026  #
 # version 3.2                                          #
 ########################################################
-__version__ = "3.2-Release"
+__version__ = "3.2.1-Release"

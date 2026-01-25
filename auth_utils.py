@@ -3,7 +3,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 3.2 1-4-2026                                 #
+# version 3.2.1a 1-25-2026                                 #
 ########################################################
                                                          
 from __future__ import annotations
@@ -41,34 +41,42 @@ class AuthConfigError(Exception):
 class _CallbackHandler(BaseHTTPRequestHandler):
     _path_with_query: Optional[str] = None
 
-    def do_GET(self):              
-        type(self)._path_with_query = self.requestline.split(" ")[1]
+    def do_GET(self) -> None:
+        type(self)._path_with_query = self.path
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
-        self.wfile.write(b"<html><body><h3>Authentication complete. You may close this window.</h3></body></html>")
+        self.wfile.write(
+            b"<html><body><h3>Authentication complete. You may close this window.</h3></body></html>"
+        )
 
-    def log_message(self, format, *args):                           
+    def log_message(self, format, *args) -> None:
         return
 
 # ----------------------- Funtion _start_callback_server ----------------------------#
 def _start_callback_server(host: str, port: int) -> Tuple[HTTPServer, threading.Thread]:
+    _CallbackHandler._path_with_query = None
+
     server = HTTPServer((host, port), _CallbackHandler)
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
     return server, t
 
+
 # ----------------------- Funtion _wait_for_callback ----------------------------#
 def _wait_for_callback(server: HTTPServer, timeout: int = 300) -> str:
-    for _ in range(timeout * 10):
-        if _CallbackHandler._path_with_query:
+    deadline = time.time() + float(timeout)
+
+    while time.time() < deadline:
+        path = _CallbackHandler._path_with_query
+        if path:
             host, port = server.server_address
-            return f"http://{host}:{port}{_CallbackHandler._path_with_query}"
-        threading.Event().wait(0.1)
+            return f"http://{host}:{port}{path}"
+        time.sleep(0.1)
+
     raise AuthConfigError("Timed out waiting for OAuth2 redirect callback")
 
-
-                                                                                    
+                                                                                   
 # ----------------------- Funtion _apply_api_key ----------------------------#
 def _apply_api_key(sess: requests.Session, args) -> None:
     api_key = getattr(args, "apikey", None)
@@ -89,65 +97,123 @@ def _apply_mtls(sess: requests.Session, args) -> None:
 
 # ----------------------- Funtion _format_bearer ----------------------------#
 def _format_bearer(token: str) -> str:
-    return token if token.startswith("Bearer ") else f"Bearer {token}"
-
+    return token if token.lower().startswith("bearer ") else f"Bearer {token}"
                                                                
 # ----------------------- Funtion _oauth_client_credentials ----------------------------#
 def _oauth_client_credentials(args) -> str:
     if OAuth2Session is None or BackendApplicationClient is None:
-        raise AuthConfigError("OAuth2 dependencies missing. Install: pip install requests-oauthlib oauthlib")
+        raise AuthConfigError(
+            "OAuth2 dependencies missing. Install: pip install requests-oauthlib oauthlib"
+        )
+
     cid = getattr(args, "client_id", None)
     csec = getattr(args, "client_secret", None)
     token_url = getattr(args, "token_url", None)
     scope = getattr(args, "scope", None)
-    missing = [n for n, v in (("client_id", cid), ("client_secret", csec), ("token_url", token_url)) if not v]
+
+    missing = [
+        n for n, v in (
+            ("client_id", cid),
+            ("client_secret", csec),
+            ("token_url", token_url),
+        ) if not v
+    ]
     if missing:
         raise AuthConfigError(f"--flow client requires: {', '.join(missing)}")
+
     client = BackendApplicationClient(client_id=cid)
-    oauth = OAuth2Session(client=client, scope=scope.split() if isinstance(scope, str) else scope)
-    token = oauth.fetch_token(token_url=token_url, client_id=cid, client_secret=csec, scope=scope)
+    oauth = OAuth2Session(client=client)
+
+    scope_list = None
+    if isinstance(scope, str):
+        scope_list = scope.split()
+    elif scope:
+        scope_list = scope
+
+    if scope_list:
+        token = oauth.fetch_token(
+            token_url=token_url,
+            client_id=cid,
+            client_secret=csec,
+            scope=scope_list,
+        )
+    else:
+        token = oauth.fetch_token(
+            token_url=token_url,
+            client_id=cid,
+            client_secret=csec,
+        )
+
     return token["access_token"]
 
 # ----------------------- Funtion _oauth_authorization_code ----------------------------#
 def _oauth_authorization_code(args) -> str:
     if OAuth2Session is None or WebApplicationClient is None:
-        raise AuthConfigError("OAuth2 dependencies missing. Install: pip install requests-oauthlib oauthlib")
+        raise AuthConfigError(
+            "OAuth2 dependencies missing. Install: pip install requests-oauthlib oauthlib"
+        )
+
     cid = getattr(args, "client_id", None)
     auth_url = getattr(args, "auth_url", None)
     token_url = getattr(args, "token_url", None)
     redirect_uri = getattr(args, "redirect_uri", None)
     scope = getattr(args, "scope", None)
 
-    missing = [n for n, v in (("client_id", cid), ("auth_url", auth_url), ("token_url", token_url), ("redirect_uri", redirect_uri)) if not v]
+    missing = [
+        n for n, v in (
+            ("client_id", cid),
+            ("auth_url", auth_url),
+            ("token_url", token_url),
+            ("redirect_uri", redirect_uri),
+        ) if not v
+    ]
     if missing:
         raise AuthConfigError(f"--flow auth requires: {', '.join(missing)}")
 
-                                                                               
     parsed = urlparse(redirect_uri)
     host = parsed.hostname or "127.0.0.1"
     port = parsed.port or 8765
 
     server, _t = _start_callback_server(host, port)
+
     try:
         client = WebApplicationClient(client_id=cid)
-        oauth = OAuth2Session(client=client, redirect_uri=redirect_uri, scope=scope.split() if isinstance(scope, str) else scope)
-        url, _state = oauth.authorization_url(auth_url)
+        oauth = OAuth2Session(
+            client=client,
+            redirect_uri=redirect_uri,
+            scope=scope.split() if isinstance(scope, str) else scope,
+        )
+
+        url, state = oauth.authorization_url(auth_url)
         logger.info("Opening browser for OAuth2 authorization: %s", url)
         webbrowser.open(url)
+
         authorization_response = _wait_for_callback(server)
+     
+        try:
+            from urllib.parse import urlsplit, parse_qs
+            qs = parse_qs(urlsplit(authorization_response).query)
+            returned_state = (qs.get("state") or [None])[0]
+        except Exception:
+            returned_state = None
+
+        if state and returned_state != state:
+            raise AuthConfigError("OAuth2 state mismatch in redirect callback")
+
         token = oauth.fetch_token(
             token_url=token_url,
             authorization_response=authorization_response,
             client_secret=getattr(args, "client_secret", None),
             include_client_id=True,
         )
+
         return token["access_token"]
+
     finally:
         try:
             server.shutdown()
         except Exception:
             pass
-
 
                                                                     
 # ----------------------- Funtion configure_authentication ----------------------------#
@@ -157,13 +223,11 @@ def configure_authentication(args) -> requests.Session:
     sess.verify = not insecure
     if insecure:
         logger.warning("TLS verification disabled (--insecure). Use only in test labs.")
-
     
     _apply_api_key(sess, args)
     _apply_mtls(sess, args)
 
     flow = getattr(args, "flow", None) or "none"
-
    
     if flow in ("none", None) and getattr(args, "token", None):
         sess.headers["Authorization"] = _format_bearer(args.token.strip())

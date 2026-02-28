@@ -2,8 +2,8 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 3.2 1-4-2026                                  #
-########################################################                                
+# version 3.2 1-4-2026                                 #
+########################################################
 from __future__ import annotations
 
 import base64
@@ -26,7 +26,6 @@ from tqdm import tqdm
 
 from report_utils import ReportGenerator
 
-                                                                     
 requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
@@ -69,7 +68,7 @@ def _abs_url(base_url: str, rel: str) -> str:
 
 
 class SSRFConfig:
-                                                                            
+
     #================funtion __init__ initialize configuration or auditor ##########
     def __init__(self):
         self.timeout = 6
@@ -143,7 +142,7 @@ class SSRFAuditor:
         + OAST_PAYLOADS
         + PROTOCOL_PAYLOADS
     )
-                                                                            
+
     #================funtion __init__ initialize configuration or auditor ##########
     def __init__(
         self,
@@ -167,10 +166,11 @@ class SSRFAuditor:
 
         if not session or not base_url:
             raise ValueError("session and base_url are required")
-        if "://" not in base_url:
-            base_url = "http://" + str(base_url)
 
-        self.base_url = str(base_url).rstrip("/")
+        self.base_urls = self._expand_base_urls(str(base_url))
+        # Keep a primary base_url for reporting/backward compatibility
+        self.base_url = self.base_urls[0].rstrip("/")
+
         self.sess = session
         self.sess.verify = verify_tls
         self.concurrency = max(1, min(int(concurrency), self.CONFIG.max_concurrency))
@@ -182,10 +182,19 @@ class SSRFAuditor:
         self._last_ts = 0.0
         self._lock = threading.Lock()
         self._issues: List[Dict[str, Any]] = []
-        self._tested_payloads: set[Tuple[str, str]] = set()
-    
+        self._tested_payloads: set[Tuple[str, str, str, str, str, str]] = set()
 
-                                                                                          
+    #================funtion _expand_base_urls expand URL into http+https if scheme missing ##########
+    @staticmethod
+    def _expand_base_urls(base_url: str) -> List[str]:
+        b = (base_url or "").strip()
+        if not b:
+            return []
+        if "://" in b:
+            return [b.rstrip("/")]
+        b = b.rstrip("/")
+        return [f"http://{b}", f"https://{b}"]
+
     @staticmethod
     #================funtion endpoints_from_swagger parse Swagger/OpenAPI to endpoint list ##########
     def endpoints_from_swagger(swagger_path: str | Path, *, default_base: str = "") -> List[Endpoint]:
@@ -248,7 +257,6 @@ class SSRFAuditor:
         if encoding_type == "double_url":
             return quote_plus(quote_plus(payload))
         elif encoding_type == "utf8":
-            # Percent-encode UTF-8 bytes (more realistic than hex-encoding)
             return quote_plus(payload.encode("utf-8"))
         elif encoding_type == "base64":
             return base64.b64encode(payload.encode()).decode()
@@ -257,7 +265,6 @@ class SSRFAuditor:
         else:
             return quote_plus(payload)
 
-                                                                                  
     #================funtion test_endpoints run SSRF scans across endpoints ##########
     def _should_exclude_param(self, name: str) -> bool:
         n = (name or "").lower()
@@ -298,7 +305,6 @@ class SSRFAuditor:
         vals.sort()
         return vals[len(vals) // 2]
 
-
     def test_endpoints(self, endpoints: List[Endpoint]) -> List[Issue]:
         self._issues.clear()
         with ThreadPoolExecutor(max_workers=self.concurrency) as ex:
@@ -311,23 +317,37 @@ class SSRFAuditor:
                     pass
         return self._issues
 
-                                                                                  
     #================funtion _scan_endpoint enumerate params and dispatch probes ##########
     def _scan_endpoint(self, ep: Endpoint) -> None:
         method = (ep.get("method") or "GET").upper()
         path = ep.get("path") or ""
-        base = ep.get("base") or self.base_url
-        url_base = _abs_url(base, path)
+
+        ep_bases: List[str] = []
+        if isinstance(ep.get("base_list"), list) and ep["base_list"]:
+            ep_bases = [str(x).rstrip("/") for x in ep["base_list"] if str(x).strip()]
+        elif ep.get("base"):
+            ep_bases = self._expand_base_urls(str(ep.get("base")))
+
+        bases = ep_bases or self.base_urls
+        if not bases:
+            return
+
+        for base in bases:
+            url_base = _abs_url(base, path)
+            self._scan_single_base(ep, url_base, method)
+
+    #================funtion _scan_single_base scan endpoint for a single base URL ##########
+    def _scan_single_base(self, ep: Endpoint, url_base: str, method: str) -> None:
         host = (urlparse(url_base).hostname or "").lower()
 
         if not self.CONFIG.test_localhost and host in {"127.0.0.1", "localhost", "::1"}:
-            self._tw(f"[ABORT] Localhost target ({host}) - skipping endpoint {method} {path}")
+            self._tw(f"[ABORT] Localhost target ({host}) - skipping endpoint {method} {url_base}")
             return
 
         if self.show_progress:
             self._tw(f"-> Testing {method} {url_base}")
 
-        ep.setdefault('_baseline', self._baseline_latency(url_base, method))
+        ep["_baseline"] = self._baseline_latency(url_base, method)
 
         swagger_params = {p.get("name") for p in ep.get("parameters") or [] if p.get("in") in {"query", "header", "path"}}
         common_params = {"url", "endpoint", "host", "server", "target", "lang", "language", "locale", "v", "version", "api"}
@@ -348,7 +368,6 @@ class SSRFAuditor:
                         encoded_payload = self._encode_payload(payload, encoding)
                         self._probe_params(ep, url_base, method, param, encoded_payload, encoding)
 
-                                                                                 
     #================funtion _probe_params send probes in query, body, headers, and path ##########
     def _probe_params(
         self,
@@ -359,7 +378,8 @@ class SSRFAuditor:
         payload: str,
         encoding: str = "default",
     ) -> None:
-        key = (ep.get('method',''), ep.get('path',''), param, payload, encoding)
+        # Include base_url so HTTP and HTTPS both get tested (no cross-scheme dedupe)
+        key = (ep.get("method", ""), ep.get("path", ""), base_url, param, payload, encoding)
         with self._lock:
             if key in self._tested_payloads:
                 return
@@ -413,7 +433,6 @@ class SSRFAuditor:
             path_url = base_url.replace(f"{{{param}}}", payload)
             self._probe(ep, path_url, method, payload=payload, param=param, encoding=encoding)
 
-                                                                          
     #================funtion _probe perform single HTTP request and analyze response ##########
     def _probe(
         self,
@@ -452,14 +471,14 @@ class SSRFAuditor:
             return
 
         body_low = _safe_body(resp, self.CONFIG.response_body_limit).lower()
-        hdr_low = ''
+        hdr_low = ""
         try:
-            hdr_low = ' '.join([f"{k}:{v}" for k, v in (resp.headers or {}).items()]).lower()
+            hdr_low = " ".join([f"{k}:{v}" for k, v in (resp.headers or {}).items()]).lower()
         except Exception:
-            hdr_low = ''
+            hdr_low = ""
         header_indicators = ("metadata-flavor", "x-aws-ec2-metadata", "x-envoy", "server: envoy")
 
-        baseline = float(ep.get('_baseline', 0.0) or 0.0)
+        baseline = float(ep.get("_baseline", 0.0) or 0.0)
         is_blind = latency >= self.CONFIG.blind_threshold
         if baseline > 0.0:
             is_blind = is_blind and latency >= (baseline * 2.0)
@@ -510,7 +529,6 @@ class SSRFAuditor:
                 response_cookies=resp.cookies.get_dict(),
             )
 
-                                                                                         
     #================funtion _calculate_confidence classify confidence based on evidence ##########
     def _calculate_confidence(self, latency: float, response_body: str, response_headers: Optional[dict] = None) -> str:
         body = response_body or ""
@@ -565,9 +583,7 @@ class SSRFAuditor:
         }
         with self._lock:
             key = (issue["endpoint"], issue["parameter"], issue["payload"], issue["description"])
-            if not any(
-                (i["endpoint"], i["parameter"], i["payload"], i["description"]) == key for i in self._issues
-            ):
+            if not any((i["endpoint"], i["parameter"], i["payload"], i["description"]) == key for i in self._issues):
                 if self.show_progress:
                     tqdm.write(
                         f"[!] SSRF finding: {issue['description']} at {issue['endpoint']} "
@@ -575,7 +591,6 @@ class SSRFAuditor:
                     )
                 self._issues.append(issue)
 
-                                                                                      
     #================funtion _filtered_findings deduplicate issues for reporting ##########
     def _filtered_findings(self) -> List[dict]:
         src = getattr(self, "_issues", getattr(self, "issues", []))
@@ -595,7 +610,6 @@ class SSRFAuditor:
             out.append(i)
         return out
 
-                                                                                   
     #================funtion generate_report build HTML/Markdown report ##########
     def generate_report(self, fmt: str = "html") -> str:
         issues = self._filtered_findings()
@@ -615,7 +629,6 @@ class SSRFAuditor:
         gen = ReportGenerator(issues, scanner="SSRF (API7)", base_url=self.base_url)
         return gen.generate_html() if fmt == "html" else gen.generate_markdown()
 
-                                                                               
     #================funtion save_report persist report to disk ##########
     def save_report(self, path: str, fmt: str = "html") -> None:
         issues = self._filtered_findings()

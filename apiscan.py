@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
 import requests
+import urllib3
 from tqdm import tqdm
 import math
 # ================= AI CLIENT (new preferred, v3 fallback) =================
@@ -81,7 +82,7 @@ try:
     from inventory_audit import InventoryAuditor
     from safe_consumption_audit import SafeConsumptionAuditor
     from version import __version__
-    from auth_utils import configure_authentication
+    from auth_utils import configure_authentication, AuthConfigError
     from report_utils import HTMLReportGenerator, RISK_INFO
     from doc_generator import generate_combined_html
     from swagger_utils import enable_dummy_mode, extract_variables, write_variables_file
@@ -216,8 +217,7 @@ class EvidenceDatabase:
                 self.record_endpoint(str(mth).upper(), str(ep), run_id=self.run_id, severity=sev2)
         except Exception:
             pass
-
-            self.conn.commit()
+        self.conn.commit()  # deze in de gaten houden
 
 #================funtion close close =============
     def close(self) -> None:
@@ -981,7 +981,18 @@ def main() -> None:
         except Exception as e:
             styled_print(f'WARNING: could not initialize evidence database: {e}', 'warn')
             db = None
-    sess = configure_authentication(args)
+    try:
+        sess = configure_authentication(args)
+    except AuthConfigError as e:
+        styled_print(f'Authentication configuration failed: {e}', 'fail')
+        if str(getattr(args, 'flow', '')).lower() == 'token':
+            styled_print('use: --flow token --token <JWT_OF_API_TOKEN>', 'info')
+        sys.exit(2)
+    except Exception as e:
+        styled_print(f'Unexpected authentication error: {e}', 'fail')
+        if getattr(args, 'debug', False):
+            logger.exception('Authentication setup exception')
+        sys.exit(2)
     try:
         sess.verify = not args.insecure
     except Exception:

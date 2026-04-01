@@ -190,10 +190,25 @@ class SSRFAuditor:
         b = (base_url or "").strip()
         if not b:
             return []
-        if "://" in b:
-            return [b.rstrip("/")]
-        b = b.rstrip("/")
-        return [f"http://{b}", f"https://{b}"]
+        if "://" not in b:
+            b = b.rstrip("/")
+            return [f"http://{b}", f"https://{b}"]
+
+        parsed = urlparse(b)
+        scheme = (parsed.scheme or "").lower()
+        normalized = b.rstrip("/")
+
+        if scheme not in {"http", "https"}:
+            return [normalized]
+
+        alternate_scheme = "https" if scheme == "http" else "http"
+        alternate = parsed._replace(scheme=alternate_scheme).geturl().rstrip("/")
+
+        expanded: List[str] = []
+        for candidate in (normalized, alternate):
+            if candidate and candidate not in expanded:
+                expanded.append(candidate)
+        return expanded
 
     @staticmethod
     #================funtion endpoints_from_swagger parse Swagger/OpenAPI to endpoint list ##########

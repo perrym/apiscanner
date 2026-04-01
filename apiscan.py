@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0 License                 #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2026  #
-# version 3.2.1 1-16-2026                                 #
+# version 3.2.2 1-4-2026                                 #
 ########################################################
 
 """APISCAN is a private and proprietary API security tool, developed independently for internal use and research purposes.
@@ -279,12 +279,79 @@ def _sec_from_args(args) -> OASSecurityConfig:
     api_key_name = getattr(args, 'apikey_header', 'X-API-Key')
     return OASSecurityConfig(api_key_header_name=api_key_name, api_key_value=api_key_val, api_key_query_name=None, bearer_token=getattr(args, 'token', None))
 
+
+def _swagger_example_value(param: dict) -> Any:
+    """Extract a concrete example/default value from a Swagger/OpenAPI parameter."""
+    schema = (param or {}).get('schema') or {}
+    if param.get('example') is not None:
+        return param['example']
+    if schema.get('example') is not None:
+        return schema['example']
+    if schema.get('default') is not None:
+        return schema['default']
+    enum_values = schema.get('enum') or param.get('enum') or []
+    if enum_values:
+        return enum_values[0]
+    ptype = (schema.get('type') or param.get('type') or 'string').lower()
+    pformat = (schema.get('format') or param.get('format') or '').lower()
+    if ptype == 'integer':
+        return 1
+    if ptype == 'number':
+        return 1.0
+    if ptype == 'boolean':
+        return True
+    if pformat == 'uuid':
+        return '00000000-0000-0000-0000-000000000000'
+    return 'test'
+
+
+def _extract_path_params_from_parameters(parameters: list[dict] | None) -> dict[str, str]:
+    """Build path_params for AI scanning from Swagger/OpenAPI parameter metadata."""
+    path_params: dict[str, str] = {}
+    for param in parameters or []:
+        if (param or {}).get('in') != 'path':
+            continue
+        name = str((param or {}).get('name') or '').strip()
+        if not name:
+            continue
+        value = _swagger_example_value(param)
+        if value is None:
+            continue
+        path_params[name] = str(value)
+    return path_params
+
+
+def _build_ai_endpoint(endpoint: dict) -> dict:
+    """Normalize an endpoint for ai_client while preserving Swagger-derived parameter values."""
+    parameters = endpoint.get('parameters')
+    if parameters is None:
+        parameters = (endpoint.get('raw') or {}).get('parameters')
+
+    item = {
+        'path': endpoint.get('path'),
+        'method': endpoint.get('method'),
+    }
+    if parameters:
+        item['parameters'] = parameters
+        path_params = _extract_path_params_from_parameters(parameters)
+        if path_params:
+            item['path_params'] = path_params
+    return item
+
 #================funtion _endpoints_from_universal _endpoints_from_universal =============
 def _endpoints_from_universal(spec: dict) -> list[dict]:
     eps = []
     try:
         for op in oas_iter_ops(spec):
-            eps.append({'path': op['path'], 'method': op['method'], 'operationId': op.get('operation', {}).get('operationId') or f"{op['method']}_{op['path'].strip('/').replace('/', '_')}", 'tags': op.get('operation', {}).get('tags', [])})
+            raw = op.get('raw') or {}
+            eps.append({
+                'path': op['path'],
+                'method': op['method'],
+                'operationId': raw.get('operationId') or f"{op['method']}_{op['path'].strip('/').replace('/', '_')}",
+                'tags': raw.get('tags', []),
+                'parameters': op.get('parameters', []),
+                'raw': raw,
+            })
     except Exception as e:
         logger.debug(f'Universal endpoint extraction failed: {e}')
     return eps
@@ -296,9 +363,21 @@ def extract_endpoints_from_paths(spec):
     for path, ops in paths.items():
         if not isinstance(ops, dict):
             continue
+        path_level_params = ops.get('parameters', []) if isinstance(ops.get('parameters', []), list) else []
         for method, op in ops.items():
             if method.upper() in ('GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD'):
-                endpoints.append({'path': path, 'method': method.upper(), 'operationId': op.get('operationId') or f"{method}_{path.strip('/').replace('/', '_')}", 'tags': op.get('tags', []), 'raw': op})
+                op_params = op.get('parameters', []) if isinstance(op, dict) else []
+                merged_params = []
+                seen = set()
+                for param in list(path_level_params) + list(op_params):
+                    if not isinstance(param, dict):
+                        continue
+                    key = (param.get('name'), param.get('in'))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    merged_params.append(param)
+                endpoints.append({'path': path, 'method': method.upper(), 'operationId': op.get('operationId') or f"{method}_{path.strip('/').replace('/', '_')}", 'tags': op.get('tags', []), 'parameters': merged_params, 'raw': op})
     return endpoints
 
 #================funtion styled_print styled_print =============
@@ -914,11 +993,6 @@ def main() -> None:
     parser.add_argument('--api11', action='store_true', help='Run AI-assisted OWASP Top 10 analysis')
     for i in range(1, 11):
         parser.add_argument(f'--api{i}', action='store_true', help=f'Run only API{i} audit')
-    parser.add_argument('--api3-active', action='store_true', help='Enable API3 ACTIVE tests (may send write requests).')
-    parser.add_argument('--api3-active-ok', choices=['YES'], help='Required acknowledgment for API3 ACTIVE tests: specify YES.')
-    parser.add_argument('--api3-test-user-id', default='1001', help='API3 test user id used in some probes (default: 1001)')
-    parser.add_argument('--api3-test-admin-id', default='9999', help='API3 test admin id used in some probes (default: 9999)')
-    parser.add_argument('--api3-active-header', default='', help='Optional marker header for ACTIVE mode, format Name:Value')
     group_nv = parser.add_mutually_exclusive_group()
     group_nv.add_argument('--normalize-version', dest='normalize_version', action='store_true', help='Normalize version segments in URLs like /v2.00/ -> /v2.0/ during planning and verify.')
     group_nv.add_argument('--no-normalize-version', dest='normalize_version', action='store_false', help='Disable version normalization in URLs (default).')
@@ -1038,7 +1112,16 @@ def main() -> None:
         if not endpoints:
             print('[debug] No endpoints found by discovery; falling back to raw paths')
             endpoints = extract_endpoints_from_paths(spec)
-        ai_endpoints = [{'path': ep['path'], 'method': ep['method']} for ep in endpoints if ep.get('path') and ep.get('method')]
+        ai_sources = []
+        seen_ai = set()
+        for source in (uni_eps, endpoints):
+            for ep in source or []:
+                key = ((ep or {}).get('method', '').upper(), (ep or {}).get('path', ''))
+                if not key[0] or not key[1] or key in seen_ai:
+                    continue
+                seen_ai.add(key)
+                ai_sources.append(ep)
+        ai_endpoints = [_build_ai_endpoint(ep) for ep in ai_sources]
         logger.debug(f'Swagger loaded - {len(endpoints)} endpoints')
         styled_print(f'Swagger loaded - {len(endpoints)} endpoints found', 'ok')
         if db is not None:
@@ -1158,11 +1241,6 @@ def main() -> None:
             base_url=args.url,
             session=sess,
             show_progress=True,
-            active_mode=bool(getattr(args, 'api3_active', False)),
-            active_ok=(getattr(args, 'api3_active_ok', None) == 'YES'),
-            active_header=str(getattr(args, 'api3_active_header', '') or ''),
-            test_user_id=str(getattr(args, 'api3_test_user_id', '1001')),
-            test_admin_id=str(getattr(args, 'api3_test_admin_id', '9999')),
         )
         prop_issues = pa.test_object_properties(endpoints)
         for issue in prop_issues:

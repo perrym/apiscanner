@@ -2,16 +2,19 @@
 # APISCAN - AI Security Scanner Module                 #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2026  #
-# version 4.0 - Enhanced with structured classes       #
+# version 3.2.2 - Enhanced with structured classes     #
 ########################################################
 
 import os
 import json
 import time
 import re
+import html
 import logging
 import asyncio
 import aiohttp
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Tuple, Optional, Literal, TypedDict, Union
 from urllib.parse import urljoin, urlencode, urlparse
 import requests
@@ -26,14 +29,13 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 import warnings
 import sqlite3
 
-# Configure logging
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Suppress only the specific InsecureRequestWarning
 if os.getenv("LLM_VERIFY_SSL", "true").strip().lower() in ("0", "false", "no"):
     import urllib3
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -61,6 +63,8 @@ class LLMProvider(str, Enum):
     DEEPSEEK = "deepseek"
     MISTRAL = "mistral"
     ANTHROPIC = "anthropic"
+    GEMINI = "gemini"
+    OPENROUTER = "openrouter"
     OLLAMA = "ollama"
     AZURE_OPENAI = "azure_openai"
     OPENAI_COMPAT = "openai_compat"
@@ -98,6 +102,7 @@ class ScanConfig(TypedDict, total=False):
     timeout: Optional[float]
     follow_redirects: bool
     max_response_size: int
+    max_workers: int
 
 # ==================== DATA CLASSES ====================
 
@@ -185,26 +190,24 @@ class LLMConfig:
     
     def __init__(self):
         self.provider = os.getenv("LLM_PROVIDER", "openai_compat").strip().lower()
-        self.model = os.getenv("LLM_MODEL", "gpt-4o-mini")
+        self.model = os.getenv("LLM_MODEL", "gpt-4o")
         self.api_key = self._collect_api_key()
         self.api_base = os.getenv("LLM_API_BASE", "").rstrip("/")
         self.api_port = os.getenv("LLM_API_PORT", "").strip()
         self.temperature = float(os.getenv("LLM_TEMPERATURE", "0.0"))
         self.top_p = float(os.getenv("LLM_TOP_P", "0.95"))
         self.max_tokens = int(os.getenv("LLM_MAX_TOKENS", "1024"))
+        self.prompt_header_chars = int(os.getenv("LLM_PROMPT_HEADER_CHARS", "1200"))
+        self.prompt_body_chars = int(os.getenv("LLM_PROMPT_BODY_CHARS", "2000"))
+        self.prompt_noauth_chars = int(os.getenv("LLM_PROMPT_NOAUTH_CHARS", "1000"))
+        self.prompt_max_chars = int(os.getenv("LLM_PROMPT_MAX_CHARS", "4500"))
         self.timeout_connect = float(os.getenv("LLM_CONNECT_TIMEOUT", "10"))
-        self.timeout_read = float(os.getenv("LLM_READ_TIMEOUT", "60"))
+        self.timeout_read = float(os.getenv("LLM_READ_TIMEOUT", "20"))
         self.verify_ssl = os.getenv("LLM_VERIFY_SSL", "true").strip().lower() not in ("0", "false", "no")
         self.user_agent = os.getenv("LLM_USER_AGENT", "apiscan-ai-client/4.0")
-        
-        # Azure specific
         self.azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
         self.azure_api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")
-        
-        # Retry configuration
-        self.max_retries = 3
-        
-        # Caching
+        self.max_retries = int(os.getenv("LLM_MAX_RETRIES", "2"))
         self.cache_ttl = 300  # 5 minutes
     
     def _collect_api_key(self):
@@ -215,7 +218,9 @@ class LLMConfig:
             "ANTHROPIC_API_KEY",
             "AZURE_OPENAI_API_KEY",
             "DEEPSEEK_API_KEY",
-            "MISTRAL_API_KEY"
+            "MISTRAL_API_KEY",
+            "GEMINI_API_KEY",
+            "OPENROUTER_API_KEY"
         ]
         
         for env_var in env_vars:
@@ -227,11 +232,13 @@ class LLMConfig:
     @property
     def timeout(self) -> Tuple[float, float]:
         return (self.timeout_connect, self.timeout_read)
-
+#############################################################
+# change code by your self , when you have beter LLM models #
+#############################################################
 PROVIDER_CONFIGS = {
     LLMProvider.OPENAI: {
         "base_url": "https://api.openai.com/v1",
-        "default_model": "gpt-4o-mini",
+        "default_model": "gpt-4o",
         "endpoint": "chat/completions"
     },
     LLMProvider.DEEPSEEK: {
@@ -246,19 +253,52 @@ PROVIDER_CONFIGS = {
     },
     LLMProvider.ANTHROPIC: {
         "base_url": "https://api.anthropic.com",
-        "default_model": "claude-3-opus-20240229",
+        "default_model": "claude-3-7-sonnet-latest",
         "endpoint": "v1/messages"
+    },
+    LLMProvider.GEMINI: {
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "default_model": "gemini-2.5-flash",
+        "endpoint": "chat/completions"
+    },
+    LLMProvider.OPENROUTER: {
+        "base_url": "https://openrouter.ai/api/v1",
+        "default_model": "openai/gpt-4o",
+        "endpoint": "chat/completions"
     },
     LLMProvider.OLLAMA: {
         "base_url": "http://localhost:11434",
-        "default_model": "llama2",
+        "default_model": "llama3.2",
         "endpoint": "api/chat"
     },
     LLMProvider.OPENAI_COMPAT: {
         "base_url": "https://api.openai.com/v1",
-        "default_model": "gpt-4o-mini",
+        "default_model": "gpt-4o",
         "endpoint": "chat/completions"
     }
+}
+
+MODEL_ALIASES = {
+    # Common aliases users type for ChatGPT 4o
+    "chatgpt 4o": "gpt-4o",
+    "chatgpt-4o": "gpt-4o",
+    "gpt4o": "gpt-4o",
+    "gpt 4o": "gpt-4o",
+    # Common aliases users type for GPT-5.3
+    "chatgpt 53": "gpt-5.3",
+    "chatgpt-53": "gpt-5.3",
+    "gpt53": "gpt-5.3",
+    "gpt-53": "gpt-5.3",
+    "gpt 53": "gpt-5.3",
+    # Common aliases users type for DeepSeek
+    "deepseek": "deepseek-chat",
+    "deepseek chat": "deepseek-chat",
+    "deepseek-chat": "deepseek-chat",
+    "deepseek v3": "deepseek-chat",
+    "deepseek-v3": "deepseek-chat",
+    "deepseek r1": "deepseek-reasoner",
+    "deepseek-r1": "deepseek-reasoner",
+    "r1": "deepseek-reasoner",
 }
 
 # ==================== CORE CLASSES ====================
@@ -269,24 +309,41 @@ class LLMClient:
     def __init__(self, config: Optional[LLMConfig] = None):
         self.config = config or LLMConfig()
         self.cache = TTLCache(maxsize=100, ttl=self.config.cache_ttl) if self.config.cache_ttl > 0 else None
-        self._session = None
+        self._thread_local = threading.local()
+        self._cache_lock = threading.RLock()
         self._async_session = None
         
     def _get_session(self) -> requests.Session:
-        """Get or create a requests session"""
-        if self._session is None:
-            self._session = requests.Session()
+        """Get or create a thread-local requests session."""
+        session = getattr(self._thread_local, "session", None)
+        if session is None:
+            session = requests.Session()
             if not self.config.verify_ssl:
-                self._session.verify = False
-        return self._session
+                session.verify = False
+            self._thread_local.session = session
+        return session
+
+    @staticmethod
+    def _normalize_model_name(model: str) -> str:
+        """Normalize user-friendly model aliases to provider model IDs."""
+        if not model:
+            return model
+        normalized = model.strip()
+        key = normalized.lower()
+        return MODEL_ALIASES.get(key, normalized)
     
     def _build_base_url(self) -> str:
         """Build the base URL for API requests"""
         if self.config.provider == "azure_openai":
             return self.config.azure_endpoint
+
+        try:
+            provider_enum = LLMProvider(self.config.provider)
+        except ValueError:
+            provider_enum = LLMProvider.OPENAI_COMPAT
         
         provider_config = PROVIDER_CONFIGS.get(
-            LLMProvider(self.config.provider) if self.config.provider in LLMProvider.__members__ else LLMProvider.OPENAI_COMPAT,
+            provider_enum,
             PROVIDER_CONFIGS[LLMProvider.OPENAI_COMPAT]
         )
         
@@ -323,8 +380,17 @@ class LLMClient:
             elif self.config.provider == "anthropic":
                 headers["x-api-key"] = self.config.api_key
                 headers["anthropic-version"] = "2023-06-01"
-            elif self.config.provider in ["openai", "openai_compat", "deepseek", "mistral"]:
+            elif self.config.provider in ["openai", "openai_compat", "deepseek", "mistral", "gemini", "openrouter"]:
                 headers["Authorization"] = f"Bearer {self.config.api_key}"
+
+        # Optional metadata headers recommended by OpenRouter.
+        if self.config.provider == "openrouter":
+            referer = os.getenv("OPENROUTER_HTTP_REFERER", "").strip()
+            title = os.getenv("OPENROUTER_X_TITLE", "").strip()
+            if referer:
+                headers["HTTP-Referer"] = referer
+            if title:
+                headers["X-Title"] = title
         
         return headers
     
@@ -344,8 +410,8 @@ class LLMClient:
             return f"{base_url}/chat/completions"
     
     @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
+        stop=stop_after_attempt(2),
+        wait=wait_exponential(multiplier=1, min=1, max=4),
         retry=retry_if_exception_type((requests.exceptions.ConnectionError,
                                       requests.exceptions.Timeout))
     )
@@ -355,10 +421,10 @@ class LLMClient:
         """
         Send a chat request to the LLM
         """
-        model = model or self.config.model
-        temperature = temperature or self.config.temperature
-        top_p = top_p or self.config.top_p
-        max_tokens = max_tokens or self.config.max_tokens
+        model = self._normalize_model_name(model or self.config.model)
+        temperature = self.config.temperature if temperature is None else temperature
+        top_p = self.config.top_p if top_p is None else top_p
+        max_tokens = self.config.max_tokens if max_tokens is None else max_tokens
         
         # Create cache key
         cache_key = None
@@ -372,10 +438,11 @@ class LLMClient:
                 "max_tokens": max_tokens
             }
             cache_key = hashlib.md5(json.dumps(cache_data, sort_keys=True).encode()).hexdigest()
-            
-            if cache_key in self.cache:
-                logger.debug("Cache hit for LLM request")
-                return self.cache[cache_key]
+
+            with self._cache_lock:
+                if cache_key in self.cache:
+                    logger.debug("Cache hit for LLM request")
+                    return self.cache[cache_key]
         
         url = self._get_endpoint_url(model)
         headers = self._get_headers()
@@ -436,10 +503,15 @@ class LLMClient:
                     result = ""
             else:
                 result = data.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+
+                # Fallback for non-standard OpenAI-compatible providers.
+                if not result:
+                    result = data.get("output_text", "") or ""
             
             # Cache result
             if cache_key and self.cache is not None:
-                self.cache[cache_key] = result
+                with self._cache_lock:
+                    self.cache[cache_key] = result
             
             return result
             
@@ -463,7 +535,7 @@ class LLMClient:
         
         text = text.strip()
         
-        # Try to extract JSON from code blocks
+        
         if "```" in text:
             parts = text.split("```")
             for segment in reversed(parts):
@@ -476,7 +548,7 @@ class LLMClient:
                     except json.JSONDecodeError:
                         continue
         
-        # Try to find JSON object
+        
         try:
             start = text.index("{")
             end = text.rindex("}") + 1
@@ -485,7 +557,7 @@ class LLMClient:
         except (ValueError, json.JSONDecodeError):
             pass
         
-        # Try direct parse
+       
         if text.startswith("{") and text.endswith("}"):
             try:
                 return json.loads(text)
@@ -495,7 +567,6 @@ class LLMClient:
         return {"raw": text}
     
     def test_connection(self) -> Dict[str, Any]:
-        """Test connection to LLM provider"""
         base_url = self._build_base_url()
         info = {
             "provider": self.config.provider,
@@ -504,12 +575,25 @@ class LLMClient:
             "verify_ssl": self.config.verify_ssl,
             "timeout": self.config.timeout
         }
-        
+
         try:
-            # Simple ping message
-            messages = [{"role": "user", "content": "ping"}]  # Changed from "Return 'pong'." to "ping"
+            if self.config.provider == "ollama":
+                session = self._get_session()
+                response = session.get(
+                    f"{base_url}/api/tags",
+                    timeout=(self.config.timeout_connect, 10),
+                    verify=self.config.verify_ssl
+                )
+                response.raise_for_status()
+                return {
+                    "ok": True,
+                    "response": "Ollama API reachable",
+                    "info": info
+                }
+
+            messages = [{"role": "user", "content": "ping"}]
             response = self.chat(messages, max_tokens=10)
-            
+
             return {
                 "ok": True,
                 "response": response[:100] if response else "",
@@ -547,12 +631,12 @@ class AIReportGenerator:
                 "risk_key": result.analysis.get("owasp_category", "").split(":")[0] if result.analysis and ":" in result.analysis.get("owasp_category", "") else "",
             }
             
-            # Map AI risk levels to report severity
+            
             risk_map = {
                 "Informal": "Info",
                 "Low": "Low", 
                 "Medium": "Medium",
-                "High": "Critical"  # AI's "High" maps to Critical in reports
+                "High": "Critical" 
             }
             
             if result.analysis:
@@ -561,7 +645,7 @@ class AIReportGenerator:
             else:
                 issue["severity"] = "Info"
             
-            # Add probe data if available
+            
             if result.probe:
                 issue.update({
                     "status_code": result.probe.status_code,
@@ -571,20 +655,20 @@ class AIReportGenerator:
                     "timestamp": result.timestamp.isoformat(),
                 })
                 
-                # Format request data
+                
                 request_data = {
                     "method": result.endpoint.get("method", "GET"),
                     "url": result.probe.url,
                     "headers": result.probe.request_headers,
                 }
                 
-                # Add JSON body if present
+               
                 if result.endpoint.get("json"):
                     request_data["body"] = json.dumps(result.endpoint.get("json"), indent=2)
                 
                 issue["request"] = request_data
             
-            # Add analysis details
+           
             if result.analysis:
                 issue["analysis_details"] = dict(result.analysis)
                 issue["recommendation"] = result.analysis.get("recommendation", "")
@@ -600,27 +684,24 @@ class AIReportGenerator:
         """Generate HTML report using EnhancedReportGenerator"""
         
         try:
-            # Try to import EnhancedReportGenerator
+            
             from report_utils import EnhancedReportGenerator
-            
-            # Convert to legacy format
+                       
             legacy_issues = AIReportGenerator.convert_to_legacy_format(scan_results)
-            
-            # Filter out skipped items
+                      
             filtered_issues = [issue for issue in legacy_issues]
             
-            # Create report generator
             report_gen = EnhancedReportGenerator(
                 issues=filtered_issues,
                 scanner=scanner_name,
                 base_url=base_url,
-                drop_http0=False  # Keep all findings
+                drop_http0=False  
             )
             
-            # Generate HTML
+            
             html_report = report_gen.generate_html()
             
-            # Save if output path provided
+            
             if output_path:
                 output_path = Path(output_path)
                 report_gen.save(output_path)
@@ -630,18 +711,20 @@ class AIReportGenerator:
             
         except ImportError as e:
             logger.error(f"Could not import EnhancedReportGenerator: {e}")
-            # Fallback to simple HTML
+            
             return AIReportGenerator._generate_simple_html(scan_results, scanner_name, base_url, output_path)
     
     @staticmethod
     def _generate_simple_html(scan_results: List[ScanResult], scanner_name: str, 
                             base_url: str, output_path: Union[str, Path] = None) -> str:
         """Fallback simple HTML generator"""
+        esc = lambda v: html.escape(str(v), quote=True)
+
         html_content = f"""
         <!DOCTYPE html>
         <html>
         <head>
-            <title>{scanner_name} Report</title>
+            <title>{esc(scanner_name)} Report</title>
             <meta charset="UTF-8">
             <style>
                 body {{ font-family: Arial, sans-serif; margin: 20px; }}
@@ -656,9 +739,9 @@ class AIReportGenerator:
             </style>
         </head>
         <body>
-            <h1>{scanner_name} Report</h1>
-            <p><strong>Base URL:</strong> {base_url or 'N/A'}</p>
-            <p><strong>Generated:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+            <h1>{esc(scanner_name)} Report</h1>
+            <p><strong>Base URL:</strong> {esc(base_url or 'N/A')}</p>
+            <p><strong>Generated:</strong> {esc(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))}</p>
             <p><strong>Total Findings:</strong> {len(scan_results)}</p>
         """
         
@@ -678,14 +761,14 @@ class AIReportGenerator:
             
             html_content += f"""
             <div class="finding {risk_class}">
-                <h3>{result.endpoint.get('method', 'GET')} {result.endpoint.get('path', '')}</h3>
+                <h3>{esc(result.endpoint.get('method', 'GET'))} {esc(result.endpoint.get('path', ''))}</h3>
                 <div class="meta">
-                    <p><strong>Status:</strong> {result.probe.status_code if result.probe else 'N/A'}</p>
-                    <p><strong>Risk:</strong> {result.analysis.get('risk', 'N/A') if result.analysis else 'N/A'}</p>
-                    <p><strong>OWASP Category:</strong> {result.analysis.get('owasp_category', 'N/A') if result.analysis else 'N/A'}</p>
+                    <p><strong>Status:</strong> {esc(result.probe.status_code if result.probe else 'N/A')}</p>
+                    <p><strong>Risk:</strong> {esc(result.analysis.get('risk', 'N/A') if result.analysis else 'N/A')}</p>
+                    <p><strong>OWASP Category:</strong> {esc(result.analysis.get('owasp_category', 'N/A') if result.analysis else 'N/A')}</p>
                 </div>
-                <p><strong>Explanation:</strong> {result.analysis.get('explanation', 'No analysis') if result.analysis else 'No analysis'}</p>
-                <p><strong>Recommendation:</strong> {result.analysis.get('recommendation', 'N/A') if result.analysis else 'N/A'}</p>
+                <p><strong>Explanation:</strong> {esc(result.analysis.get('explanation', 'No analysis') if result.analysis else 'No analysis')}</p>
+                <p><strong>Recommendation:</strong> {esc(result.analysis.get('recommendation', 'N/A') if result.analysis else 'N/A')}</p>
             </div>
             """
         
@@ -715,7 +798,7 @@ class AIReportGenerator:
         with sqlite3.connect(str(db_path)) as conn:
             conn.row_factory = sqlite3.Row
             
-            # Create tables if they don't exist
+            
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS finding (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -753,12 +836,12 @@ class AIReportGenerator:
                 )
             """)
             
-            # Insert findings
+            
             for result in scan_results:
                 if result.skipped:
                     continue
                 
-                # Prepare data
+               
                 method = result.endpoint.get("method", "GET")
                 endpoint_path = result.endpoint.get("path", "")
                 title = f"{method} {endpoint_path}"
@@ -767,7 +850,7 @@ class AIReportGenerator:
                     description = result.analysis.get("explanation", "")
                     category = result.analysis.get("owasp_category", "")
                     
-                    # Map AI risk to report severity
+                    
                     risk_map = {
                         "Informal": "info",
                         "Low": "low", 
@@ -784,13 +867,13 @@ class AIReportGenerator:
                     severity = "info"
                     risk_key = ""
                 
-                # Prepare request/response data
+                
                 req_headers = json.dumps(result.probe.request_headers) if result.probe else "{}"
                 res_headers = json.dumps(result.probe.response_headers) if result.probe else "{}"
                 res_body = result.probe.response_text[:10000] if result.probe else ""  # Limit size
                 res_status = result.probe.status_code if result.probe else 0
                 
-                # Insert finding
+               
                 conn.execute("""
                     INSERT INTO finding 
                     (run_id, risk_key, title, description, category, severity, status, 
@@ -801,7 +884,7 @@ class AIReportGenerator:
                     method, endpoint_path, req_headers, "", res_headers, res_body, res_status
                 ))
                 
-                # Update endpoint statistics
+               
                 if result.probe:
                     url = result.probe.url
                     is_success = 200 <= result.probe.status_code < 300
@@ -813,23 +896,53 @@ class AIReportGenerator:
                     )
                     
                     if cursor.fetchone():
-                        # Update existing
+                        
                         if is_success:
                             conn.execute("""
                                 UPDATE endpoint 
                                 SET last_status = ?, last_ms = ?, count_ok = count_ok + 1,
-                                    max_severity = MAX(max_severity, ?), last_seen = CURRENT_TIMESTAMP
+                                    max_severity = CASE
+                                        WHEN (CASE max_severity
+                                            WHEN 'critical' THEN 4
+                                            WHEN 'medium' THEN 3
+                                            WHEN 'low' THEN 2
+                                            ELSE 1
+                                        END) >= (CASE ?
+                                            WHEN 'critical' THEN 4
+                                            WHEN 'medium' THEN 3
+                                            WHEN 'low' THEN 2
+                                            ELSE 1
+                                        END)
+                                        THEN max_severity
+                                        ELSE ?
+                                    END,
+                                    last_seen = CURRENT_TIMESTAMP
                                 WHERE run_id = ? AND method = ? AND url = ?
-                            """, (res_status, result.probe.elapsed_ms, severity, run_id, method, url))
+                            """, (res_status, result.probe.elapsed_ms, severity, severity, run_id, method, url))
                         else:
                             conn.execute("""
                                 UPDATE endpoint 
                                 SET last_status = ?, last_ms = ?, count_fail = count_fail + 1,
-                                    max_severity = MAX(max_severity, ?), last_seen = CURRENT_TIMESTAMP
+                                    max_severity = CASE
+                                        WHEN (CASE max_severity
+                                            WHEN 'critical' THEN 4
+                                            WHEN 'medium' THEN 3
+                                            WHEN 'low' THEN 2
+                                            ELSE 1
+                                        END) >= (CASE ?
+                                            WHEN 'critical' THEN 4
+                                            WHEN 'medium' THEN 3
+                                            WHEN 'low' THEN 2
+                                            ELSE 1
+                                        END)
+                                        THEN max_severity
+                                        ELSE ?
+                                    END,
+                                    last_seen = CURRENT_TIMESTAMP
                                 WHERE run_id = ? AND method = ? AND url = ?
-                            """, (res_status, result.probe.elapsed_ms, severity, run_id, method, url))
+                            """, (res_status, result.probe.elapsed_ms, severity, severity, run_id, method, url))
                     else:
-                        # Insert new
+                        
                         conn.execute("""
                             INSERT INTO endpoint 
                             (run_id, method, url, max_severity, last_status, last_ms, 
@@ -852,19 +965,12 @@ class AIReportGenerator:
         
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Save to SQLite first
         db_path = output_dir / "ai_scan.db"
         AIReportGenerator.save_to_sqlite(scan_results, db_path, run_id)
-        
-        # Generate review HTML using build_review
         try:
-            # Dynamically import build_review functions
             from build_review import build_review
             
             html_path = output_dir / "ai_review.html"
-            
-            # Call build_review
             html_path = build_review(
                 db_path=db_path,
                 out_path=html_path,
@@ -878,11 +984,8 @@ class AIReportGenerator:
         except ImportError as e:
             logger.error(f"Could not import build_review: {e}")
             logger.info("Falling back to direct HTML generation")
-            
-            # Fallback: generate HTML directly
             html_path = output_dir / "ai_report.html"
             base_url = scan_results[0].probe.url if scan_results and scan_results[0].probe else ""
-            
             html_content = AIReportGenerator.generate_html_report(
                 scan_results, 
                 scanner_name="AI Security Scanner",
@@ -899,8 +1002,8 @@ class APIScanner:
     
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.llm = llm_client or LLMClient()
-        self._scan_cache = TTLCache(maxsize=50, ttl=3600)  # 1 hour cache
-        self.report_generator = AIReportGenerator()  # Add report generator
+        self._scan_cache = TTLCache(maxsize=50, ttl=3600)  
+        self.report_generator = AIReportGenerator()  
     
     def _mask_headers(self, headers: Dict[str, str]) -> Dict[str, str]:
         """Mask sensitive headers in output"""
@@ -947,6 +1050,57 @@ class APIScanner:
             headers["x-api-key"] = api_key
         
         return headers
+
+    @staticmethod
+    def _example_from_parameter(param: Dict[str, Any]) -> Optional[str]:
+        """Extract a concrete path value from Swagger/OpenAPI parameter metadata."""
+        schema = param.get("schema") or {}
+        candidates = [
+            param.get("example"),
+            schema.get("example"),
+            schema.get("default"),
+        ]
+        enum_values = schema.get("enum") or param.get("enum") or []
+        if enum_values:
+            candidates.append(enum_values[0])
+
+        for candidate in candidates:
+            if candidate is not None:
+                return str(candidate)
+
+        ptype = str(schema.get("type") or param.get("type") or "string").lower()
+        pformat = str(schema.get("format") or param.get("format") or "").lower()
+        if ptype == "integer":
+            return "1"
+        if ptype == "number":
+            return "1.0"
+        if ptype == "boolean":
+            return "true"
+        if pformat == "uuid":
+            return "00000000-0000-0000-0000-000000000000"
+        return None
+
+    def _resolve_path_params(self, endpoint: EndpointDefinition) -> Dict[str, str]:
+        """Resolve path params from explicit endpoint data or Swagger/OpenAPI parameters."""
+        resolved: Dict[str, str] = {}
+
+        explicit = endpoint.get("path_params")
+        if explicit:
+            resolved.update({str(key): str(value) for key, value in explicit.items()})
+
+        parameters = endpoint.get("parameters")
+        if isinstance(parameters, list):
+            for param in parameters:
+                if not isinstance(param, dict) or param.get("in") != "path":
+                    continue
+                name = str(param.get("name") or "").strip()
+                if not name or name in resolved:
+                    continue
+                value = self._example_from_parameter(param)
+                if value is not None:
+                    resolved[name] = value
+
+        return resolved
     
     def _fill_path_params(self, path: str, placeholders: Optional[Dict[str, str]] = None) -> str:
         """Fill path parameters with safe values"""
@@ -1004,7 +1158,7 @@ class APIScanner:
                 verify=self.llm.config.verify_ssl
             )
             
-            # Limit response size
+           
             response_text = ""
             if response.content:
                 if len(response.content) > max_size:
@@ -1048,8 +1202,12 @@ class APIScanner:
         start_time = time.time()
         path = endpoint.get("path", "")
         method = endpoint.get("method", "GET")
-        
-        # Check if should be skipped
+        path_params = self._resolve_path_params(endpoint)
+        filled_path = self._fill_path_params(path, path_params)
+        endpoint_label = self._format_endpoint_label(endpoint)
+
+        logger.info(f"AI scanning endpoint: {endpoint_label}")
+
         if (scan_config.get("safe_mode", True) and 
             self._is_unsafe_method(method) and 
             not endpoint.get("allow_unsafe", False)):
@@ -1064,27 +1222,19 @@ class APIScanner:
                 skip_reason="safe_mode_blocked_unsafe_method",
                 scan_duration=time.time() - start_time
             )
-        
-        # Prepare for probing
         env_headers = self._parse_headers_env()
         endpoint_headers = endpoint.get("headers")
         if endpoint_headers is None:
             endpoint_headers = {}
         merged_headers = {**env_headers, **endpoint_headers}
         
-        path_params = endpoint.get("path_params")
-        filled_path = self._fill_path_params(path, path_params)
-        
         probes = []
         probes_auth_comparison = []
         error = None
-        
-        # Live probing if enabled
+       
         if scan_config.get("enable_live_scan", True) and scan_config.get("base_url"):
             try:
                 session = self.llm._get_session()
-                
-                # Primary probe
                 probe = self.probe_endpoint(
                     session=session,
                     base_url=scan_config["base_url"],
@@ -1096,9 +1246,11 @@ class APIScanner:
                     timeout=scan_config.get("timeout")
                 )
                 probes.append(probe)
-                
-                # Auth comparison if requested
-                if scan_config.get("compare_auth", True) and merged_headers:
+                compare_auth = scan_config.get("compare_auth")
+                if compare_auth is None:
+                    compare_auth = os.getenv("APISCAN_COMPARE_AUTH", "false").strip().lower() in ("1", "true", "yes")
+
+                if compare_auth and merged_headers:
                     stripped_headers = dict(merged_headers)
                     sensitive = ["authorization", "cookie", "x-api-key", "api-key"]
                     
@@ -1123,11 +1275,9 @@ class APIScanner:
                 error = f"Probe failed: {str(e)}"
                 logger.error(f"Probe failed for {method} {path}: {e}")
         
-        # LLM Analysis
         analysis = None
         if not error:
             try:
-                # Build prompt based on available evidence
                 user_prompt = self._build_analysis_prompt(
                     endpoint, 
                     probes[0] if probes else None,
@@ -1136,13 +1286,10 @@ class APIScanner:
                 )
                 
                 messages = [
-                    {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt}
                 ]
                 
-                result = self.llm.chat_json(messages)
-                
-                # Validate and normalize result
+                result = self.llm.chat_json(messages, system=SYSTEM_PROMPT)
                 if isinstance(result, dict):
                     analysis = self._validate_analysis_result(result)
                 
@@ -1158,6 +1305,15 @@ class APIScanner:
             error=error,
             scan_duration=time.time() - start_time
         )
+
+    def _format_endpoint_label(self, endpoint: EndpointDefinition) -> str:
+        """Create a short readable label for progress and logs."""
+        method = str(endpoint.get("method", "GET") or "GET").upper()
+        path = self._fill_path_params(
+            str(endpoint.get("path", "") or ""),
+            self._resolve_path_params(endpoint)
+        )
+        return f"{method} {path}".strip()
     
     def _build_analysis_prompt(self, endpoint: EndpointDefinition,
                               probe: Optional[ProbeResult],
@@ -1169,7 +1325,15 @@ class APIScanner:
         base_url = scan_config.get("base_url", "")
         
         if probe:
-            prompt = [
+            # Provider-agnostic truncation to keep prompts within model context budgets.
+            header_limit = max(200, self.llm.config.prompt_header_chars)
+            body_limit = max(200, self.llm.config.prompt_body_chars)
+            noauth_limit = max(120, self.llm.config.prompt_noauth_chars)
+            total_limit = max(1000, self.llm.config.prompt_max_chars)
+
+            compact_headers = json.dumps(probe.response_headers, indent=2)[:header_limit]
+
+            prompt_prefix = [
                 "Analyze this observed API interaction for OWASP API Top 10 (2023) risks.",
                 "Use evidence only. If evidence is insufficient, say so explicitly.",
                 "",
@@ -1181,24 +1345,41 @@ class APIScanner:
                 f"Response Size: {probe.response_size} bytes",
                 "",
                 "Response Headers:",
-                json.dumps(probe.response_headers, indent=2),
+                compact_headers,
                 "",
                 "Response Body (truncated):",
-                probe.response_text[:2000],
             ]
+
+            prompt_static = "\n".join(prompt_prefix)
+            remaining = max(240, total_limit - len(prompt_static) - 16)
+
+            if probe_noauth:
+                body_budget = max(160, int(remaining * 0.7))
+                noauth_budget = max(80, remaining - body_budget)
+            else:
+                body_budget = remaining
+                noauth_budget = 0
+
+            body_text = probe.response_text[:min(body_limit, body_budget)]
+
+            prompt = prompt_prefix + [body_text]
             
             if probe_noauth:
+                noauth_text = probe_noauth.response_text[:min(noauth_limit, noauth_budget)]
                 prompt.extend([
                     "",
                     "=== AUTHENTICATION COMPARISON ===",
                     f"Status without auth: {probe_noauth.status_code}",
                     f"Response without auth (truncated):",
-                    probe_noauth.response_text[:1000]
+                    noauth_text
                 ])
-            
-            return "\n".join(prompt)
+
+            final_prompt = "\n".join(prompt)
+            if len(final_prompt) > total_limit:
+                final_prompt = final_prompt[:total_limit]
+
+            return final_prompt
         else:
-            # Theoretical analysis
             return (
                 f"Evaluate endpoint for OWASP API Top 10 (2023) risks. "
                 f"Base URL: {base_url} | Method: {method} | Path: {path}. "
@@ -1208,18 +1389,14 @@ class APIScanner:
     def _validate_analysis_result(self, result: Dict[str, Any]) -> Optional[AnalysisResult]:
         """Validate and normalize analysis result from LLM"""
         try:
-            # Ensure required fields
             required = ["risk", "explanation", "owasp_category", "recommendation", "reasoning"]
             
             for field in required:
                 if field not in result:
                     logger.warning(f"Missing required field in analysis: {field}")
                     return None
-            
-            # Validate risk level
             valid_risks = [r.value for r in RiskLevel]
             if result["risk"] not in valid_risks:
-                # Try to normalize
                 risk_lower = result["risk"].lower()
                 for valid in valid_risks:
                     if valid.lower() == risk_lower:
@@ -1272,21 +1449,85 @@ class APIScanner:
         """
         results = []
         
-        # Rate limiting
+        
         rate_limit = scan_config.get("rate_limit")
-        if rate_limit:
-            time.sleep(1.0 / rate_limit)
+        if rate_limit is not None:
+            try:
+                rate_limit = float(rate_limit)
+                if rate_limit <= 0:
+                    logger.warning("Invalid rate_limit <= 0 provided; disabling rate limiting")
+                    rate_limit = None
+            except (ValueError, TypeError):
+                logger.warning("Invalid rate_limit value provided; disabling rate limiting")
+                rate_limit = None
+        # change this for faster device 
+        max_workers = scan_config.get("max_workers", int(os.getenv("APISCAN_MAX_WORKERS", "1")))
+        try:
+            max_workers = int(max_workers)
+        except (ValueError, TypeError):
+            logger.warning("Invalid max_workers value provided; falling back to 1")
+            max_workers = 1
+        if max_workers < 1:
+            max_workers = 1
         
         try:
             from tqdm import tqdm
-            progress_bar = tqdm(endpoints, desc="AI Scanning", unit="endpoint")
+            show_progress = True
         except ImportError:
-            progress_bar = endpoints
+            show_progress = False
             logger.info("Starting AI scan...")
-        
-        for endpoint in progress_bar:
-            result = self.analyze_endpoint(endpoint, scan_config)
-            results.append(result)
+
+        # Default path: keep deterministic single-thread flow.
+        if max_workers == 1:
+            progress_iter = (
+                tqdm(endpoints, desc="AI Scanning", unit="endpoint") if show_progress else endpoints
+            )
+            for index, endpoint in enumerate(progress_iter):
+                if show_progress and hasattr(progress_iter, "set_postfix_str"):
+                    progress_iter.set_postfix_str(self._format_endpoint_label(endpoint), refresh=True)
+                if rate_limit and index > 0:
+                    time.sleep(1.0 / rate_limit)
+                result = self.analyze_endpoint(endpoint, scan_config)
+                results.append(result)
+            return results
+
+        logger.info(f"Using multithreaded scan with max_workers={max_workers}")
+
+        indexed_results: List[Optional[ScanResult]] = [None] * len(endpoints)
+        progress = tqdm(total=len(endpoints), desc="AI Scanning", unit="endpoint") if show_progress else None
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_index = {}
+            for index, endpoint in enumerate(endpoints):
+                if rate_limit and index > 0:
+                    time.sleep(1.0 / rate_limit)
+                future = executor.submit(self.analyze_endpoint, endpoint, scan_config)
+                future_to_index[future] = index
+
+            for future in as_completed(future_to_index):
+                index = future_to_index[future]
+                try:
+                    indexed_results[index] = future.result()
+                except Exception as e:
+                    ep = endpoints[index]
+                    method = ep.get("method", "GET")
+                    path = ep.get("path", "")
+                    logger.error(f"Unhandled scan error for {method} {path}: {e}")
+                    indexed_results[index] = ScanResult(
+                        endpoint=ep,
+                        analysis=None,
+                        probe=None,
+                        probes_auth_comparison=None,
+                        error=f"Unhandled scan error: {e}",
+                        skipped=False
+                    )
+                if progress is not None:
+                    progress.update(1)
+
+        if progress is not None:
+            progress.close()
+
+        results = [r for r in indexed_results if r is not None]
         
         return results
     
@@ -1439,12 +1680,15 @@ def analyze_endpoints_with_llm(
         "enable_live_scan": enable_live_scan and bool(live_base_url),
         "safe_mode": safe_mode,
         "compare_auth": compare_auth,
+        "max_workers": int(os.getenv("APISCAN_MAX_WORKERS", "6")),
     }
 
     # Normalize endpoints
     items = []
     for ep in endpoints:
         method = ep.get("method", "GET")
+        path_params = ep.get("path_params")
+        parameters = ep.get("parameters")
         items.append({
             "path": ep.get("path"),
             "method": method,
@@ -1452,6 +1696,8 @@ def analyze_endpoints_with_llm(
             "headers": ep.get("headers", {}),  # Changed from None to {}
             "params": ep.get("params", None),
             "json": ep.get("json", None),
+            "path_params": path_params if isinstance(path_params, dict) else None,
+            "parameters": parameters if isinstance(parameters, list) else None,
         })
 
     results = _default_scanner.scan(items, scan_config)
@@ -1531,7 +1777,8 @@ if __name__ == "__main__":
                 "base_url": args.base_url,
                 "enable_live_scan": bool(args.base_url),
                 "safe_mode": True,
-                "compare_auth": True
+                "compare_auth": os.getenv("APISCAN_COMPARE_AUTH", "false").strip().lower() in ("1", "true", "yes"),
+                "max_workers": int(os.getenv("APISCAN_MAX_WORKERS", "6"))
             }
             
             results = scanner.scan(endpoints_data, scan_config)
@@ -1558,8 +1805,6 @@ if __name__ == "__main__":
     else:
         # Simple chat mode
         msgs = []
-        if args.system:
-            msgs.append({"role": "system", "content": args.system})
         msgs.append({"role": "user", "content": args.message})
         
         result = chat_json(msgs, system=args.system, model=args.model)
@@ -1599,3 +1844,4 @@ if __name__ == "__main__":
             print(f"Demo report generated: {args.output}")
         else:
             print(json.dumps(result, ensure_ascii=False, indent=2))
+

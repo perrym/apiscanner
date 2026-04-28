@@ -1,9 +1,9 @@
 <meta content="VvYq2k5BFp5dpIL6JpQhoe90sWEXZTEBbaynlEKCWRE" name="google-site-verification">
-# APISCAN OWASP APIscanner by Perry Mertens
+## **APISCAN OWASP 4.0 APIscanner by Perry Mertens**
 
 **Author:** Perry Mertens (pamsniffer@gmail.com)  
 **Year:**  2026 Perry Mertens  
-**Version:** 3.2.1 (Release)  
+**Version:** 4.0 (Release)  
 **License:** GNU Affero General Public License v3.0 (AGPL-v3.0)
 
 APISCAN is an API vulnerability scanner that proactively identifies security risks by testing against the OWASP API Security Top 10 (2023).
@@ -27,8 +27,8 @@ If you modify APISCAN and make it available as a hosted service, you must make t
 APISCAN focuses on API-specific risks instead of generic web scanning.  
 It is built for testing APIs against the OWASP API Security Top 10 (2023), with one module per risk area and HTML reporting suitable for auditors and developers.
 
-## What is new in v3.2.1
-![APISCAN v3.01 dashboard](./apiscan_v3_dashboard.jpg)
+## What is new in v4.0
+![APISCAN v4.0 dashboard](./apiscan_v3_dashboard.jpg)
 
 - Beter scanner and new reporting
 - Generic sanitizer  
@@ -71,6 +71,51 @@ python llmsetup.py
 
 ```
 python apiscan.py --url https://api.example.com --swagger openapi.json --flow token --token "<ACCESS_TOKEN>" --verify-plan
+```
+
+## Quick mode and full scan
+
+API10 (Unsafe Consumption of APIs) runs in quick mode by default. This keeps normal scans fast by limiting Phase 2 to the most promising endpoints and capping quick SQL testing.
+
+Defaults:
+- `APISCAN_API10_QUICK=1`
+- `APISCAN_API10_QUICK_MAX_ENDPOINTS=20`
+- `APISCAN_API10_QUICK_SQL_MAX_TESTS=10`
+- `APISCAN_API10_QUICK_DIRTRAV_MAX_TESTS=8`
+- `APISCAN_API10_QUICK_HPP_MAX_PARAMS=3`
+- `APISCAN_API10_QUICK_REDIRECT_MAX_TESTS=6`
+- `APISCAN_RATE_LIMIT=0`
+
+PowerShell:
+```
+# Default quick mode
+$env:APISCAN_API10_QUICK="1"
+
+# Optional quick tuning
+$env:APISCAN_API10_QUICK_MAX_ENDPOINTS="20"
+$env:APISCAN_API10_QUICK_SQL_MAX_TESTS="10"
+
+# Full API10 scan
+$env:APISCAN_API10_QUICK="0"
+
+# Deep scan, slower and more intensive
+$env:APISCAN_DEEP_SCAN="1"
+```
+
+Bash/Linux/macOS:
+```
+# Default quick mode
+export APISCAN_API10_QUICK=1
+
+# Optional quick tuning
+export APISCAN_API10_QUICK_MAX_ENDPOINTS=20
+export APISCAN_API10_QUICK_SQL_MAX_TESTS=10
+
+# Full API10 scan
+export APISCAN_API10_QUICK=0
+
+# Deep scan, slower and more intensive
+export APISCAN_DEEP_SCAN=1
 ```
 
 ## Usage examples

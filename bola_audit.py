@@ -2,16 +2,19 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0 License                 #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2026  #
-# version 3.2 1-4-2026                                 #
+# version 4.0 26-04-2026                              #
 ########################################################
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import logging
 import hashlib
+import functools
+import concurrent.futures
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Iterable
@@ -133,7 +136,7 @@ class BOLAAuditor:
         session: Optional[requests.Session] = None,
         base_url: Optional[str] = None,
         swagger_spec: Optional[Dict[str, Any]] = None,
-        test_delay: float = 0.2,
+        test_delay: float = 0.0,
         max_retries: int = 1,
         show_subbars: bool = True,
         timeout: float = 10.0,
@@ -167,9 +170,12 @@ class BOLAAuditor:
         self.ignore_http_5xx = bool(ignore_http_5xx)
 
         self.issues: List[dict] = []
-        self.test_delay = test_delay
+        self.test_delay = float(os.getenv('APISCAN_BOLA_DELAY', str(test_delay)))
         self.max_retries = max_retries
         self.show_subbars = show_subbars
+        self._max_workers = int(os.getenv('APISCAN_BOLA_WORKERS', '2'))
+        self.max_retries = 0
+        self._shape_cache: Dict[str, str] = {}
 
         self.swagger_spec = swagger_spec or {}
         self._op_index: Dict[Tuple[str, str], dict] = {}
@@ -224,10 +230,15 @@ class BOLAAuditor:
     def _json_shape(self, text: str) -> str:
         if not text:
             return ""
+        cached = self._shape_cache.get(text)
+        if cached is not None:
+            return cached
         try:
             data = json.loads(text)
         except Exception:
-            return re.sub(r"\s+", " ", text).strip()[:4096]
+            result = re.sub(r"\s+", " ", text).strip()[:4096]
+            self._shape_cache[text] = result
+            return result
 
         def normalize(val):
             if isinstance(val, dict):
@@ -245,9 +256,11 @@ class BOLAAuditor:
             return "X"
         try:
             shaped = normalize(data)
-            return json.dumps(shaped, separators=(",", ":"), ensure_ascii=False)[:8192]
+            result = json.dumps(shaped, separators=(",", ":"), ensure_ascii=False)[:8192]
         except Exception:
-            return re.sub(r"\s+", " ", text).strip()[:4096]
+            result = re.sub(r"\s+", " ", text).strip()[:4096]
+        self._shape_cache[text] = result
+        return result
 
     #================funtion _baseline_key build a stable key for endpoint baselines ##########
     def _baseline_key(self, endpoint: Dict[str, Any]) -> Tuple[str, str]:
@@ -481,6 +494,12 @@ class BOLAAuditor:
         for op in oas_iter_ops(spec or {}):
             path = op["path"]
             method = op["method"]
+
+            if not self._is_bola_candidate(path):
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug("Skipping non-resource endpoint for BOLA: %s %s", method, path)
+                continue
+
             meta = op.get("raw", {})
 
             path_params = (meta.get("parameters") or []) if isinstance(meta, dict) else []
@@ -519,6 +538,26 @@ class BOLAAuditor:
         logger.info(f"Object endpoints detected: {len(endpoints)}")
         self._endpoints_cache = endpoints
         return endpoints
+
+    #================funtion _is_bola_candidate skip action/auth endpoints that are not object-resource paths ##########
+    def _is_bola_candidate(self, path: str) -> bool:
+        """Return True only if the path is likely a resource endpoint, not an action/auth endpoint."""
+        _ACTION_WORDS = {
+            'login', 'logout', 'register', 'signup', 'sign-up', 'sign-in', 'signin',
+            'reset-password', 'reset_password', 'resetpassword',
+            'forgot-password', 'forgot_password', 'forgotpassword',
+            'forget-password', 'forget_password', 'forgetpassword',
+            'change-password', 'change_password', 'changepassword',
+            'change-email', 'change_email', 'changeemail',
+            'verify', 'verify-email', 'verify_email', 'verify-otp', 'verify_otp',
+            'confirm', 'activate', 'deactivate', 'resend', 'resend-otp',
+            'token', 'refresh-token', 'refresh_token',
+            'auth', 'authenticate', 'oauth', 'callback', 'authorize',
+        }
+        last_seg = (path or '').rstrip('/').rsplit('/', 1)[-1].lower()
+        if last_seg in _ACTION_WORDS:
+            return False
+        return True
 
     #================funtion _find_object_params extract likely object-identifying params ##########
     def _find_object_params(self, parameters: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -598,30 +637,6 @@ class BOLAAuditor:
             else:
                 nonexist[name] = "does-not-exist"
         cases["non_existent"] = nonexist
-        for p in parameters or []:
-            name = p["name"]
-            ptype = (p.get("schema", {}) or {}).get("type", "string").lower()
-            if ptype == "integer":
-                for key, v in {"integer_negative": "-1", "integer_zero": "0", "integer_large": "2147483647"}.items():
-                    c = dict(per_param_valid); c[name] = v; cases[key] = c
-            else:
-                for key, v in {"string_long": "A" * 1000, "string_special": "!@#$%^&*()"}.items():
-                    c = dict(per_param_valid); c[name] = v; cases[key] = c
-        inj_vals = [
-            ("urlenc_null", "%00"),
-            ("urlenc_dotdot", "%2e%2e%2f"),
-            ("unicode_homoglyph", "\\u13B0\\u13B1"),
-            ("sqlish", "\" OR \"1\"=\"1\"--"),
-        ]
-        for label, val in inj_vals:
-            c = dict(per_param_valid)
-            for p in parameters or []:
-                schema = p.get("schema", {}) or {}
-                ptype = (schema.get("type") or "string").lower()
-                if ptype != "integer" and is_id_like(p.get("name","")):
-                    c[p["name"]] = val
-            cases[label] = c
-
         return cases
 
     #================funtion _build_req_from_op construct request from OpenAPI operation ##########
@@ -894,16 +909,12 @@ class BOLAAuditor:
     def run(self, swagger_spec: Optional[Dict[str, Any]] = None) -> List[TestResult]:
         spec = swagger_spec or self.swagger_spec or {}
         endpoints = self.get_object_endpoints(spec)
-        bar = tqdm(endpoints, desc="BOLA", unit="endpoint", dynamic_ncols=True) if self.show_subbars else endpoints
 
         unique_results: List[TestResult] = []
         seen: Dict[str, TestResult] = {}
 
-        iterator = enumerate(bar)
-        for i, ep in iterator:
-            results = self.test_endpoint(self.base_url, ep, progress_position=(i + 1 if self.show_subbars else None))
+        def _collect(results: List[TestResult]) -> None:
             for tr in results:
-
                 fp = tr.fingerprint or self._fingerprint(tr.method, tr.url, tr.status_code, tr.response_sample)
                 if fp in seen:
                     seen_tr = seen[fp]
@@ -915,7 +926,21 @@ class BOLAAuditor:
                 seen[fp] = tr
                 unique_results.append(tr)
 
-        self.issues = [tr.to_dict() for tr in unique_results if _is_real_issue(tr.to_dict())]
+        if self._max_workers <= 1:
+            bar = tqdm(endpoints, desc="BOLA", unit="endpoint", dynamic_ncols=True) if self.show_subbars else endpoints
+            for i, ep in enumerate(bar):
+                _collect(self.test_endpoint(self.base_url, ep, progress_position=(i + 1 if self.show_subbars else None)))
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self._max_workers) as ex:
+                future_map = {ex.submit(self.test_endpoint, self.base_url, ep, progress_position=None): ep for ep in endpoints}
+                bar = tqdm(concurrent.futures.as_completed(future_map), total=len(endpoints), desc="BOLA", unit="endpoint", dynamic_ncols=True)
+                for fut in bar:
+                    try:
+                        _collect(fut.result())
+                    except Exception as exc:
+                        logger.debug("BOLA endpoint error: %s", exc)
+
+        self.issues = [d for tr in unique_results for d in [tr.to_dict()] if _is_real_issue(d)]
         return unique_results
 
     #================funtion generate_report render issues to HTML or Markdown ##########

@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 3.2 1-4-2026                                  #
+# version 4.0 26-04-2026                              #
 ########################################################
 
 """APISCAN is a private and proprietary API security tool, developed independently for internal use and research purposes.
@@ -18,7 +18,6 @@ import json
 import re
 import sys
 import urllib3
-import pickle
 import time
 import random
 from typing import Dict, List, Set, Any, Optional, Tuple
@@ -90,9 +89,19 @@ class UltimateSwaggerGenerator:
         path = parsed.path or '/'
         if '#' in path:
             path = path.split('#', 1)[0]
-        path = re.sub('/\\d+', '/{id}', path)
-        path = re.sub('/[a-f0-9]{24}', '/{objectId}', path, flags=re.I)
-        path = re.sub('/([^/]*_?[iI][dD])', '/{\\1}', path)
+        # UUIDs
+        path = re.sub(
+            r'/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
+            '/{uuid}', path, flags=re.I
+        )
+        # MongoDB ObjectID (24 hex chars)
+        path = re.sub(r'/[a-f0-9]{24}', '/{objectId}', path, flags=re.I)
+        # Pure numeric IDs
+        path = re.sub(r'/\d+', '/{id}', path)
+        # Slugs that look like param names ending in Id/ID
+        path = re.sub(r'/([^/]*_?[iI][dD])', r'/{\1}', path)
+        # Short hex tokens (32-64 hex chars)
+        path = re.sub(r'/[a-f0-9]{32,64}(?=/|$)', '/{token}', path, flags=re.I)
         return path
 
     #================funtion _make_request _make_request =============
@@ -129,13 +138,15 @@ class UltimateSwaggerGenerator:
 
     #================funtion save_session save_session =============
     def save_session(self, filename: str):
-        with open(filename, 'wb') as f:
-            pickle.dump(self.session.cookies, f)
+        cookies = {name: value for name, value in self.session.cookies.items()}
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(cookies, f)
 
     #================funtion load_session load_session =============
     def load_session(self, filename: str):
-        with open(filename, 'rb') as f:
-            self.session.cookies.update(pickle.load(f))
+        with open(filename, 'r', encoding='utf-8') as f:
+            cookies = json.load(f)
+        self.session.cookies.update(cookies)
 
     #================funtion set_basic_auth set_basic_auth =============
     def set_basic_auth(self, username: str, password: str):
@@ -288,7 +299,57 @@ class UltimateSwaggerGenerator:
 
     #================funtion _bruteforce_common_endpoints _bruteforce_common_endpoints =============
     def _bruteforce_common_endpoints(self):
-        common_endpoints = ['/api/v1/users', '/api/users', '/users', '/api/v1/products', '/api/products', '/products', '/api/v1/data', '/api/data', '/data', '/graphql', '/graphql/v1', '/api/graphql', '/api/v1/graphql', '/rest', '/rest/v1', '/api/rest', '/api/v1/rest', '/rpc', '/jsonrpc', '/api/soap', '/api/v1/soap', '/ws', '/health', '/status', '/metrics', '/v1', '/v2', '/v3', '/oauth2/token', '/.well-known/openid-configuration', '/swagger-ui', '/openapi.json', '/api-docs']
+        common_endpoints = [
+            # Users / auth
+            '/api/v1/users', '/api/v2/users', '/api/users', '/users',
+            '/api/v1/me', '/api/me', '/api/v1/profile', '/api/profile',
+            '/api/v1/account', '/api/account', '/api/v1/accounts',
+            '/api/v1/login', '/api/login', '/auth/login', '/auth/token',
+            '/api/v1/register', '/api/register', '/auth/register',
+            '/api/v1/logout', '/api/logout', '/auth/logout',
+            '/api/v1/password/reset', '/api/v1/forgot-password',
+            # Resources
+            '/api/v1/products', '/api/products', '/products',
+            '/api/v1/orders', '/api/orders', '/orders',
+            '/api/v1/items', '/api/items', '/items',
+            '/api/v1/categories', '/api/categories',
+            '/api/v1/posts', '/api/posts', '/posts',
+            '/api/v1/comments', '/api/comments', '/comments',
+            '/api/v1/messages', '/api/messages', '/messages',
+            '/api/v1/notifications', '/api/notifications',
+            '/api/v1/files', '/api/files', '/files',
+            '/api/v1/uploads', '/api/uploads',
+            '/api/v1/search', '/api/search', '/search',
+            '/api/v1/settings', '/api/settings', '/settings',
+            '/api/v1/config', '/api/config',
+            '/api/v1/admin', '/admin/api', '/admin',
+            '/api/v1/reports', '/api/reports',
+            '/api/v1/analytics', '/api/analytics',
+            '/api/v1/events', '/api/events',
+            '/api/v1/logs', '/api/logs',
+            '/api/v1/roles', '/api/roles',
+            '/api/v1/permissions', '/api/permissions',
+            '/api/v1/groups', '/api/groups',
+            '/api/v1/tokens', '/api/tokens',
+            '/api/v1/webhooks', '/api/webhooks',
+            # Version roots
+            '/api', '/api/v1', '/api/v2', '/api/v3', '/api/v4', '/api/v5',
+            '/v1', '/v2', '/v3',
+            # GraphQL
+            '/graphql', '/graphql/v1', '/api/graphql', '/api/v1/graphql',
+            '/query',
+            # Infrastructure / observability
+            '/health', '/healthz', '/ready', '/readyz', '/live', '/livez',
+            '/status', '/ping', '/metrics', '/actuator', '/actuator/health',
+            '/actuator/info', '/actuator/env', '/actuator/mappings',
+            '/debug/vars', '/debug/pprof/',
+            # API discovery
+            '/swagger.json', '/swagger.yaml', '/swagger-ui', '/swagger-ui.html',
+            '/openapi.json', '/openapi.yaml', '/api-docs', '/api-docs/swagger.json',
+            '/v3/api-docs', '/v2/api-docs', '/docs', '/doc',
+            '/.well-known/openid-configuration', '/.well-known/jwks.json',
+            '/oauth2/token', '/oauth/token', '/connect/token',
+        ]
         print('[*] Aggressive: brute forcing common endpoints...')
         with ThreadPoolExecutor(max_workers=12) as executor:
             futures = []
@@ -405,6 +466,17 @@ class UltimateSwaggerGenerator:
         for name, values in parse_qs(parsed.query).items():
             query_params.append({'name': name, 'in': 'query', 'schema': {'type': 'string'}, 'example': values[0]})
         swagger_path = self._normalise_path(url)
+
+        # Auto-detect path parameters from {param} placeholders after normalisation
+        path_params = []
+        for param_name in re.findall(r'\{([^}]+)\}', swagger_path):
+            path_params.append({
+                'name': param_name,
+                'in': 'path',
+                'required': True,
+                'schema': {'type': 'string' if not param_name.endswith(('id', 'Id', 'ID')) else 'integer'},
+            })
+
         ct = response.headers.get('Content-Type', 'application/json')
         schema: Dict[str, Any] = {'type': 'string'}
         if self._is_json_like(response):
@@ -433,10 +505,11 @@ class UltimateSwaggerGenerator:
         operation = self.swagger['paths'][swagger_path].setdefault(method, {})
         operation.setdefault('summary', f'Auto-discovered {method.upper()} endpoint')
         existing_params = operation.setdefault('parameters', [])
-        names = {p.get('name') for p in existing_params}
-        for p in query_params:
-            if p['name'] not in names:
+        existing_names = {p.get('name') for p in existing_params}
+        for p in (path_params + query_params):
+            if p['name'] not in existing_names:
                 existing_params.append(p)
+                existing_names.add(p['name'])
         if security:
             operation['security'] = security
         operation.setdefault('responses', {})
@@ -447,17 +520,31 @@ class UltimateSwaggerGenerator:
         if data is None:
             return {'type': 'null'}
         if isinstance(data, bool):
-            return {'type': 'boolean'}
+            return {'type': 'boolean', 'example': data}
         if isinstance(data, int):
-            return {'type': 'integer'}
+            return {'type': 'integer', 'example': data}
         if isinstance(data, float):
-            return {'type': 'number'}
+            return {'type': 'number', 'example': data}
         if isinstance(data, str):
-            if re.match('^\\d{4}-\\d{2}-\\d{2}(T.*)?$', data):
-                return {'type': 'string', 'format': 'date-time'}
-            if re.match('^[0-9a-fA-F-]{36}$', data):
-                return {'type': 'string', 'format': 'uuid'}
-            return {'type': 'string'}
+            # ISO date-time
+            if re.match(r'^\d{4}-\d{2}-\d{2}T', data):
+                return {'type': 'string', 'format': 'date-time', 'example': data}
+            # ISO date only
+            if re.match(r'^\d{4}-\d{2}-\d{2}$', data):
+                return {'type': 'string', 'format': 'date', 'example': data}
+            # UUID
+            if re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', data, re.I):
+                return {'type': 'string', 'format': 'uuid', 'example': data}
+            # Email
+            if re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', data):
+                return {'type': 'string', 'format': 'email', 'example': data}
+            # URI
+            if re.match(r'^https?://', data):
+                return {'type': 'string', 'format': 'uri', 'example': data}
+            # IPv4
+            if re.match(r'^\d{1,3}(\.\d{1,3}){3}$', data):
+                return {'type': 'string', 'format': 'ipv4', 'example': data}
+            return {'type': 'string', 'example': data}
         if isinstance(data, list):
             if not data:
                 return {'type': 'array', 'items': {'type': 'string'}}
@@ -487,29 +574,77 @@ class UltimateSwaggerGenerator:
         except Exception:
             head_resp = None
         clean_path = self._normalise_path(url)
+
+        def _infer_field_type(inp) -> Dict[str, Any]:
+            name = (inp.get('name') or '').lower()
+            itype = (inp.get('type') or 'text').lower()
+            if itype == 'email' or 'email' in name:
+                return {'type': 'string', 'format': 'email'}
+            if itype == 'password' or 'password' in name or 'passwd' in name:
+                return {'type': 'string', 'format': 'password'}
+            if itype in ('number', 'range'):
+                return {'type': 'number'}
+            if itype == 'checkbox':
+                return {'type': 'boolean'}
+            if itype == 'url' or 'url' in name or 'uri' in name:
+                return {'type': 'string', 'format': 'uri'}
+            if 'date' in name or itype == 'date':
+                return {'type': 'string', 'format': 'date'}
+            if name.endswith('id') or name == 'id':
+                return {'type': 'integer'}
+            return {'type': 'string'}
+
         fields = {}
         for inp in form.find_all(['input', 'textarea', 'select']):
             name = inp.get('name')
             if not name:
                 continue
-            if inp.name == 'select':
-                fields[name] = inp.get('value') or 'string'
-            else:
-                fields[name] = inp.get('value') or 'string'
+            fields[name] = _infer_field_type(inp)
+            example = inp.get('value') or inp.get('placeholder')
+            if example:
+                fields[name]['example'] = example
+
         if clean_path not in self.swagger['paths']:
             self.swagger['paths'][clean_path] = {}
         op = self.swagger['paths'][clean_path].setdefault(method, {})
         op['summary'] = op.get('summary') or 'Auto-discovered form endpoint'
         op['responses'] = op.get('responses') or {'200': {'description': 'Successful form submission'}}
-        op['requestBody'] = {'required': True, 'content': {'application/x-www-form-urlencoded': {'schema': {'type': 'object', 'properties': {k: {'type': 'string', 'example': v} for k, v in fields.items()}}}}}
+        op['requestBody'] = {
+            'required': True,
+            'content': {
+                'application/x-www-form-urlencoded': {
+                    'schema': {
+                        'type': 'object',
+                        'properties': {k: v for k, v in fields.items()}
+                    }
+                }
+            }
+        }
 
     #================funtion _find_js_apis _find_js_apis =============
     def _find_js_apis(self, js_code: str, base_url: str):
-        patterns = [('fetch\\(["\\\'](.*?)["\\\']', 1), ('axios\\.(get|post|put|delete|patch)\\(["\\\'](.*?)["\\\']', 2), ('\\.(get|post|put|delete|patch)\\(["\\\'](.*?)["\\\']', 2), ('api(?:Url|Base|Endpoint)\\s*[:=]\\s*["\\\'](.*?)["\\\']', 1), ('new\\s+XMLHttpRequest\\(\\)[^;]+\\.open\\(["\\\'](?:GET|POST|PUT|DELETE|PATCH)["\\\'],\\s*["\\\']([^"\\\']+)["\\\']', 1), ('endpoint\\s*[:=]\\s*["\\\'](.*?)["\\\']', 1), ('url\\s*[:=]\\s*["\\\'](.*?)["\\\']', 1)]
+        patterns = [
+            (r'fetch\(["\']([^"\'\\s]+)["\']', 1),
+            (r'fetch\(`([^`]+)`', 1),
+            (r'axios\.(?:get|post|put|delete|patch)\(["\']([^"\'\\s]+)["\']', 1),
+            (r'\$(?:http|resource)(?:\.get|\.post|\.put|\.delete|\.patch)?\(["\']([^"\'\\s]+)["\']', 1),
+            (r'\.(?:get|post|put|delete|patch)\(["\']([/][^"\'\\s]+)["\']', 1),
+            (r'api(?:Url|Base|Endpoint|Path|Root)\s*[:=]\s*["\']([^"\']+)["\']', 1),
+            (r'baseURL\s*[:=]\s*["\']([^"\']+)["\']', 1),
+            (r'baseUrl\s*[:=]\s*["\']([^"\']+)["\']', 1),
+            (r'endpoint\s*[:=]\s*["\']([^"\']+)["\']', 1),
+            (r'new\s+XMLHttpRequest\(\)[^;]+\.open\(["\'](?:GET|POST|PUT|DELETE|PATCH)["\'],\s*["\']([^"\']+)["\']', 1),
+            (r'url\s*[:=]\s*["\']([/][^"\'\\s]+)["\']', 1),
+            (r'path:\s*["\']([/][^"\'\\s]+)["\']', 1),
+            (r'route:\s*["\']([/][^"\'\\s]+)["\']', 1),
+            (r'createResource\s*\(\s*["\']([^"\']+)["\']', 1),
+        ]
         for pat, group_idx in patterns:
             for m in re.finditer(pat, js_code, re.DOTALL | re.IGNORECASE):
                 path = (m.group(group_idx) or '').strip()
-                if not path or '%s' in path or '{' in path or ('}' in path):
+                if not path or '%s' in path or path.count('{') > 2:
+                    continue
+                if any(skip in path.lower() for skip in ('google', 'facebook', 'cdn', 'analytics', 'fonts')):
                     continue
                 api_url = urljoin(base_url, path)
                 if self._should_inspect(api_url):

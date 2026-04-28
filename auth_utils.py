@@ -3,7 +3,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 3.2.1a 1-25-2026                                 #
+# version 4.0 26-04-2026                              #
 ########################################################
                                                          
 from __future__ import annotations
@@ -13,10 +13,11 @@ import re
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from typing import Optional, Tuple
 from urllib.parse import urlparse
 import requests
-from requests.auth import HTTPBasicAuth
+from requests.auth import HTTPBasicAuth, HTTPDigestAuth
 
 logger = logging.getLogger("auth_utils")
 
@@ -40,9 +41,11 @@ class AuthConfigError(Exception):
 
 class _CallbackHandler(BaseHTTPRequestHandler):
     _path_with_query: Optional[str] = None
+    _event: threading.Event = threading.Event()
 
     def do_GET(self) -> None:
         type(self)._path_with_query = self.path
+        type(self)._event.set()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
@@ -56,6 +59,7 @@ class _CallbackHandler(BaseHTTPRequestHandler):
 # ----------------------- Funtion _start_callback_server ----------------------------#
 def _start_callback_server(host: str, port: int) -> Tuple[HTTPServer, threading.Thread]:
     _CallbackHandler._path_with_query = None
+    _CallbackHandler._event = threading.Event()
 
     server = HTTPServer((host, port), _CallbackHandler)
     t = threading.Thread(target=server.serve_forever, daemon=True)
@@ -65,24 +69,23 @@ def _start_callback_server(host: str, port: int) -> Tuple[HTTPServer, threading.
 
 # ----------------------- Funtion _wait_for_callback ----------------------------#
 def _wait_for_callback(server: HTTPServer, timeout: int = 300) -> str:
-    deadline = time.time() + float(timeout)
+    signalled = _CallbackHandler._event.wait(timeout=float(timeout))
+    if not signalled or not _CallbackHandler._path_with_query:
+        raise AuthConfigError("Timed out waiting for OAuth2 redirect callback")
 
-    while time.time() < deadline:
-        path = _CallbackHandler._path_with_query
-        if path:
-            host, port = server.server_address
-            return f"http://{host}:{port}{path}"
-        time.sleep(0.1)
-
-    raise AuthConfigError("Timed out waiting for OAuth2 redirect callback")
+    host, port = server.server_address
+    return f"http://{host}:{port}{_CallbackHandler._path_with_query}"
 
                                                                                    
 # ----------------------- Funtion _apply_api_key ----------------------------#
 def _apply_api_key(sess: requests.Session, args) -> None:
     api_key = getattr(args, "apikey", None)
     if api_key:
+        api_key = api_key.strip()
+        if not api_key:
+            raise AuthConfigError("--apikey value is empty after stripping whitespace")
         header = getattr(args, "apikey_header", None) or "X-API-Key"
-        sess.headers[header] = api_key.strip()
+        sess.headers[header] = api_key
         logger.debug("API key header applied: %s", header)
 
 # ----------------------- Funtion _apply_mtls ----------------------------#
@@ -90,6 +93,10 @@ def _apply_mtls(sess: requests.Session, args) -> None:
     cert = getattr(args, "client_cert", None)
     key = getattr(args, "client_key", None)
     if cert and key:
+        if not Path(cert).is_file():
+            raise AuthConfigError(f"Client certificate file not found: {cert}")
+        if not Path(key).is_file():
+            raise AuthConfigError(f"Client key file not found: {key}")
         if getattr(args, "cert_password", None):
             logger.warning("Provided --cert-password is not used by requests; supply an unencrypted PEM key instead.")
         sess.cert = (cert, key)
@@ -136,12 +143,14 @@ def _oauth_client_credentials(args) -> str:
             client_id=cid,
             client_secret=csec,
             scope=scope_list,
+            timeout=30,
         )
     else:
         token = oauth.fetch_token(
             token_url=token_url,
             client_id=cid,
             client_secret=csec,
+            timeout=30,
         )
 
     return token["access_token"]
@@ -205,6 +214,7 @@ def _oauth_authorization_code(args) -> str:
             authorization_response=authorization_response,
             client_secret=getattr(args, "client_secret", None),
             include_client_id=True,
+            timeout=30,
         )
 
         return token["access_token"]
@@ -226,6 +236,15 @@ def configure_authentication(args) -> requests.Session:
     
     _apply_api_key(sess, args)
     _apply_mtls(sess, args)
+
+    # Apply custom headers (--header "Name: value")
+    for raw_header in getattr(args, "header", None) or []:
+        if ":" in raw_header:
+            name, value = raw_header.split(":", 1)
+            sess.headers[name.strip()] = value.strip()
+            logger.debug("Custom header applied: %s", name.strip())
+        else:
+            logger.warning("Ignoring malformed --header value: %s", raw_header)
 
     flow = getattr(args, "flow", None) or "none"
    
@@ -254,6 +273,15 @@ def configure_authentication(args) -> requests.Session:
             raise AuthConfigError("--flow basic requires --basic-auth user:password")
         user, pwd = basic.split(":", 1)
         sess.auth = HTTPBasicAuth(user, pwd)
+        return sess
+
+    if flow == "digest":
+        basic = getattr(args, "basic_auth", None)
+        if not basic or ":" not in basic:
+            raise AuthConfigError("--flow digest requires --basic-auth user:password")
+        user, pwd = basic.split(":", 1)
+        sess.auth = HTTPDigestAuth(user, pwd)
+        logger.info("HTTP Digest auth configured")
         return sess
 
     if flow == "ntlm":

@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 3.2 1-4-2026                                 #
+# version 4.0 26-04-2026                              #
 ########################################################
 
 from __future__ import annotations
@@ -14,6 +14,19 @@ import webbrowser
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, parse_qs
+
+_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE"}
+
+def _split_method_endpoint(method: Any = None, endpoint: Any = None) -> tuple[str, str]:
+    m = str(method or "").strip().upper()
+    ep = str(endpoint or "").strip()
+    parts = ep.split(None, 1)
+    if (not m or m not in _METHODS) and len(parts) == 2 and parts[0].upper() in _METHODS:
+        m = parts[0].upper()
+        ep = parts[1].strip()
+    if not m:
+        m = "GET"
+    return m, ep
 
 #================funtion _maybe_headers_to_text _maybe_headers_to_text =============
 def _maybe_headers_to_text(h: Any) -> str:
@@ -184,6 +197,10 @@ def is_expected_behavior(method: str, status: int | None, body: Any) -> bool:
 
     return False
 
+def _is_cors_finding(title: Any, description: Any, headers: Any) -> bool:
+    text = " ".join((str(title or ""), str(description or ""), str(headers or ""))).lower()
+    return "access-control-allow-origin" in text or "acao=" in text or "cors" in text
+
 #================funtion _map_severity _map_severity =============
 def _map_severity(s: str | None) -> str:
     if not s:
@@ -254,8 +271,7 @@ def _db_items_for_template(db_path: Path, run_id: str | None = None) -> list[dic
         except Exception:
             pass
 
-        method = (r["method"] or "GET").upper()
-        endpoint = r["endpoint"] or ""
+        method, endpoint = _split_method_endpoint(r["method"], r["endpoint"])
         title = r["title"] or f"{method} {endpoint}"
 
         status_code: int | None = None
@@ -273,9 +289,6 @@ def _db_items_for_template(db_path: Path, run_id: str | None = None) -> list[dic
                     status_code = None
             except Exception:
                 status_code = None
-
-        if status_code is not None and is_expected_behavior(method, status_code, _res_body):
-            continue
 
         items.append(
             {
@@ -301,6 +314,11 @@ def _db_items_for_template(db_path: Path, run_id: str | None = None) -> list[dic
                     else json.dumps(_res_body, ensure_ascii=False),
                 },
                 "risk_key": r["risk_key"] or "",
+                "expected_behavior": bool(
+                    status_code is not None
+                    and is_expected_behavior(method, status_code, _res_body)
+                    and not _is_cors_finding(title, r["description"], _res_headers)
+                ),
             }
         )
 
@@ -561,13 +579,16 @@ def _detect_risk_signals(item: dict) -> list[str]:
         signals.append("cors-wildcard")
     if "access-control-allow-headers" in hdr_lower and "authorization" in hdr_lower:
         signals.append("cors-authorization")
+    # Check only response data for internal-host leaks; request URL / endpoint path
+    # are scanner-controlled and must never trigger this signal.
+    resp_only_lower = (str(response_body) + " " + str(response_headers)).lower()
     if (
-        "crapi-identity:" in all_lower
-        or re.search(r"\b[a-z0-9-]+\.(svc|cluster\.local)\b", all_lower)
-        or re.search(r"\b[a-z0-9-]+:\d{2,5}\b", all_lower)  
+        "crapi-identity:" in resp_only_lower
+        or re.search(r"\b[a-z0-9-]+\.(svc|cluster\.local)\b", resp_only_lower)
+        or re.search(r"\b[a-z0-9-]+:\d{2,5}\b", resp_only_lower)  
     ):
         
-        if any(x in all_lower for x in ("svc", "cluster.local", "crapi-", "identity", "internal")):
+        if any(x in resp_only_lower for x in ("svc", "cluster.local", "crapi-", "identity", "internal")):
             signals.append("internal-host-leak")
 
     status = _status_int(item)
@@ -576,6 +597,10 @@ def _detect_risk_signals(item: dict) -> list[str]:
             signals.append("proxy-reject")
         if "<h1>400 bad request</h1>" in all_lower or "400 bad request" in all_lower:
             signals.append("proxy-reject")
+    if item.get("expected_behavior") or item.get("control_observed"):
+        signals.append("control-observed")
+    if status in (401, 403):
+        signals.append("auth-enforced")
     if status == 405:
         if "allow:" in hdr_lower:
             signals.append("method-enforced")
@@ -644,9 +669,11 @@ def _reclassify(it: dict) -> str:
 
     st = _status_int(it)
     bod = _txt_body(it)
-    title = (it.get('title') or '') + ' ' + (it.get('category') or '')
+    title = (it.get('title') or '') + ' ' + (it.get('description') or '') + ' ' + (it.get('category') or '')
     signals = it.get('signals', [])
 
+    if 'missing security headers' in title.lower():
+        return 'high'
 
     # Control/blocked signals should not inflate severity (false-positive reduction)
     tlow = title.lower()
@@ -656,11 +683,12 @@ def _reclassify(it: dict) -> str:
         if ('waf detected' in tlow) or ('input filtering detected' in tlow) or ('blocked' in tlow and 'waf' in tlow):
             return 'info'
 
-    # CORS signals are contextual; 4xx responses are usually enforcement/validation noise
+    # CORS findings are about response headers; a 4xx body can still expose a
+    # misconfigured CORS policy, so keep the scanner's own severity.
     cors_only = {'cors-wildcard', 'cors-authorization', 'cors-reflect', 'jwt', 'proxy-reject'}
     if st and 400 <= st < 500:
         if signals and set([s.lower() for s in signals]).issubset(cors_only):
-            return 'info'
+            return sev
     if any((kind in cat.lower() for kind in ['secure_transport', 'tls', 'hsts', 'cipher'])):
         if sev in ('info', 'low'):
             sev = 'medium'
@@ -698,6 +726,8 @@ _FP_BODY_RE = re.compile('(validation failed|failed to convert|type mismatch|can
 #================funtion _is_false_positive _is_false_positive =============
 def _is_false_positive(item: dict) -> bool:
     if item.get('signals') or _has_http0_allowlist_kind(item):
+        return False
+    if item.get('expected_behavior'):
         return False
     try:
         st = int(item.get('response', {}).get('status') or 0)
@@ -786,7 +816,8 @@ def build_review(db_path: Path, out_path: Path, template: Path | None=None, run_
             st = 0
         if st == 404 and not signals:
             continue
-        if not status_unknown or _has_http0_allowlist_kind(it) or signals:
+        sev = (it.get('severity') or '').lower()
+        if not status_unknown or _has_http0_allowlist_kind(it) or signals or sev in ('critical', 'high'):
             filtered_items.append(it)
     items = filtered_items
     ALLOWED_SEVERITIES = {'critical', 'high', 'medium', 'low', 'info'}

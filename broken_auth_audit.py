@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 3.2 1-4-2026                                 #
+# version 4.0 26-04-2026                              #
 ########################################################                   
 from __future__ import annotations
 import base64
@@ -38,7 +38,7 @@ def _headers_to_list(h):
 class AuthAuditor:
 
     #================funtion __init__ __init__ =============
-    def __init__(self, session: requests.Session, *, base_url: str, swagger_spec: Optional[Dict[str, Any]]=None, show_progress: bool=True, timeout: float=10.0) -> None:
+    def __init__(self, session: requests.Session, *, base_url: str, swagger_spec: Optional[Dict[str, Any]]=None, show_progress: bool=True, timeout: float=5.0) -> None:
         if session is None:
             raise ValueError('Session is required')
         if not base_url or not isinstance(base_url, str):
@@ -103,11 +103,15 @@ class AuthAuditor:
     #================funtion _select_auth_endpoints _select_auth_endpoints =============
     def _select_auth_endpoints(self, endpoints: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         keys = ('auth', 'login', 'token', 'signin', 'authenticate', 'oauth', 'saml', 'jwt', 'oidc', 'mfa', '2fa', 'magiclink', 'passwordless', 'sso')
+        # Exclude action-only endpoints that are not actual login/session mechanisms
+        _action_skip = ('forget', 'reset', 'change', 'activate', 'verify', 'confirm', 'revoke', 'refresh')
         eps = []
         for ep in endpoints:
             path = (ep.get('path') or ep.get('url') or '').lower()
             tags = ' '.join(ep.get('tags') or []).lower()
             if any((k in path for k in keys)) or any((k in tags for k in keys)):
+                if any(s in path for s in _action_skip):
+                    continue  # skip forget-password, reset-password, change-email etc.
                 eps.append({'url': ep.get('url') or '', 'method': ep.get('method', 'POST')})
         if not eps:
             for ep in endpoints:
@@ -134,7 +138,7 @@ class AuthAuditor:
                 self._test_endpoint_auth(ep)
             except Exception as exc:
                 self._log_issue(ep['url'], f'Auth test error: {exc}', 'Medium')
-        crypto_tests = [self._test_secure_transport, self._test_certificate_validation, self._test_secret_exposure, lambda: self._test_password_hash_strength(self._swagger_get_eps)]
+        crypto_tests = [self._test_secure_transport, self._test_certificate_validation, self._test_quantum_resistance, self._test_https_ddos_resilience, self._test_secret_exposure, lambda: self._test_password_hash_strength(self._swagger_get_eps)]
         citerator = tqdm(crypto_tests, desc='API2 crypto checks', unit='check') if self.show_progress else crypto_tests
         for test in citerator:
             try:
@@ -161,7 +165,7 @@ class AuthAuditor:
             try:
                 resp = self.session.post(endpoint['url'], json=data, timeout=self.timeout)
             except requests.RequestException:
-                continue
+                return  # endpoint unreachable — skip remaining credential attempts
             if resp.status_code == 200:
                 self._log_issue(endpoint['url'], f'Weak creds accepted: {u}/{p}', 'High', data, resp)
 
@@ -200,11 +204,11 @@ class AuthAuditor:
         method = endpoint.get('method', 'POST').upper()
         processed = False
         last_resp: Optional[requests.Response] = None
-        for i in range(10):
+        for i in range(5):  # 5 requests is enough to trigger rate limiting
             try:
                 last_resp = self.session.request(method, endpoint['url'], json={'username': f'att{i}', 'password': 'bad'}, timeout=self.timeout)
             except requests.RequestException:
-                continue
+                return  # endpoint unreachable — can't test rate limiting
             if last_resp.status_code == 429:
                 return
             if last_resp.status_code in (404, 405, 501):
@@ -259,6 +263,7 @@ class AuthAuditor:
     def _test_secure_transport(self) -> None:
         if self.base_url.startswith('http://'):
             self._log_issue(self.base_url, 'Service uses HTTP instead of HTTPS', 'Critical')
+            return  # no TLS tests for plaintext HTTP target
         http_url = 'http://' + self.base_url.split('://', 1)[1]
         try:
             resp = self.session.get(http_url, timeout=5, allow_redirects=False)
@@ -358,6 +363,215 @@ class AuthAuditor:
                         if any((weak in cipher_name for weak in weak_ciphers)):
                             self._log_issue(self.base_url, f'Potentially weak cipher in use: {cipher_name}', 'Medium', extra={'cipher': cipher_name})
         except Exception as e:
+            pass
+
+    #================funtion _test_https_ddos_resilience _test_https_ddos_resilience =============
+    def _test_https_ddos_resilience(self) -> None:
+        """Detect missing protections against HTTPS-based DDoS: HTTP/2 floods and CVE-2023-44487 Rapid Reset."""
+        resp = None
+        has_rl = False
+        has_waf = False
+        # Probe root URL for headers (works for both HTTP and HTTPS)
+        try:
+            resp = self.session.get(self.base_url, timeout=self.timeout, allow_redirects=False)
+            hdrs_lower = {k.lower(): v for k, v in resp.headers.items()}
+            rl_keys = ('x-ratelimit-limit', 'ratelimit-limit', 'x-rate-limit', 'retry-after', 'x-ratelimit-remaining')
+            has_rl = any(h in hdrs_lower for h in rl_keys)
+            waf_header_markers = ('cf-ray', 'x-sucuri-id', 'x-cdn', 'x-akamai-edgescape', 'x-amz-cf-id',
+                                  'x-azure-ref', 'x-fw-hash', 'x-fastly-request-id', 'x-varnish')
+            server = hdrs_lower.get('server', '').lower()
+            has_waf = (any(m in hdrs_lower for m in waf_header_markers) or
+                       any(cdn in server for cdn in ('cloudflare', 'akamai', 'fastly', 'varnish', 'sucuri')))
+            # HSTS missing on HTTPS targets
+            if self.base_url.startswith('https://') and 'strict-transport-security' not in hdrs_lower:
+                self._log_issue(
+                    self.base_url,
+                    'Missing Strict-Transport-Security (HSTS) header. Clients may be downgraded to HTTP.',
+                    'Medium',
+                    response_obj=resp,
+                )
+        except requests.RequestException:
+            pass
+
+        # HTTP/2 and HTTP/3 checks only apply to HTTPS
+        if not self.base_url.startswith('https://'):
+            return
+        host = self._host
+        port = self._port
+
+        # Detect HTTP/2 support via ALPN negotiation in TLS handshake
+        http2_enabled = False
+        try:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            ctx.set_alpn_protocols(['h2', 'http/1.1'])
+            with socket.create_connection((host, port), timeout=5) as sock:
+                with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+                    http2_enabled = (ssock.selected_alpn_protocol() == 'h2')
+        except (ssl.SSLError, socket.timeout, OSError):
+            pass
+
+        # Detect HTTP/3 advertised via Alt-Svc header
+        http3_advertised = False
+        alt_svc_val = ''
+        if resp is not None:
+            alt_svc_val = resp.headers.get('Alt-Svc', '')
+            http3_advertised = 'h3' in alt_svc_val
+
+        if http2_enabled:
+            if not has_waf:
+                self._log_issue(
+                    f'https://{host}:{port}',
+                    'HTTP/2 is enabled without detected WAF/CDN protection. Vulnerable to HTTP/2 Rapid Reset '
+                    '(CVE-2023-44487): a single TCP connection can open and cancel thousands of streams per second, '
+                    'causing extreme server-side CPU load without triggering classic connection-count limits. '
+                    'Attackers use encrypted HTTP/2 to bypass shallow packet-inspection firewalls.',
+                    'High',
+                    extra={
+                        'protocol': 'HTTP/2',
+                        'cve': 'CVE-2023-44487',
+                        'attack': 'HTTP/2 Rapid Reset flood / HTTPS DDoS',
+                        'recommendation': (
+                            '1) Deploy WAF or CDN with HTTP/2 flood mitigation (Cloudflare, AWS Shield Advanced, Azure DDoS Protection). '
+                            '2) Enforce SETTINGS_MAX_CONCURRENT_STREAMS (recommended: ≤100). '
+                            '3) Apply server patches: nginx ≥1.25.3, Apache httpd ≥2.4.58, HAProxy ≥2.9.0. '
+                            '4) Rate-limit new TLS sessions per source IP at load-balancer level.'
+                        ),
+                    },
+                )
+            elif not has_rl:
+                self._log_issue(
+                    f'https://{host}:{port}',
+                    'HTTP/2 is enabled. A WAF/CDN appears present but no rate-limiting response headers '
+                    'were detected. Verify the WAF is configured for HTTP/2 stream-level throttling '
+                    '(CVE-2023-44487 Rapid Reset).',
+                    'Medium',
+                    extra={
+                        'protocol': 'HTTP/2',
+                        'cve': 'CVE-2023-44487',
+                        'recommendation': 'Enable per-IP HTTP/2 stream rate limiting in your WAF/CDN configuration.',
+                    },
+                )
+
+        if http3_advertised and not has_waf:
+            self._log_issue(
+                f'https://{host}:{port}',
+                'HTTP/3 (QUIC/UDP) is advertised via Alt-Svc without detected WAF protection. '
+                'HTTP/3 floods are harder to mitigate than TCP-based attacks because UDP stateless amplification '
+                'and QUIC connection multiplexing bypass many traditional DDoS filters. '
+                'Ensure your edge supports QUIC-level rate limiting.',
+                'Medium',
+                extra={
+                    'protocol': 'HTTP/3 (QUIC)',
+                    'alt_svc': alt_svc_val,
+                    'attack': 'QUIC/UDP amplification flood',
+                    'recommendation': (
+                        'Use a CDN/WAF with native QUIC support and rate limiting. '
+                        'Consider disabling HTTP/3 (Alt-Svc: h3) until edge protection is confirmed.'
+                    ),
+                },
+            )
+
+    #================funtion _test_quantum_resistance _test_quantum_resistance =============
+    def _test_quantum_resistance(self) -> None:
+        """Detect cryptographic algorithms broken by Shor's algorithm on quantum computers."""
+        if not self.base_url.startswith('https://'):
+            self._log_issue(
+                self.base_url,
+                'Service uses HTTP – quantum-resistant cryptography cannot be assessed on a plaintext channel',
+                'Info',
+            )
+            return
+        host = self._host
+        port = self._port
+        try:
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            with socket.create_connection((host, port), timeout=5) as sock:
+                with context.wrap_socket(sock, server_hostname=host) as ssock:
+                    cipher = ssock.cipher()           # (name, proto, bits)
+                    cert_der = ssock.getpeercert(binary_form=True)
+        except (ssl.SSLError, socket.timeout, OSError):
+            return
+
+        # ── Key-exchange check ──────────────────────────────────────────────────
+        if cipher:
+            cname = cipher[0]
+            # Static RSA key exchange: no forward secrecy AND fully broken by Shor
+            if cname.startswith(('RSA_', 'TLS_RSA_WITH')):
+                self._log_issue(
+                    f'https://{host}:{port}',
+                    f'Cipher suite uses static RSA key exchange (no forward secrecy, quantum-vulnerable): {cname}. '
+                    'Shor\'s algorithm can derive the session key from a recorded session.',
+                    'Critical',
+                    extra={'cipher': cname, 'attack': "Shor's algorithm", 'recommendation': 'Use TLS 1.3 with X25519Kyber768 or ML-KEM hybrid key exchange'},
+                )
+            elif any(kex in cname for kex in ('ECDHE', 'DHE')):
+                # Forward-secret but quantum-vulnerable key exchange
+                self._log_issue(
+                    f'https://{host}:{port}',
+                    f'Key exchange {cname} provides forward secrecy but is broken by Shor\'s algorithm. '
+                    'A harvest-now-decrypt-later attack allows future decryption once a cryptographically relevant quantum computer exists.',
+                    'Medium',
+                    extra={'cipher': cname, 'attack': "Shor's algorithm (harvest-now-decrypt-later)", 'recommendation': 'Deploy post-quantum hybrid key exchange: X25519Kyber768 (NIST ML-KEM / FIPS 203)'},
+                )
+
+        # ── Certificate public-key check ────────────────────────────────────────
+        if not cert_der:
+            return
+        try:
+            from cryptography import x509 as _x509
+            from cryptography.hazmat.primitives.asymmetric import rsa as _rsa, ec as _ec, dsa as _dsa, ed25519 as _ed25519, ed448 as _ed448
+            cert = _x509.load_der_x509_certificate(cert_der)
+            pub = cert.public_key()
+            sig_alg = cert.signature_algorithm_oid.dotted_string
+
+            if isinstance(pub, _rsa.RSAPublicKey):
+                bits = pub.key_size
+                sev = 'Critical' if bits < 2048 else 'High' if bits < 4096 else 'Medium'
+                self._log_issue(
+                    f'https://{host}:{port}',
+                    f'Certificate uses RSA-{bits} signature key. RSA is fully broken by Shor\'s algorithm; '
+                    f'key size {bits} bits offers no additional protection against a quantum adversary.',
+                    sev,
+                    extra={'key_algorithm': 'RSA', 'key_size': bits, 'sig_oid': sig_alg,
+                           'attack': "Shor's algorithm",
+                           'recommendation': 'Migrate to ML-DSA (CRYSTALS-Dilithium, FIPS 204) or SLH-DSA (SPHINCS+, FIPS 205)'},
+                )
+            elif isinstance(pub, _ec.EllipticCurvePublicKey):
+                curve = pub.curve.name
+                self._log_issue(
+                    f'https://{host}:{port}',
+                    f'Certificate uses ECDSA ({curve}). Elliptic-curve discrete-log is broken by Shor\'s algorithm; '
+                    'a harvest-now-decrypt-later attack applies to long-lived certificates.',
+                    'Medium',
+                    extra={'key_algorithm': 'ECDSA', 'curve': curve, 'sig_oid': sig_alg,
+                           'attack': "Shor's algorithm",
+                           'recommendation': 'Migrate to ML-DSA (CRYSTALS-Dilithium, FIPS 204) or SLH-DSA (SPHINCS+, FIPS 205)'},
+                )
+            elif isinstance(pub, _dsa.DSAPublicKey):
+                self._log_issue(
+                    f'https://{host}:{port}',
+                    'Certificate uses DSA public key. DSA is fully broken by Shor\'s algorithm.',
+                    'High',
+                    extra={'key_algorithm': 'DSA', 'sig_oid': sig_alg,
+                           'attack': "Shor's algorithm",
+                           'recommendation': 'Migrate to ML-DSA (CRYSTALS-Dilithium, FIPS 204)'},
+                )
+            # Ed25519/Ed448 are quantum-vulnerable too (discrete-log on twisted Edwards curves)
+            elif isinstance(pub, (_ed25519.Ed25519PublicKey, _ed448.Ed448PublicKey)):
+                alg = 'Ed25519' if isinstance(pub, _ed25519.Ed25519PublicKey) else 'Ed448'
+                self._log_issue(
+                    f'https://{host}:{port}',
+                    f'Certificate uses {alg}. While resistant to classical attacks, {alg} is broken by Shor\'s algorithm on a sufficiently powerful quantum computer.',
+                    'Medium',
+                    extra={'key_algorithm': alg, 'attack': "Shor's algorithm",
+                           'recommendation': 'Migrate to ML-DSA (CRYSTALS-Dilithium, FIPS 204) or SLH-DSA (SPHINCS+, FIPS 205)'},
+                )
+            # else: unknown/PQC key type — no issue logged
+        except ImportError:
             pass
 
     #================funtion _test_secret_exposure _test_secret_exposure =============

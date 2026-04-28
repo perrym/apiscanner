@@ -1,4 +1,4 @@
-# APISCAN AI Client 3.1 release by Perry Mertens pamsniffer@gmail.com 2026 (C)
+# APISCAN AI Client 4.0 release by Perry Mertens pamsniffer@gmail.com 2026 (C)
 <meta content="VvYq2k5BFp5dpIL6JpQhoe90sWEXZTEBbaynlEKCWRE" name="google-site-verification">
 AI-assisted analysis module for the OWASP API Top 10, used by APISCAN for API11-style risk classification.
 
@@ -18,7 +18,7 @@ It tests. It observes. Then the model explains the risk with evidence attached.
 The module is structured around a few core classes:
 
 - `LLMClient`  
-  Handles all communication with LLM providers (OpenAI-compatible, Azure OpenAI, Anthropic, DeepSeek, Mistral, Ollama).  
+  Handles all communication with LLM providers (OpenAI, OpenAI-compatible, Azure OpenAI, Anthropic, DeepSeek, Mistral, Gemini, OpenRouter, Ollama).  
   Provides `chat()` and `chat_json()` helpers with retry, caching and provider-specific formatting.
 
 - `APIScanner`  
@@ -54,22 +54,42 @@ Supported providers include:
 - `anthropic`
 - `deepseek`
 - `mistral`
+- `gemini`
+- `openrouter`
 - `ollama` (local / offline)
 
 The provider is selected via:
 
 ```bash
 export LLM_PROVIDER=openai_compat
-export LLM_MODEL=gpt-4o
+export LLM_MODEL=gpt-4o-mini
+export LLM_API_BASE=https://your-openai-compatible-endpoint/v1
+export LLM_API_KEY=sk-...
 ```
 
 Ollama example:
 
 ```bash
 export LLM_PROVIDER=ollama
-export LLM_MODEL=llama3
-export LLM_API_BASE=http://localhost:11434
-export LLM_VERIFY_SSL=false
+export LLM_MODEL=llama3.2
+export OLLAMA_HOST=http://localhost:11434
+```
+
+OpenAI example:
+
+```bash
+export LLM_PROVIDER=openai
+export LLM_MODEL=gpt-4.1
+export OPENAI_API_KEY=sk-...
+```
+
+OpenRouter example:
+
+```bash
+export LLM_PROVIDER=openrouter
+export LLM_MODEL=openai/gpt-4o-mini
+export OPENROUTER_API_KEY=sk-or-...
+export OPENROUTER_X_TITLE=APISCAN
 ```
 
 ---
@@ -84,7 +104,7 @@ Typical variables:
 |-------------------------|---------------------------------------------------|
 | `LLM_PROVIDER`          | `openai_compat`, `azure_openai`, `ollama`, etc.  |
 | `LLM_MODEL`             | Model or deployment name                         |
-| `LLM_API_KEY`           | API key (OpenAI / Azure / Anthropic / etc.)      |
+| `LLM_API_KEY`           | Generic API key for OpenAI-compatible providers |
 | `LLM_API_BASE`          | Custom base URL (for gateways / shims)           |
 | `LLM_API_PORT`          | Custom port if needed                            |
 | `LLM_TEMPERATURE`       | Sampling temperature                             |
@@ -94,7 +114,17 @@ Typical variables:
 | `LLM_CONNECT_TIMEOUT`   | Connect timeout seconds                          |
 | `LLM_READ_TIMEOUT`      | Read timeout seconds                             |
 | `AZURE_OPENAI_ENDPOINT` | Azure OpenAI endpoint                            |
+| `AZURE_OPENAI_AUTH_TYPE` | `api_key` or `entra`                            |
+| `AZURE_OPENAI_API_KEY`  | Azure OpenAI key when using API-key auth         |
+| `AZURE_OPENAI_AD_TOKEN` | Optional Entra bearer token                      |
+| `AZURE_OPENAI_TOKEN_SCOPE` | Token scope, default `https://cognitiveservices.azure.com/.default` |
 | `AZURE_OPENAI_API_VERSION` | Azure API version                            |
+| `OPENAI_API_KEY`        | Official OpenAI API key                          |
+| `ANTHROPIC_API_KEY`     | Anthropic API key                                |
+| `DEEPSEEK_API_KEY`      | DeepSeek API key                                 |
+| `MISTRAL_API_KEY`       | Mistral API key                                  |
+| `GEMINI_API_KEY`        | Gemini API key                                   |
+| `OPENROUTER_API_KEY`    | OpenRouter API key                               |
 
 These can be generated safely by running:
 
@@ -104,6 +134,44 @@ python llmsetup.py
 
 which writes `.env`, `apiscan_env.*` and `test_env.py` for validation.
 
+### Azure OpenAI
+
+Azure OpenAI uses `LLM_PROVIDER=azure_openai`. For Azure, `LLM_MODEL` is the **deployment name**, not necessarily the base model name.
+
+API-key authentication:
+
+```bash
+export LLM_PROVIDER=azure_openai
+export LLM_MODEL=my-gpt-4o-deployment
+export AZURE_OPENAI_ENDPOINT=https://my-resource.openai.azure.com
+export AZURE_OPENAI_AUTH_TYPE=api_key
+export AZURE_OPENAI_API_KEY=...
+export AZURE_OPENAI_API_VERSION=2024-08-01-preview
+```
+
+Microsoft Entra authentication:
+
+```bash
+export LLM_PROVIDER=azure_openai
+export LLM_MODEL=my-gpt-4o-deployment
+export AZURE_OPENAI_ENDPOINT=https://my-resource.openai.azure.com
+export AZURE_OPENAI_AUTH_TYPE=entra
+export AZURE_OPENAI_API_VERSION=2024-08-01-preview
+```
+
+With Entra auth, APISCAN first uses `AZURE_OPENAI_AD_TOKEN` / `AZURE_OPENAI_ENTRA_TOKEN` if set. Otherwise it uses `azure.identity.DefaultAzureCredential`, so `az login`, managed identity, workload identity, and similar Azure identity flows can work when `azure-identity` is installed.
+
+```bash
+pip install azure-identity
+az login
+```
+
+The default token scope is:
+
+```bash
+https://cognitiveservices.azure.com/.default
+```
+
 ---
 
 ## Risk model and analysis output
@@ -111,7 +179,7 @@ which writes `.env`, `apiscan_env.*` and `test_env.py` for validation.
 The AI output is normalized into an `AnalysisResult` with:
 
 - `risk`            – `Informal`, `Low`, `Medium`, `High`
-- `explanation`     – short description (max ±3 zinnen)
+- `explanation`     – short description (max ±3 sentences)
 - `owasp_category`  – exact OWASP API Top 10 label (e.g. `API1: Broken Object Level Authorization`)
 - `recommendation`  – secure coding / control improvement
 - `reasoning`       – short step-by-step reasoning
@@ -171,7 +239,7 @@ results = analyze_endpoints_with_llm(
 )
 ```
 
-The returned list is in the older “legacy” format (`path`, `method`, `analysis`, etc.) but under water it uses the new `APIScanner` and `ScanResult` objects.
+The returned list is in the older “legacy” format (`path`, `method`, `analysis`, etc.), but under the hood it uses the new `APIScanner` and `ScanResult` objects.
 
 ---
 

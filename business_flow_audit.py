@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 3.2 1-4-2026                                 #
+# version 4.0 26-04-2026                              #
 ########################################################  
                                                       
 from __future__ import annotations
@@ -89,12 +89,12 @@ class BusinessFlowAuditor:
         swagger_spec: dict,
         flow: str = "none",
         *,
-        timeout: int = 12,
-        concurrency: int = 8,
+        timeout: int = 5,
+        concurrency: int = 4,
         logger: Any = None,
         enable_stress: bool = False,
-        coupon_attempts: int = 20,
-        sequential_rate_limit_requests: int = 25,
+        coupon_attempts: int = 10,
+        sequential_rate_limit_requests: int = 10,
     ) -> None:
         self.session = session
         self.base_url = base_url.rstrip("/") + "/"
@@ -117,12 +117,19 @@ class BusinessFlowAuditor:
 
                                                                        
     #================funtion _tw description =============
-    def _tw(self, msg: str) -> None:
+    def _tw(self, msg: str, level: str = "info") -> None:
+        _R  = '\033[0m';  _DIM = '\033[2m'
+        _RED = '\033[91m'; _YEL = '\033[93m'; _CYN = '\033[96m'
+        _icons  = {'error': _RED+'\u2716'+_R, 'warn': _YEL+'\u25b2'+_R, 'info': _CYN+'\u25c6'+_R}
+        _labels = {'error': _RED+'Error'+_R,  'warn': _YEL+'Warn' +_R, 'info': _CYN+'Info' +_R}
+        ic = _icons.get(level, _icons['info'])
+        lb = _labels.get(level, _labels['info'])
+        text = f"  {ic}  {lb}  {msg}"
         try:
             from tqdm import tqdm
-            tqdm.write(msg)
+            tqdm.write(text)
         except Exception:
-            print(msg)
+            print(text)
 
                                                                                       
     #================funtion _index_openapi_ops description =============
@@ -421,7 +428,14 @@ class BusinessFlowAuditor:
 
         with self._lock:
             self._issues.append(entry)
-            self._tw(f"[ISSUE] {entry['method']} {endpoint_path} - {desc} (Severity: {entry['severity']})")
+            _R  = '\033[0m'
+            _YEL = '\033[93m'; _CYN = '\033[96m'
+            _SEV = {'critical': '\033[1m\033[91m', 'high': '\033[1m\033[93m',
+                    'medium': '\033[92m', 'low': '\033[96m', 'info': '\033[97m'}
+            sev = entry['severity'].lower()
+            sc  = _SEV.get(sev, '\033[97m')
+            badge = f"{sc}{entry['severity'].upper():<8}{_R}"
+            self._tw(f"{_YEL}\u25c8{_R}  {badge}  {desc}  {_CYN}@{_R}  {endpoint_path}")
 
                                                                                     
     #================funtion _filtered_issues description =============
@@ -472,6 +486,19 @@ class BusinessFlowAuditor:
             if self._looks_like_auth_endpoint(path_only):
                 continue
 
+            ep_body = dict(ep.get("body") or {})
+            # If no body provided, try to synthesize one from the OpenAPI spec
+            if not ep_body and oas_build_request is not None:
+                op = self._op_for_flow(method, path_only)
+                if op is not None:
+                    try:
+                        built = oas_build_request(self.spec, self.base_url, op, None)
+                        spec_body = built.get("json") or {}
+                        if isinstance(spec_body, dict) and spec_body:
+                            ep_body = spec_body
+                    except Exception:
+                        pass
+
             flow: Flow = {
                 "name": ep.get("name") or ep.get("operationId") or f"{method} {path_only}",
                 "method": method,
@@ -479,7 +506,7 @@ class BusinessFlowAuditor:
                 "path": path_only,
                 "headers": dict(ep.get("headers") or {}),
                 "params": dict(ep.get("params") or {}),
-                "body": dict(ep.get("body") or {}),
+                "body": ep_body,
                 "sensitive": bool(ep.get("sensitive", False)),
             }
             flows.append(flow)
@@ -569,10 +596,11 @@ class BusinessFlowAuditor:
                                                                                             
     #================funtion _test_price_manipulation description =============
     def _test_price_manipulation(self, flow: Flow) -> None:
-        payload = self._get_smart_body(flow.get("body"))
+        original_body = flow.get("body") or {}
+        if not (set(original_body.keys()) & self.PRICE_KEYS):
+            return  # Only test endpoints whose real body already contains price/amount fields
+        payload = self._get_smart_body(original_body)
         keys = set(payload.keys())
-        if not (keys & self.PRICE_KEYS):
-            return
 
         for value in (0, -1, 0.01, 999999999):
             manipulated = dict(payload)
@@ -587,11 +615,11 @@ class BusinessFlowAuditor:
                                                                                            
     #================funtion _test_coupon_bruteforce description =============
     def _test_coupon_bruteforce(self, flow: Flow) -> None:
-        payload = self._get_smart_body(flow.get("body"))
-        keys = set(payload.keys())
-        coupon_key = next(iter(keys & self.COUPON_KEYS), None)
+        original_body = flow.get("body") or {}
+        coupon_key = next(iter(set(original_body.keys()) & self.COUPON_KEYS), None)
         if not coupon_key:
-            return
+            return  # Only test endpoints whose real body already contains a coupon/promo field
+        payload = self._get_smart_body(original_body)
 
         for _ in range(self.coupon_attempts):
             coupon = "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
@@ -646,7 +674,10 @@ class BusinessFlowAuditor:
                                                                                          
     #================funtion _test_method_override description =============
     def _test_method_override(self, flow: Flow) -> None:
+        own_method = (flow.get("method") or "POST").upper()
         for verb in ("PUT", "DELETE", "PATCH"):
+            if verb == own_method:
+                continue  # Skipping native method - not an override
             r = self._send(flow, override_method=verb)
             if r is not None and self._is_processed(r):
                 self._log(flow, f"Method override to {verb} processed", "Medium", resp=r)
@@ -672,8 +703,7 @@ class BusinessFlowAuditor:
             body = (r.text or "")[:4096]
             if any(k in body for k in ("isAdmin", "permissions", "owner_id", "role")):
                 self._log(flow, "Field pollution / mass-assignment suspicion (extra privileged fields accepted)", "High", resp=r, details={"payload": attempt})
-            else:
-                self._log(flow, "Field pollution accepted (extra fields did not error)", "Low", resp=r, details={"payload": attempt})
+            # Silently ignoring unknown fields is normal REST behaviour; only flag if reflected
 
                                                                                    
     #================funtion generate_report description =============

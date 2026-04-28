@@ -21,8 +21,10 @@ httpx>=0.27.0
 
 # AI Client
 openai>=1.0.0,<2.0.0
+azure-identity>=1.16.0
 
 # Typing & util
+orjson>=3.9.0; python_version>="3.8"   # optional: 3-5x faster JSON parsing
 python-dateutil>=2.8.2
 PyYAML>=6.0.2
 anthropic>=0.67.0

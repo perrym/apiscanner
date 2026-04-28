@@ -19,15 +19,32 @@ VARS = [
     "LLM_PROVIDER",
     "LLM_MODEL",
     "LLM_TEMPERATURE",
+    "LLM_TOP_P",
     "LLM_MAX_TOKENS",
-    "LLM_TIMEOUT",
+    "LLM_CONNECT_TIMEOUT",
+    "LLM_READ_TIMEOUT",
+    "LLM_API_BASE",
+    "LLM_API_PORT",
+    "LLM_VERIFY_SSL",
+    "LLM_ANTHROPIC_THINKING",
     "LLM_MAX_RETRIES",
     "OLLAMA_HOST",
     "OLLAMA_API_KEY",
     "OPENAI_API_KEY",
     "LLM_API_KEY",
     "ANTHROPIC_API_KEY",
+    "AZURE_OPENAI_ENDPOINT",
+    "AZURE_OPENAI_AUTH_TYPE",
+    "AZURE_OPENAI_API_KEY",
+    "AZURE_OPENAI_AD_TOKEN",
+    "AZURE_OPENAI_TOKEN_SCOPE",
+    "AZURE_OPENAI_API_VERSION",
     "DEEPSEEK_API_KEY",
+    "MISTRAL_API_KEY",
+    "GEMINI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_HTTP_REFERER",
+    "OPENROUTER_X_TITLE",
 ]
 
 
@@ -197,51 +214,92 @@ def detect_shell():
     
     return shell_info
 
+try:
+    from ai_client import MODEL_ALIASES as AI_MODEL_ALIASES
+except Exception:
+    AI_MODEL_ALIASES = {}
+
+
+def _with_aliases(models, prefixes=None):
+    out = list(models)
+    for model in AI_MODEL_ALIASES.values():
+        if prefixes and not str(model).startswith(tuple(prefixes)):
+            continue
+        if model not in out:
+            out.append(model)
+    return out
+
+
 LLM_PROVIDERS = {
     "ollama": {
         "name": "Ollama (Local)",
         "package": "",
-        "client": "openai",
+        "client": "ollama",
         "env_vars": ["OLLAMA_HOST", "OLLAMA_API_KEY"],
         "auth_type": "none",
-        "base_url": "http://localhost:11434/v1",
+        "base_url": "http://localhost:11434",
         "models": [
             "llama3.2", "llama3.1", "llama3",
-            "llama2", "llama2:13b", "llama2:70b",
-            "mistral", "mixtral", "mixtral:8x7b",
-            "codellama", "phi3", "gemma", "gemma2",
-            "qwen", "qwen2", "qwen2.5"
+            "mistral", "mixtral", "codellama",
+            "phi3", "gemma2", "qwen2.5", "qwen3"
         ],
         "required": False,
         "description": "Local LLMs via Ollama (free, offline)"
     },
     "openai": {
-    "name": "OpenAI",
-    "package": "openai>=1.0.0",
-    "client": "openai",
-    "env_vars": ["OPENAI_API_KEY", "LLM_API_KEY"],
-    "auth_type": "api_key",
-    "base_url": "https://api.openai.com/v1",
-    "api_style": "chat_completions",
-    "models": [
-        "gpt-5.4",
-        "gpt-5.3",
-        "gpt-4.1",
-        "gpt-4.1-mini",
-        "gpt-4o",
-        "gpt-4o-mini",
-        "o3-mini",
-        "o1",
-        "o1-mini",
-        "gpt-4-turbo",
-        "gpt-4-turbo-preview",
-        "gpt-3.5-turbo",
-        "gpt-3.5-turbo-instruct"
-    ],
-    "required": False,
-    "description": "Official OpenAI API (GPT-5 / GPT-4.1 / GPT-4o / o-series)"
-},
-
+        "name": "OpenAI",
+        "package": "openai>=1.0.0",
+        "client": "openai",
+        "env_vars": ["OPENAI_API_KEY"],
+        "auth_type": "api_key",
+        "base_url": "https://api.openai.com/v1",
+        "models": _with_aliases([
+            "gpt-5.5",
+            "gpt-5.5-mini",
+            "gpt-5",
+            "gpt-5-mini",
+            "gpt-4.1",
+            "gpt-4.1-mini",
+            "gpt-4o",
+            "gpt-4o-mini",
+            "o4-mini",
+            "o3",
+            "o3-mini",
+            "o1",
+            "o1-mini",
+        ], prefixes=("gpt-", "o")),
+        "required": False,
+        "description": "Official OpenAI API (GPT / o-series reasoning models)"
+    },
+    "openai_compat": {
+        "name": "OpenAI-compatible",
+        "package": "openai>=1.0.0",
+        "client": "openai_compat",
+        "env_vars": ["LLM_API_BASE", "LLM_API_KEY"],
+        "auth_type": "api_key",
+        "base_url": "https://api.openai.com/v1",
+        "models": _with_aliases([
+            "gpt-4.1",
+            "gpt-4o-mini",
+            "openai/gpt-4o",
+            "mistral-large-latest",
+            "deepseek-chat",
+            "gemini-2.5-pro",
+        ]),
+        "required": False,
+        "description": "Any OpenAI-compatible / self-hosted endpoint"
+    },
+    "azure_openai": {
+        "name": "Azure OpenAI",
+        "package": "openai>=1.0.0",
+        "client": "azure_openai",
+        "env_vars": ["AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_AUTH_TYPE", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_API_VERSION"],
+        "auth_type": "api_key",
+        "base_url": "",
+        "models": ["gpt-4.1", "gpt-4o", "gpt-4o-mini", "o4-mini", "o3-mini"],
+        "required": False,
+        "description": "Azure OpenAI deployments; LLM_MODEL must be your deployment name"
+    },
     "anthropic": {
         "name": "Anthropic Claude",
         "package": "anthropic>=0.67.0",
@@ -250,9 +308,13 @@ LLM_PROVIDERS = {
         "auth_type": "api_key",
         "base_url": "https://api.anthropic.com",
         "models": [
-            "claude-opus-4.6", "claude-sonnet-4.6",
-            "claude-3-5-sonnet-20241022", "claude-3-5-sonnet",
-            "claude-3-opus", "claude-3-sonnet", "claude-3-haiku"
+            "claude-sonnet-4-7",
+            "claude-opus-4-5",
+            "claude-sonnet-4-5",
+            "claude-haiku-4-5",
+            "claude-3-7-sonnet-latest",
+            "claude-3-5-sonnet-latest",
+            "claude-3-5-haiku-latest",
         ],
         "required": False,
         "description": "Claude AI from Anthropic"
@@ -267,6 +329,39 @@ LLM_PROVIDERS = {
         "models": ["deepseek-chat", "deepseek-coder", "deepseek-reasoner"],
         "required": False,
         "description": "DeepSeek AI (cost-effective alternative)"
+    },
+    "mistral": {
+        "name": "Mistral",
+        "package": "openai>=1.0.0",
+        "client": "mistral",
+        "env_vars": ["MISTRAL_API_KEY"],
+        "auth_type": "api_key",
+        "base_url": "https://api.mistral.ai/v1",
+        "models": ["mistral-large-latest", "mistral-small-latest", "codestral-latest"],
+        "required": False,
+        "description": "Mistral models through OpenAI-compatible chat completions"
+    },
+    "gemini": {
+        "name": "Google Gemini",
+        "package": "openai>=1.0.0",
+        "client": "gemini",
+        "env_vars": ["GEMINI_API_KEY"],
+        "auth_type": "api_key",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "models": ["gemini-2.5-pro", "gemini-2.5-flash"],
+        "required": False,
+        "description": "Gemini through Google's OpenAI-compatible endpoint"
+    },
+    "openrouter": {
+        "name": "OpenRouter",
+        "package": "openai>=1.0.0",
+        "client": "openrouter",
+        "env_vars": ["OPENROUTER_API_KEY", "OPENROUTER_HTTP_REFERER", "OPENROUTER_X_TITLE"],
+        "auth_type": "api_key",
+        "base_url": "https://openrouter.ai/api/v1",
+        "models": ["openai/gpt-4o", "openai/gpt-4o-mini", "anthropic/claude-sonnet-4.5", "google/gemini-2.5-pro", "deepseek/deepseek-chat"],
+        "required": False,
+        "description": "OpenRouter multi-model gateway"
     }
 }
 
@@ -511,14 +606,15 @@ def select_providers():
             print(f"    {Colors.GREEN} Already configured{Colors.END}")
         print()
     
-    print(f"[5] Exit Configuration")
+    exit_idx = len(LLM_PROVIDERS) + 1
+    print(f"[{exit_idx}] Exit Configuration")
     print(f"    Return to main setup")
     print()
     
-    print(f"{Colors.YELLOW}Select providers (e.g. '1' for Ollama or '1,2,3' for multiple, '5' to exit):{Colors.END}")
+    print(f"{Colors.YELLOW}Select providers (e.g. '1' for Ollama or '1,2,3' for multiple, '{exit_idx}' to exit):{Colors.END}")
     selection = input("> ").strip().lower()
     
-    if selection == "5" or selection == "exit":
+    if selection == str(exit_idx) or selection == "exit":
         print_info("Exiting provider configuration")
         return []
     
@@ -533,7 +629,7 @@ def select_providers():
             for idx in indices:
                 if 1 <= idx <= len(provider_ids):
                     selected_providers.append(provider_ids[idx-1])
-                elif idx == 5:
+                elif idx == exit_idx:
                     print_info("Exiting provider configuration")
                     return []
         except ValueError:
@@ -579,7 +675,15 @@ def configure_provider(provider_id):
                 config["OLLAMA_API_KEY"] = new_key
     
     else:
-        for env_var in provider["env_vars"]:
+        env_vars_to_prompt = list(provider["env_vars"])
+        if provider_id == "openai_compat":
+            env_vars_to_prompt = ["LLM_API_KEY"]
+        if provider_id == "azure_openai":
+            env_vars_to_prompt = ["AZURE_OPENAI_ENDPOINT"]
+        if provider_id == "openrouter":
+            env_vars_to_prompt = ["OPENROUTER_API_KEY"]
+
+        for env_var in env_vars_to_prompt:
             current = os.getenv(env_var, "")
             
             if current:
@@ -600,6 +704,58 @@ def configure_provider(provider_id):
                 new_value = input(f"{env_var}: ").strip()
                 if new_value:
                     config[env_var] = new_value
+
+        if provider_id == "openai_compat":
+            default_base = provider.get("base_url", "")
+            current_base = os.getenv("LLM_API_BASE", default_base)
+            base_value = input(f"LLM_API_BASE [{current_base}]: ").strip() or current_base
+            if base_value:
+                config["LLM_API_BASE"] = base_value.rstrip("/")
+
+        if provider_id == "azure_openai":
+            auth_choice = input("Azure auth type [api_key/entra, default api_key]: ").strip().lower() or "api_key"
+            if auth_choice in ("aad", "entra_id", "managed_identity", "msi", "bearer"):
+                auth_choice = "entra"
+            if auth_choice not in ("api_key", "entra"):
+                print_warning(f"Unknown Azure auth type '{auth_choice}', using api_key")
+                auth_choice = "api_key"
+            config["AZURE_OPENAI_AUTH_TYPE"] = auth_choice
+
+            if auth_choice == "entra":
+                token = input("AZURE_OPENAI_AD_TOKEN (optional; leave empty to use azure-identity / az login): ").strip()
+                scope = input("AZURE_OPENAI_TOKEN_SCOPE [https://cognitiveservices.azure.com/.default]: ").strip()
+                if token:
+                    config["AZURE_OPENAI_AD_TOKEN"] = token
+                config["AZURE_OPENAI_TOKEN_SCOPE"] = scope or "https://cognitiveservices.azure.com/.default"
+            else:
+                current_key = os.getenv("AZURE_OPENAI_API_KEY", "")
+                if current_key:
+                    masked = current_key[:4] + "***" + current_key[-4:] if len(current_key) > 8 else "***"
+                    print_info(f"AZURE_OPENAI_API_KEY is already set: {masked}")
+                    if input("Change? (y/N): ").strip().lower() == "y":
+                        new_key = input("AZURE_OPENAI_API_KEY: ").strip()
+                        if new_key:
+                            config["AZURE_OPENAI_API_KEY"] = new_key
+                    else:
+                        config["AZURE_OPENAI_API_KEY"] = current_key
+                else:
+                    new_key = input("AZURE_OPENAI_API_KEY: ").strip()
+                    if new_key:
+                        config["AZURE_OPENAI_API_KEY"] = new_key
+
+            if "AZURE_OPENAI_API_VERSION" not in config:
+                config["AZURE_OPENAI_API_VERSION"] = os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")
+            print_warning("For Azure OpenAI, choose or type your deployment name as LLM_MODEL.")
+
+        if provider_id == "openrouter":
+            referer = input("OPENROUTER_HTTP_REFERER (optional): ").strip()
+            title = input("OPENROUTER_X_TITLE (optional, default APISCAN): ").strip()
+            if referer:
+                config["OPENROUTER_HTTP_REFERER"] = referer
+            if title:
+                config["OPENROUTER_X_TITLE"] = title
+            else:
+                config["OPENROUTER_X_TITLE"] = "APISCAN"
     
     if provider["models"]:
         print(f"\nAvailable models for {provider['name']}:")
@@ -629,6 +785,7 @@ def configure_provider(provider_id):
     config["LLM_PROVIDER"] = provider_id
     
     config["LLM_TEMPERATURE"] = "0.0"
+    config["LLM_TOP_P"] = "0.95"
     config["LLM_MAX_TOKENS"] = "4096"
     
     if provider_id == "ollama":
@@ -656,9 +813,12 @@ def create_llm_config_file_shell_aware(providers_config):
     
     default_settings = {
         "LLM_TEMPERATURE": "0.0",
+        "LLM_TOP_P": "0.95",
         "LLM_MAX_TOKENS": "4096",
-        "LLM_TIMEOUT": "60",
-        "LLM_MAX_RETRIES": "3"
+        "LLM_CONNECT_TIMEOUT": "10",
+        "LLM_READ_TIMEOUT": "120",
+        "LLM_VERIFY_SSL": "true",
+        "LLM_MAX_RETRIES": "2"
     }
     
     for key, value in default_settings.items():

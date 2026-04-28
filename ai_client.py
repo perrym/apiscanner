@@ -2,7 +2,7 @@
 # APISCAN - AI Security Scanner Module                 #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2026  #
-# version 3.2.2 - Enhanced with structured classes     #
+# version 4.0 26-04-2026                              #
 ########################################################
 
 import os
@@ -190,7 +190,7 @@ class LLMConfig:
     
     def __init__(self):
         self.provider = os.getenv("LLM_PROVIDER", "openai_compat").strip().lower()
-        self.model = os.getenv("LLM_MODEL", "gpt-4o")
+        self.model = os.getenv("LLM_MODEL", "gpt-4.1")
         self.api_key = self._collect_api_key()
         self.api_base = os.getenv("LLM_API_BASE", "").rstrip("/")
         self.api_port = os.getenv("LLM_API_PORT", "").strip()
@@ -202,11 +202,14 @@ class LLMConfig:
         self.prompt_noauth_chars = int(os.getenv("LLM_PROMPT_NOAUTH_CHARS", "1000"))
         self.prompt_max_chars = int(os.getenv("LLM_PROMPT_MAX_CHARS", "4500"))
         self.timeout_connect = float(os.getenv("LLM_CONNECT_TIMEOUT", "10"))
-        self.timeout_read = float(os.getenv("LLM_READ_TIMEOUT", "20"))
+        self.timeout_read = float(os.getenv("LLM_READ_TIMEOUT", "120"))  # modern LLMs can take 60-120s
         self.verify_ssl = os.getenv("LLM_VERIFY_SSL", "true").strip().lower() not in ("0", "false", "no")
         self.user_agent = os.getenv("LLM_USER_AGENT", "apiscan-ai-client/4.0")
         self.azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
         self.azure_api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")
+        self.azure_auth_type = os.getenv("AZURE_OPENAI_AUTH_TYPE", "api_key").strip().lower()
+        self.azure_token = os.getenv("AZURE_OPENAI_AD_TOKEN", "").strip() or os.getenv("AZURE_OPENAI_ENTRA_TOKEN", "").strip()
+        self.azure_token_scope = os.getenv("AZURE_OPENAI_TOKEN_SCOPE", "https://cognitiveservices.azure.com/.default").strip()
         self.max_retries = int(os.getenv("LLM_MAX_RETRIES", "2"))
         self.cache_ttl = 300  # 5 minutes
     
@@ -216,12 +219,18 @@ class LLMConfig:
             "LLM_API_KEY",
             "OPENAI_API_KEY",
             "ANTHROPIC_API_KEY",
-            "AZURE_OPENAI_API_KEY",
             "DEEPSEEK_API_KEY",
             "MISTRAL_API_KEY",
             "GEMINI_API_KEY",
             "OPENROUTER_API_KEY"
         ]
+
+        if os.getenv("LLM_PROVIDER", "").strip().lower() == "azure_openai":
+            azure_auth_type = os.getenv("AZURE_OPENAI_AUTH_TYPE", "api_key").strip().lower()
+            if azure_auth_type in ("api_key", "key", "apikey"):
+                key = os.getenv("AZURE_OPENAI_API_KEY")
+                if key:
+                    return key
         
         for env_var in env_vars:
             key = os.getenv(env_var)
@@ -238,7 +247,7 @@ class LLMConfig:
 PROVIDER_CONFIGS = {
     LLMProvider.OPENAI: {
         "base_url": "https://api.openai.com/v1",
-        "default_model": "gpt-4o",
+        "default_model": "gpt-4.1",
         "endpoint": "chat/completions"
     },
     LLMProvider.DEEPSEEK: {
@@ -253,12 +262,12 @@ PROVIDER_CONFIGS = {
     },
     LLMProvider.ANTHROPIC: {
         "base_url": "https://api.anthropic.com",
-        "default_model": "claude-3-7-sonnet-latest",
+        "default_model": "claude-sonnet-4-5",
         "endpoint": "v1/messages"
     },
     LLMProvider.GEMINI: {
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-        "default_model": "gemini-2.5-flash",
+        "default_model": "gemini-2.5-pro",
         "endpoint": "chat/completions"
     },
     LLMProvider.OPENROUTER: {
@@ -273,24 +282,85 @@ PROVIDER_CONFIGS = {
     },
     LLMProvider.OPENAI_COMPAT: {
         "base_url": "https://api.openai.com/v1",
-        "default_model": "gpt-4o",
+        "default_model": "gpt-4.1",
         "endpoint": "chat/completions"
     }
 }
 
 MODEL_ALIASES = {
-    # Common aliases users type for ChatGPT 4o
-    "chatgpt 4o": "gpt-4o",
-    "chatgpt-4o": "gpt-4o",
-    "gpt4o": "gpt-4o",
-    "gpt 4o": "gpt-4o",
-    # Common aliases users type for GPT-5.3
-    "chatgpt 53": "gpt-5.3",
-    "chatgpt-53": "gpt-5.3",
-    "gpt53": "gpt-5.3",
-    "gpt-53": "gpt-5.3",
-    "gpt 53": "gpt-5.3",
-    # Common aliases users type for DeepSeek
+    # ── OpenAI GPT-5 / ChatGPT-5 ───────────────────────────────
+    "gpt5": "gpt-5",
+    "gpt 5": "gpt-5",
+    "chatgpt5": "gpt-5",
+    "chatgpt-5": "gpt-5",
+    "chatgpt 5": "gpt-5",
+    "gpt5 mini": "gpt-5-mini",
+    "gpt-5 mini": "gpt-5-mini",
+    "gpt 5 mini": "gpt-5-mini",
+    "chatgpt 5 mini": "gpt-5-mini",
+    # ── OpenAI GPT-5.5 / ChatGPT-5.5 ──────────────────────────
+    "gpt5.1": "gpt-5.1",
+    "gpt 5.5": "gpt-5.5",
+    "gpt-5.5": "gpt-5.5",
+    "chatgpt5.5": "gpt-5.5",
+    "chatgpt-5.5": "gpt-5.5",
+    "chatgpt 5.5": "gpt-5.5",
+    "gpt 5.5 mini": "gpt-5.5-mini",
+    "gpt5.5 mini": "gpt-5.5-mini",
+    # ── OpenAI o-series (reasoning models) ────────────────────
+    "o1 mini": "o1-mini",
+    "o1mini": "o1-mini",
+    "o1 pro": "o1-pro",
+    "o3 mini": "o3-mini",
+    "o3mini": "o3-mini",
+    "o4 mini": "o4-mini",
+    "o4mini": "o4-mini",
+    # ── Anthropic Claude 3.5 ───────────────────────────────────
+    "claude 3.5": "claude-3-5-sonnet-latest",
+    "claude-3.5": "claude-3-5-sonnet-latest",
+    "claude 3.5 sonnet": "claude-3-5-sonnet-latest",
+    "claude-3.5-sonnet": "claude-3-5-sonnet-latest",
+    "claude 3.5 haiku": "claude-3-5-haiku-latest",
+    "claude-3.5-haiku": "claude-3-5-haiku-latest",
+    # ── Anthropic Claude 3.7 ───────────────────────────────────
+    "claude 3.7": "claude-3-7-sonnet-latest",
+    "claude-3.7": "claude-3-7-sonnet-latest",
+    "claude 3.7 sonnet": "claude-3-7-sonnet-latest",
+    "claude-3.7-sonnet": "claude-3-7-sonnet-latest",
+    # ── Anthropic Claude 4.x ───────────────────────────────────
+    "claude 4": "claude-sonnet-4-5",
+    "claude-4": "claude-sonnet-4-5",
+    "claude opus 4": "claude-opus-4-5",
+    "claude 4 opus": "claude-opus-4-5",
+    "claude-opus-4": "claude-opus-4-5",
+    "claude opus4": "claude-opus-4-5",
+    "claude sonnet 4": "claude-sonnet-4-5",
+    "claude 4 sonnet": "claude-sonnet-4-5",
+    "claude-sonnet-4": "claude-sonnet-4-5",
+    "claude sonnet4": "claude-sonnet-4-5",
+    "claude haiku 4": "claude-haiku-4-5",
+    "claude 4 haiku": "claude-haiku-4-5",
+    "claude-haiku-4": "claude-haiku-4-5",
+    # ── Anthropic Claude 4.7 (claude-sonnet-4-7) ──────────────
+    "claude 4.7": "claude-sonnet-4-7",
+    "claude-4.7": "claude-sonnet-4-7",
+    "claude sonnet 4.7": "claude-sonnet-4-7",
+    "claude 4.7 sonnet": "claude-sonnet-4-7",
+    "claude-sonnet-4.7": "claude-sonnet-4-7",
+    "claude sonnet4.7": "claude-sonnet-4-7",
+    # ── Anthropic Claude Opus Mythos ───────────────────────────
+    "mythos": "claude-opus-mythos",
+    "claude mythos": "claude-opus-4-mythos",
+    "claude opus mythos": "claude-opus-mythos",
+    "claude-opus-mythos": "claude-opus-mythos",
+    "claude mythos opus": "claude-opus-mythos",
+    # ── Gemini 2.5 ─────────────────────────────────────────────
+    "gemini 2.5": "gemini-2.5-flash",
+    "gemini pro": "gemini-2.5-pro",
+    "gemini 2.5 pro": "gemini-2.5-pro",
+    "gemini 2.5 flash": "gemini-2.5-flash",
+    "gemini flash": "gemini-2.5-flash",
+    # ── DeepSeek ───────────────────────────────────────────────
     "deepseek": "deepseek-chat",
     "deepseek chat": "deepseek-chat",
     "deepseek-chat": "deepseek-chat",
@@ -312,6 +382,7 @@ class LLMClient:
         self._thread_local = threading.local()
         self._cache_lock = threading.RLock()
         self._async_session = None
+        self._cached_base_url: Optional[str] = None  # computed once on first use
         
     def _get_session(self) -> requests.Session:
         """Get or create a thread-local requests session."""
@@ -331,6 +402,41 @@ class LLMClient:
         normalized = model.strip()
         key = normalized.lower()
         return MODEL_ALIASES.get(key, normalized)
+
+    @staticmethod
+    def _is_reasoning_model(model: str) -> bool:
+        """Detect OpenAI o-series reasoning models (o1, o3, o4-mini, …).
+        These models do not accept temperature/top_p and use max_completion_tokens."""
+        return bool(re.match(r'^o\d', model.lower().strip()))
+
+    def _get_azure_entra_token(self) -> Optional[str]:
+        """Return a Microsoft Entra token for Azure OpenAI.
+
+        Priority:
+        1. AZURE_OPENAI_AD_TOKEN / AZURE_OPENAI_ENTRA_TOKEN for callers that
+           already acquired a token.
+        2. azure-identity DefaultAzureCredential when installed/configured
+           (for example via az login, managed identity, workload identity).
+        """
+        if self.config.azure_token:
+            return self.config.azure_token
+
+        try:
+            from azure.identity import DefaultAzureCredential
+        except Exception:
+            logger.warning(
+                "Azure OpenAI Entra auth requested but azure-identity is not installed. "
+                "Install azure-identity or set AZURE_OPENAI_AD_TOKEN."
+            )
+            return None
+
+        try:
+            credential = DefaultAzureCredential()
+            token = credential.get_token(self.config.azure_token_scope)
+            return token.token
+        except Exception as exc:
+            logger.warning("Azure OpenAI Entra token acquisition failed: %s", exc)
+            return None
     
     def _build_base_url(self) -> str:
         """Build the base URL for API requests"""
@@ -376,12 +482,23 @@ class LLMClient:
         
         if self.config.api_key:
             if self.config.provider == "azure_openai":
-                headers["api-key"] = self.config.api_key
+                if self.config.azure_auth_type in ("api_key", "key", "apikey"):
+                    headers["api-key"] = self.config.api_key
             elif self.config.provider == "anthropic":
                 headers["x-api-key"] = self.config.api_key
                 headers["anthropic-version"] = "2023-06-01"
+                # Enable extended-thinking beta when requested via env var
+                if os.getenv("LLM_ANTHROPIC_THINKING", "").strip().lower() in ("1", "true", "yes"):
+                    headers["anthropic-beta"] = "interleaved-thinking-2025-05-14"
             elif self.config.provider in ["openai", "openai_compat", "deepseek", "mistral", "gemini", "openrouter"]:
                 headers["Authorization"] = f"Bearer {self.config.api_key}"
+
+        if self.config.provider == "azure_openai" and self.config.azure_auth_type in ("entra", "aad", "managed_identity", "msi", "bearer"):
+            token = self._get_azure_entra_token()
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            else:
+                logger.warning("Azure OpenAI Entra auth selected but no bearer token is available")
 
         # Optional metadata headers recommended by OpenRouter.
         if self.config.provider == "openrouter":
@@ -396,7 +513,9 @@ class LLMClient:
     
     def _get_endpoint_url(self, model: str) -> str:
         """Get the endpoint URL for the API request"""
-        base_url = self._build_base_url()
+        if self._cached_base_url is None:
+            self._cached_base_url = self._build_base_url()
+        base_url = self._cached_base_url
         
         if self.config.provider == "azure_openai":
             endpoint = f"openai/deployments/{model}/chat/completions"
@@ -463,16 +582,34 @@ class LLMClient:
                 "max_tokens": max_tokens,
                 "temperature": temperature
             }
+            # Extended thinking (claude-3-7+, claude-4.x) — opt-in via LLM_ANTHROPIC_THINKING
+            thinking_budget = int(os.getenv("LLM_ANTHROPIC_THINKING_BUDGET", "8000"))
+            if os.getenv("LLM_ANTHROPIC_THINKING", "").strip().lower() in ("1", "true", "yes"):
+                payload["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
+                # Thinking requires temperature=1; remove temperature from payload
+                payload.pop("temperature", None)
         else:
-            payload = {
-                "model": model,
-                "messages": messages,
-                "temperature": temperature,
-                "top_p": top_p,
-                "max_tokens": max_tokens
-            }
-            
-            if system and self.config.provider != "anthropic":
+            is_reasoning = (
+                self.config.provider in ("openai", "openai_compat", "azure_openai")
+                and self._is_reasoning_model(model)
+            )
+            if is_reasoning:
+                # o1/o3/o4-mini: no temperature, no top_p; use max_completion_tokens
+                payload = {
+                    "model": model,
+                    "messages": messages,
+                    "max_completion_tokens": max_tokens,
+                }
+            else:
+                payload = {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "top_p": top_p,
+                    "max_tokens": max_tokens,
+                }
+
+            if system:
                 payload["messages"] = [{"role": "system", "content": system}] + messages
         
         session = self._get_session()

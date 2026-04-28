@@ -2,11 +2,12 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 3.2 1-4-2026                                 #
+# version 4.0 26-04-2026                              #
 ########################################################
 
 from __future__ import annotations
 import base64
+import hashlib
 import json
 import logging
 import re
@@ -45,7 +46,7 @@ class AuthorizationAuditor:
         *,
         spec: Optional[Dict[str, Any]] = None,
         flow: Optional[str] = None,
-        timeout: float = 10.0,
+        timeout: float = 5.0,
         logger: Optional[logging.Logger] = None,
     ) -> None:
         if session is None:
@@ -322,10 +323,6 @@ class AuthorizationAuditor:
             return []
         iterator = tqdm(endpoints, desc="Testing endpoints", unit="endpoint") if show_progress else endpoints
         for ep in iterator:
-            url = ep.get("url")
-            methods = ep.get("methods", ["GET"])
-            if show_progress:
-                tqdm.write(f"Testing {methods} {url}")
             self._test_endpoint(ep)
         return self._filtered_issues()
 
@@ -449,115 +446,106 @@ class AuthorizationAuditor:
 
     #================funtion _filtered_issues description =============
     def _filtered_issues(self) -> List[Dict[str, Any]]:
-            if not self.authz_issues:
-                return []
+        if not self.authz_issues:
+            return []
 
-            ignore_statuses = {0, 400, 404, 405}
-            out: List[Dict[str, Any]] = []
-            for it in self.authz_issues:
-                try:
-                    code = int(it.get("status_code", 0) or 0)
-                except Exception:
-                    continue
-                if code in ignore_statuses:
-                    continue
-                if 500 <= code < 600:
-                    continue
+        ignore_statuses = {0, 400, 404, 405}
+        out: List[Dict[str, Any]] = []
+        for it in self.authz_issues:
+            try:
+                code = int(it.get("status_code", 0) or 0)
+            except Exception:
+                continue
+            if code in ignore_statuses:
+                continue
+            if 500 <= code < 600:
+                continue
 
-                path = str(it.get("endpoint") or "")
-                desc = (it.get("description") or "").lower()
-                body = it.get("response_body") or ""
+            path = str(it.get("endpoint") or "")
+            desc = (it.get("description") or "").lower()
+            body = it.get("response_body") or ""
 
-                sensitive_flag = False
-                if ".env" in path or "exposed" in desc or "sensitive" in desc:
+            sensitive_flag = False
+            if ".env" in path or "exposed" in desc or "sensitive" in desc:
+                sensitive_flag = True
+            else:
+                if re.search(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", body, flags=re.I):
                     sensitive_flag = True
-                else:
+                if re.search(r"\beyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\b", body):
+                    sensitive_flag = True
+                if re.search(r'"(access_)?token"\s*:\s*"', body, flags=re.I):
+                    sensitive_flag = True
 
-                    import re, json
-                    if re.search(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", body, flags=re.I):
-                        sensitive_flag = True
-                    if re.search(r"\beyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\b", body):
-                        sensitive_flag = True
-                    if re.search(r'"(access_)?token"\s*:\s*"', body, flags=re.I):
-                        sensitive_flag = True
-
-                if code == 200 and not sensitive_flag:
-
-                    generic = False
-                    try:
-                        data = json.loads(body)
-                        if isinstance(data, dict):
-                            keys = set(map(lambda k: str(k).lower(), data.keys()))
-                            if keys and keys.issubset({"message","status","detail","error"}):
-                                generic = all(not isinstance(v, (dict, list)) for v in data.values())
-                    except Exception:
-                        txt = (body or "").strip().lower()
-                        if len(txt) <= 64 and txt in {"ok","success","done","created","updated","deleted"}:
-                            generic = True
-                    if generic:
-                        continue
-
-
+            if code == 200 and not sensitive_flag:
+                generic = False
                 try:
-                    canon = self._canonical_path(path)
+                    data = json.loads(body)
+                    if isinstance(data, dict):
+                        keys = set(map(lambda k: str(k).lower(), data.keys()))
+                        if keys and keys.issubset({"message", "status", "detail", "error"}):
+                            generic = all(not isinstance(v, (dict, list)) for v in data.values())
                 except Exception:
-                    canon = path
-
-                #================funtion _shape description =============
-                def _shape(text: str) -> str:
-                    if not text:
-                        return ""
-                    try:
-                        import json, re
-                        data = json.loads(text)
-                    except Exception:
-                        import re
-                        return re.sub(r"\s+", " ", text).strip()[:4096]
-                    #================funtion norm description =============
-                    def norm(v):
-                        if isinstance(v, dict):
-                            return {k: norm(val) for k,val in sorted(v.items(), key=lambda x: x[0]) if k not in {"timestamp","time","date","requestId","request_id"}}
-                        if isinstance(v, list):
-                            return [norm(v[0])] if v else []
-                        if isinstance(v, str):
-                            return "S"
-                        if isinstance(v, (int,float)):
-                            return "N"
-                        if isinstance(v, bool):
-                            return "B"
-                        if v is None:
-                            return "null"
-                        return "X"
-                    try:
-                        shaped = norm(data)
-                        return json.dumps(shaped, separators=(",", ":"), ensure_ascii=False)[:8192]
-                    except Exception:
-                        return re.sub(r"\s+", " ", text).strip()[:4096]
-
-                import hashlib
-                shape = _shape(body)
-                fp = f"{it.get('method','')}|{canon}|{code}|{hashlib.sha1(shape.encode('utf-8','ignore')).hexdigest()}"
-
-                it["fingerprint"] = fp
-                out.append(it)
-
-            dedup: Dict[str, Dict[str, Any]] = {}
-            for it in out:
-                fp = it.get("fingerprint")
-                if not fp:
+                    txt = (body or "").strip().lower()
+                    if len(txt) <= 64 and txt in {"ok", "success", "done", "created", "updated", "deleted"}:
+                        generic = True
+                if generic:
                     continue
-                if fp in dedup:
-                    d = dedup[fp]
-                    d["duplicate_count"] = d.get("duplicate_count", 1) + 1
-                    v = d.setdefault("variants", [])
-                    desc = it.get("description","")
-                    if desc and desc not in v:
-                        v.append(desc)
-                else:
-                    it.setdefault("duplicate_count", 1)
-                    it.setdefault("variants", [it.get("description","")])
-                    dedup[fp] = it
-            return list(dedup.values())
+
+            try:
+                canon = self._canonical_path(path)
+            except Exception:
+                canon = path
+
+            def _shape(text: str) -> str:
+                if not text:
+                    return ""
+                try:
+                    data = json.loads(text)
+                except Exception:
+                    return re.sub(r"\s+", " ", text).strip()[:4096]
+                def norm(v):
+                    if isinstance(v, dict):
+                        return {k: norm(val) for k, val in sorted(v.items(), key=lambda x: x[0]) if k not in {"timestamp", "time", "date", "requestId", "request_id"}}
+                    if isinstance(v, list):
+                        return [norm(v[0])] if v else []
+                    if isinstance(v, str):
+                        return "S"
+                    if isinstance(v, (int, float)):
+                        return "N"
+                    if isinstance(v, bool):
+                        return "B"
+                    if v is None:
+                        return "null"
+                    return "X"
+                try:
+                    shaped = norm(data)
+                    return json.dumps(shaped, separators=(",", ":"), ensure_ascii=False)[:8192]
+                except Exception:
+                    return re.sub(r"\s+", " ", text).strip()[:4096]
+
+            shape = _shape(body)
+            fp = f"{it.get('method', '')}|{canon}|{code}|{hashlib.sha1(shape.encode('utf-8', 'ignore')).hexdigest()}"
+
+            it["fingerprint"] = fp
+            out.append(it)
+
+        dedup: Dict[str, Dict[str, Any]] = {}
+        for it in out:
+            fp = it.get("fingerprint")
+            if not fp:
+                continue
+            if fp in dedup:
+                d = dedup[fp]
+                d["duplicate_count"] = d.get("duplicate_count", 1) + 1
+                v = d.setdefault("variants", [])
+                desc = it.get("description", "")
+                if desc and desc not in v:
+                    v.append(desc)
+            else:
+                it.setdefault("duplicate_count", 1)
+                it.setdefault("variants", [it.get("description", "")])
+                dedup[fp] = it
+        return list(dedup.values())
 
 
     #================funtion _log_issue description =============

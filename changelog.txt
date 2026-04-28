@@ -1,6 +1,23 @@
 # APISCAN - CHANGELOG
-Version:3.2.1 release 1-16-2026
+Version:4.0 release 26-04-2026
 Author: Perry Mertens pamsniffer@gmail.com
+
+26-04-2026
+- Version bump to 4.0
+- Better scanner core with cleaner CLI output, startup banner, colored scan sections, and clearer finding messages
+- Modern LLM support: OpenAI GPT-5 aliases, o-series reasoning models, Claude 4.x, Gemini 2.5, OpenRouter, Azure OpenAI and OpenAI-compatible APIs
+- Better AI scanning: multithreaded endpoint analysis, safer prompt size limits, path parameter examples from Swagger/OpenAPI, thread-safe sessions and cache
+- Better Azure OpenAI support: API key or Entra/bearer token authentication
+- Better authentication support: HTTP Digest auth, custom headers, stronger API key validation, mTLS file checks and improved OAuth callback handling
+- Better Swagger/OpenAPI endpoint handling: merged path-level and operation-level parameters, better dummy/example values, better path parameter resolution
+- Better Swagger generator: detects UUIDs, numeric IDs, object IDs, tokens, more common endpoints, richer schema examples and improved JavaScript API discovery
+- Better report function: redesigned dark HTML reports, sidebar navigation, cleaner combined reports and more readable OWASP API Top 10 sections
+- Better evidence database tracking: stores endpoint status, response time and highest severity more reliably
+- Better scan planning and verify mode logging with cleaner output and less noisy debug messages
+- Better API modules: BOLA, Broken Auth, Property Authorization, Business Flows, Inventory, Misconfiguration, SSRF and Unsafe Consumption updated and stabilized
+- Better performance: improved retry handling, connection pooling, longer LLM read timeouts and configurable worker counts
+- Better false-positive control and filtering for auth-related findings
+- Better documentation and README updates for APISCAN 4.0
 
 16-1-2026
 - Risk rating errors solved

@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 3.2 1-4-2026                                 #
+# version 4.0 26-04-2026                              #
 ########################################################
 
 from __future__ import annotations
@@ -31,23 +31,109 @@ _MAX_BODY_LEN = 2048
 _MAX_WORKERS = 10
 
 
+def _normalize_path(path: Any) -> str:
+    p = (str(path.get("path") or "") if isinstance(path, dict) else str(path or "")).strip()
+    if not p.startswith("/"):
+        p = "/" + p
+    return p.rstrip("/") or "/"
+
+
+def _documented_prefix(path: str) -> str:
+    prefix = _normalize_path(path).split("{", 1)[0].rstrip("/")
+    return prefix or "/"
+
+
 class InventoryAuditor:
     _DEBUG_PATHS = [
+        # Swagger / OpenAPI
         "/swagger",
         "/swagger-ui",
+        "/swagger-ui.html",
+        "/swagger-ui/index.html",
         "/swagger.json",
+        "/swagger.yaml",
         "/openapi",
         "/openapi.json",
+        "/openapi.yaml",
+        "/api-docs",
+        "/api-docs/swagger.json",
+        "/v2/api-docs",
+        "/v3/api-docs",
+        "/docs",
+        "/doc",
+        "/redoc",
+        # Spring Boot / Java
         "/actuator",
-        "/metrics",
-        "/config",
+        "/actuator/health",
+        "/actuator/info",
+        "/actuator/env",
+        "/actuator/mappings",
+        "/actuator/beans",
+        "/actuator/configprops",
+        "/actuator/loggers",
+        "/actuator/metrics",
+        "/actuator/httptrace",
+        "/actuator/threaddump",
+        "/actuator/heapdump",
+        "/actuator/shutdown",
         "/h2-console",
-        "/health",
-        "/debug",
         "/console",
+        # Infrastructure / debug
+        "/metrics",
+        "/health",
+        "/healthz",
+        "/ready",
+        "/readyz",
+        "/live",
+        "/livez",
+        "/ping",
+        "/status",
+        "/info",
+        "/debug",
+        "/debug/vars",
+        "/debug/pprof",
+        "/config",
         "/phpinfo",
+        "/phpinfo.php",
+        "/server-status",
+        "/server-info",
+        # Secrets / sensitive files
         "/.env",
+        "/.env.local",
+        "/.env.production",
         "/.git",
+        "/.git/config",
+        "/.gitignore",
+        "/.htaccess",
+        "/config.json",
+        "/settings.json",
+        "/appsettings.json",
+        "/web.config",
+        "/application.properties",
+        "/application.yaml",
+        # Admin panels
+        "/admin",
+        "/admin/api",
+        "/administrator",
+        "/internal",
+        "/internal/api",
+        "/private",
+        "/private/api",
+        "/manage",
+        # Identity / OAuth
+        "/.well-known/openid-configuration",
+        "/.well-known/jwks.json",
+        "/.well-known/oauth-authorization-server",
+        "/oauth/token",
+        "/oauth2/token",
+        "/connect/token",
+        "/auth/token",
+        # Other
+        "/graphql",
+        "/graphiql",
+        "/playground",
+        "/robots.txt",
+        "/sitemap.xml",
     ]
 
 
@@ -88,11 +174,18 @@ class InventoryAuditor:
 
 
     #================funtion _tw description =============
-    def _tw(self, msg: str) -> None:
+    def _tw(self, msg: str, level: str = "info") -> None:
+        _R  = '\033[0m'
+        _RED = '\033[91m'; _YEL = '\033[93m'; _CYN = '\033[96m'
+        _icons  = {'error': _RED+'\u2716'+_R, 'warn': _YEL+'\u25b2'+_R, 'info': _CYN+'\u25c6'+_R}
+        _labels = {'error': _RED+'Error'+_R,  'warn': _YEL+'Warn' +_R, 'info': _CYN+'Info' +_R}
+        ic = _icons.get(level, _icons['info'])
+        lb = _labels.get(level, _labels['info'])
+        text = f"  {ic}  {lb}  {msg}"
         try:
-            tqdm.write(str(msg))
+            tqdm.write(text)
         except Exception:
-            print(str(msg))
+            print(text)
 
 
     @staticmethod
@@ -120,7 +213,22 @@ class InventoryAuditor:
 
     #================funtion _filtered_issues description =============
     def _filtered_issues(self) -> List[Issue]:
-        return [i for i in self._issues if i.get("issue") and i.get("endpoint")]
+        cleaned: List[Issue] = []
+        seen: set[tuple[str, str, str, int]] = set()
+        for issue in self._issues:
+            if not issue.get("issue") or not issue.get("endpoint"):
+                continue
+            key = (
+                str(issue.get("issue") or ""),
+                str(issue.get("endpoint") or ""),
+                str(issue.get("description") or ""),
+                int(issue.get("status_code") or 0),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            cleaned.append(issue)
+        return cleaned
 
 
     #================funtion _is_api_response description =============
@@ -131,6 +239,10 @@ class InventoryAuditor:
             "application/x-yaml",
             "application/vnd.oai.openapi",
             "application/vnd.api+json",
+            "application/problem+json",
+            "application/xml",
+            "text/xml",
+            "text/json",
         }
         if content_type in api_types:
             return True
@@ -149,17 +261,18 @@ class InventoryAuditor:
         if documented_paths is None and self.spec:
             documented_paths = self.endpoints_from_universal(self.spec)
 
-        doc_set: set[str] = {
-            (p["path"] if isinstance(p, dict) else str(p)).rstrip("/")
-            for p in (documented_paths or [])
-        }
+        doc_set: set[str] = {_normalize_path(p) for p in (documented_paths or [])}
 
         paths_to_check: List[str] = []
         paths_to_check.extend(self._DEBUG_PATHS)
 
 
-        for v in range(1, 8):
-            for prefix in ("", "/api", "/rest", "/services", "/orders", "/products", "/apis"):
+        for v in range(1, 12):
+            for prefix in (
+                "", "/api", "/rest", "/services",
+                "/orders", "/products", "/users",
+                "/apis", "/app", "/backend",
+            ):
                 paths_to_check.append(f"{prefix}/v{v}")
 
 
@@ -174,9 +287,13 @@ class InventoryAuditor:
                 try:
                     fut.result()
                 except Exception as e:
-                    self._log("Error testing path", path, f"Exception: {e}")
+                    if self.logger:
+                        try:
+                            self.logger.debug("Error testing inventory path %s: %s", path, e)
+                        except Exception:
+                            pass
 
-        return self._issues
+        return self._filtered_issues()
 
 
     #================funtion _check_path description =============
@@ -189,7 +306,11 @@ class InventoryAuditor:
             if resp.status_code == 405:
                 resp = self.session.get(url, timeout=self.timeout)
         except requests.RequestException as e:
-            self._log("Request error", path, f"Exception: {e}")
+            if self.logger:
+                try:
+                    self.logger.debug("Inventory request failed for %s: %s", url, e)
+                except Exception:
+                    pass
             return
 
 
@@ -200,7 +321,18 @@ class InventoryAuditor:
                 pass
 
         if resp.status_code >= 400:
-            return
+            # Retry with Accept: application/json in case server needs explicit content negotiation
+            if resp.status_code in (406, 415):
+                try:
+                    resp = self.session.get(
+                        url,
+                        headers={"Accept": "application/json"},
+                        timeout=self.timeout,
+                    )
+                except requests.RequestException:
+                    return
+            if resp.status_code >= 400:
+                return
 
 
         if not self._security_headers_checked:
@@ -218,8 +350,13 @@ class InventoryAuditor:
         if not self._is_api_response(resp):
             return
 
-        base_matches = [doc.rstrip("/").split("{", 1)[0] for doc in documented]
-        if documented and not any(clean_path == doc or clean_path.startswith(f"{doc}/") for doc in base_matches):
+        documented_matches = [(doc, _documented_prefix(doc)) for doc in documented]
+        if documented and not any(
+            clean_path == doc
+            or clean_path == prefix
+            or clean_path.startswith(f"{prefix}/")
+            for doc, prefix in documented_matches
+        ):
             self._log("Undocumented endpoint", url, f"Server returned {resp.status_code}", resp)
 
         for debug in self._DEBUG_PATHS:
@@ -237,33 +374,54 @@ class InventoryAuditor:
             except ValueError:
                 pass
 
-        self._extract_hosts(resp.text)
+        self._extract_hosts(resp.text, resp)
 
 
     #================funtion _check_debug_exposure description =============
     def _check_debug_exposure(self, response: requests.Response) -> None:
-        text_lower = (response.text or "").lower()
+        text = response.text or ""
+        text_lower = text.lower()
         if "swagger-ui" in text_lower:
             self._log("Debug exposure", "Swagger UI", "", response)
         if "h2-console" in text_lower:
             self._log("Debug exposure", "H2 console", "", response)
-        if "<heap>" in (response.text or ""):
+        if "<heap>" in text:
             self._log("Debug exposure", "Memory dump tag", "", response)
+        # Stack trace patterns
+        if any(p in text_lower for p in ("traceback (most recent", "at java.", "at org.", "at com.", "exception in thread", "null pointer exception", "stacktrace")):
+            self._log("Stack trace exposed", "Stack trace in response body", "", response)
+        # Database connection strings
+        if any(p in text_lower for p in ("jdbc:", "mongodb://", "postgres://", "mysql://", "server=.", "data source=", "connectionstring")):
+            self._log("Database connection string exposed", "DB credentials or connection info in response", "", response)
+        # Internal IP addresses
+        for ip in re.findall(r'\b(?:10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\b', text):
+            self._log("Internal IP address exposed", ip, "Private IP found in response body", response)
+        # Secret/key patterns
+        if re.search(r'(?i)(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|private[_-]?key)\s*[:=]\s*[\w/+]{10,}', text):
+            self._log("Potential secret exposed", "Secret key or token pattern in response body", "", response)
 
 
     #================funtion _check_security_headers description =============
     def _check_security_headers(self, response: requests.Response, path: str) -> None:
         hdrs = response.headers or {}
+        hdrs_lower = {k.lower(): v for k, v in hdrs.items()}
         missing: List[str] = []
 
-        if "strict-transport-security" not in {k.lower(): v for k, v in hdrs.items()}:
+        if "strict-transport-security" not in hdrs_lower:
             missing.append("HSTS")
         if (hdrs.get("X-Content-Type-Options", "") or "").lower() != "nosniff":
             missing.append("X-Content-Type-Options")
-        if "X-Frame-Options" not in hdrs:
+        if "X-Frame-Options" not in hdrs and "content-security-policy" not in hdrs_lower:
             missing.append("X-Frame-Options")
         if "Content-Security-Policy" not in hdrs:
             missing.append("CSP")
+        if "Referrer-Policy" not in hdrs:
+            missing.append("Referrer-Policy")
+        if "permissions-policy" not in hdrs_lower and "feature-policy" not in hdrs_lower:
+            missing.append("Permissions-Policy")
+        cache = (hdrs.get("Cache-Control", "") or "").lower()
+        if not any(d in cache for d in ("no-store", "no-cache", "private")):
+            missing.append("Cache-Control (no-store/no-cache/private)")
 
         if missing:
             self._log("Missing security headers", path, "Missing: " + ", ".join(missing), response)
@@ -282,11 +440,27 @@ class InventoryAuditor:
 
 
     #================funtion _extract_hosts description =============
-    def _extract_hosts(self, body: str) -> None:
+    def _extract_hosts(self, body: str, response: Optional[requests.Response] = None) -> None:
         base_hostname = urlparse(self.base_url).hostname
         for host in re.findall(r"https?://([\w.-]+)/", body or ""):
             if host and host != base_hostname:
-                self._log("Reference to external host", host, "Found in response body")
+                self._log("Reference to external host", host, "Found in response body", response)
+
+
+    #================funtion _severity_for classify inventory issues ##########
+    def _severity_for(self, issue: str, endpoint: str, description: str, response: Optional[requests.Response]) -> str:
+        text = " ".join((issue or "", endpoint or "", description or "")).lower()
+        if "missing security headers" in text:
+            return "High"
+        if any(marker in text for marker in ("secret", "private key", ".env", ".git/config", "heapdump", "shutdown")):
+            return "High"
+        if any(marker in text for marker in ("stack trace", "database connection", "internal ip", "actuator/env", "actuator/beans", "actuator/configprops")):
+            return "Medium"
+        if "debug endpoint" in text or "swagger" in text or "openapi" in text or "graphql" in text:
+            return "Low"
+        if "deprecated api version" in text or "undocumented endpoint" in text:
+            return "Low"
+        return "Info"
 
 
     #================funtion _log description =============
@@ -299,8 +473,10 @@ class InventoryAuditor:
     ) -> None:
         entry: Issue = {
             "issue": issue,
+            "title": issue,
             "endpoint": endpoint,
             "description": description,
+            "severity": self._severity_for(issue, endpoint, description, response),
             "timestamp": datetime.utcnow().isoformat(timespec="seconds"),
         }
 

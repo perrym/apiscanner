@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 3.2 1-4-2026                                 #
+# version 4.0 26-04-2026                              #
 ########################################################                                   
 from __future__ import annotations
 from datetime import datetime
@@ -41,6 +41,18 @@ manual_file_map = {
 }
 
 SEVERITY_ORDER = ["Critical", "High", "Medium", "Low", "Info"]
+_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE"}
+
+def _split_method_endpoint(method: Any = None, endpoint: Any = None) -> tuple[str, str]:
+    m = str(method or "").strip().upper()
+    ep = str(endpoint or "").strip()
+    parts = ep.split(None, 1)
+    if (not m or m not in _METHODS) and len(parts) == 2 and parts[0].upper() in _METHODS:
+        m = parts[0].upper()
+        ep = parts[1].strip()
+    if not m:
+        m = "GET"
+    return m, ep
 
 #================funtion _extract_status extract integer HTTP status from issue dict ##########
 def _extract_status(issue: dict) -> int | None:
@@ -75,13 +87,14 @@ class EnhancedReportGenerator:
         drop_http0 = kwargs.get("drop_http0", True)
         _issues = issues or []
         if drop_http0:
-            _issues = [i for i in _issues if (_extract_status(i) or -1) > 0]
+            # Keep High/Critical findings even when they have no HTTP response (status_code=0)
+            _issues = [i for i in _issues if (_extract_status(i) or -1) > 0
+                       or i.get('severity') in ('High', 'Critical')]
         self.issues = _issues
 
     #================funtion _format_request_html render HTTP request panel in HTML ##########
     def _format_request_html(self, issue: Dict[str, Any]) -> str:
-        method = issue.get("method", "GET").upper()
-        url = issue.get("endpoint", "-")
+        method, url = _split_method_endpoint(issue.get("method"), issue.get("endpoint") or issue.get("url") or "-")
                                                                                                   
         req_hdrs = issue.get("request_headers")
         headers = "\n".join(f"{k}: {v}" for k, v in _iter_headers(req_hdrs))
@@ -251,8 +264,7 @@ class EnhancedReportGenerator:
         out.append("\n        <div class=\"severity-section\">\n")
         out.append("            <h2 id=\"" + sev_class + "-section\"><span class=\"badge " + sev_class + "\">" + html.escape(severity) + "</span> Risk Findings (" + str(len(issues)) + ")</h2>\n")
         for idx, issue in enumerate(issues, 1):
-            method = str(issue.get("method", "GET")).upper()
-            url = issue.get("endpoint") or issue.get("url") or "-"
+            method, url = _split_method_endpoint(issue.get("method"), issue.get("endpoint") or issue.get("url") or "-")
             status = issue.get("status_code", "-")
             ts = issue.get("timestamp", self.timestamp)
             desc = issue.get("description", "No description provided")

@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 3.2 1-4-2026                                 #
+# version 4.0 26-04-2026                              #
 ########################################################                                             
 from __future__ import annotations
 import json
@@ -11,6 +11,7 @@ import random
 import re
 import threading
 import time
+from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -49,8 +50,8 @@ def _headers_to_list(hdrs):
 
 
 class MisconfigurationAuditorPro:
-    DEFAULT_CONCURRENCY = 12
-    DEFAULT_TIMEOUT = 8
+    DEFAULT_CONCURRENCY = 4
+    DEFAULT_TIMEOUT = 5
     DEFAULT_REQUESTS_PER_SECOND = 10
     RATE_LIMIT_AFTER_ERRORS = 10
     RANDOM_SLEEP_AFTER_REQUESTS = 50
@@ -111,11 +112,49 @@ class MisconfigurationAuditorPro:
         # Error suppressie attributen
         self._endpoint_error_counts = {}
         self._param_error_logged = set()
+        self._timeout_logged: set = set()
+
+    #================funtion _exception_response build response-like evidence for request exceptions ##########
+    def _exception_response(self, method: str, url: str, exc: Exception):
+        text = str(exc)
+
+        class _Cookies:
+            def get_dict(self):
+                return {}
+
+        return SimpleNamespace(
+            status_code=500,
+            headers={},
+            text=text,
+            content=text.encode("utf-8", errors="replace"),
+            cookies=_Cookies(),
+            raw=SimpleNamespace(headers={}),
+            request=SimpleNamespace(method=method, url=url, headers={}),
+        )
 
     #================funtion _tw logging wrapper ##########
     def _tw(self, message: str, level: str = "info") -> None:
         if self.show_progress:
-            tqdm.write(f"[{level.upper()}] {message}")
+            _R  = '\033[0m';  _DIM = '\033[2m'
+            _RED = '\033[91m'; _YEL = '\033[93m'; _CYN = '\033[96m'; _WHT = '\033[97m'
+            _icons  = {'error': _RED + '\u2716' + _R, 'warn': _YEL + '\u25b2' + _R, 'info': _CYN + '\u25c6' + _R, 'debug': _DIM + '\u00b7' + _R}
+            _labels = {'error': _RED + 'Error' + _R, 'warn': _YEL + 'Warn'  + _R, 'info': _CYN + 'Info'  + _R, 'debug': _DIM + 'Debug' + _R}
+            ic  = _icons.get(level, _icons['info'])
+            lb  = _labels.get(level, _labels['info'])
+            msg = message
+            # Condense noisy timeout messages: extract method+/path, show 'Timeout'
+            if 'timed out' in message.lower() or 'timeout' in message.lower():
+                _ep = re.search(r'((?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+/\S*)', message)
+                _mt = re.search(r'(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)', message)
+                if _ep:
+                    msg = f"{_ep.group(1)}  {_DIM}Timeout{_R}"
+                elif _mt:
+                    msg = f"{_mt.group(1)}  {_DIM}Timeout{_R}"
+                else:
+                    msg = f"{_DIM}Timeout{_R}"
+            elif len(msg) > 110:
+                msg = msg[:107] + '...'
+            tqdm.write(f"  {ic}  {lb}  {msg}")
         else:
             if level == "error":
                 self.logger.error(message)
@@ -354,15 +393,15 @@ class MisconfigurationAuditorPro:
                                                                                
     #================funtion _suppress_excessive_errors prevent error spam ##########
     def _suppress_excessive_errors(self, endpoint_method, endpoint_path):
-        """Suppress error logging after too many consecutive errors on same endpoint"""
+        """Suppress error logging after too many consecutive errors on same endpoint."""
         with self._lock:
             key = f"{endpoint_method} {endpoint_path}"
-            self._endpoint_error_counts[key] = self._endpoint_error_counts.get(key, 0) + 1
-            
-            # Als we meer dan 3 errors hebben op hetzelfde endpoint, log minder
-            if self._endpoint_error_counts[key] > 3:
-                return self._endpoint_error_counts[key] % 10 == 0  # Log elke 10e error
-            return True  # Log alle errors
+            count = self._endpoint_error_counts.get(key, 0)
+
+            # After a few repeated failures, only emit every 10th log line.
+            if count > 3:
+                return count % 10 == 0
+            return True
                                                                                          
     #================funtion _test_single_endpoint probe one endpoint and run analyzers ##########
     def _test_single_endpoint(self, ep: Endpoint, pbar: Optional[tqdm] = None) -> None:
@@ -391,10 +430,15 @@ class MisconfigurationAuditorPro:
 
             seq = []
             if method == "GET":
-                seq.append("HEAD")
-            if method not in ("HEAD", "OPTIONS"):
                 seq.append("OPTIONS")
-            seq.append(method)
+                seq.append("GET")
+            elif method in ("HEAD", "OPTIONS"):
+                seq.append(method)
+            else:
+                # API8 should stay passive on state-changing endpoints.
+                # Sending body-less POST/PUT/PATCH/DELETE requests mainly creates
+                # timeout noise on auth, upload, and workflow endpoints.
+                seq.append("OPTIONS")
             seen = set()
             seq = [m for m in seq if not (m in seen or seen.add(m))]
             with self._lock:
@@ -430,9 +474,28 @@ class MisconfigurationAuditorPro:
                     if self._suppress_excessive_errors(method, path):
                         error_msg = str(e)
                         if "500" in error_msg or "Internal Server Error" in error_msg:
+                            try:
+                                finding = self._build_finding(
+                                    ep,
+                                    f"<{m}>",
+                                    self._exception_response(m, full_url, e),
+                                    0.0,
+                                    "500 error on baseline/probe",
+                                    "Medium",
+                                )
+                                self._record_finding(finding)
+                            except Exception:
+                                pass
                             self._tw(f"{m} 500 error for {method} {path}", "warn")
                         else:
-                            self._tw(f"{m} failed for {method} {path}: {e}", "error")
+                            _tkey = f"{method} {path}"
+                            _is_timeout = 'timed out' in error_msg.lower() or 'timeout' in error_msg.lower()
+                            with self._lock:
+                                _already = _tkey in self._timeout_logged
+                                if _is_timeout:
+                                    self._timeout_logged.add(_tkey)
+                            if not (_is_timeout and _already):
+                                self._tw(f"{m} {path}: {e}", "error")
                     if self._error_count >= self.RATE_LIMIT_AFTER_ERRORS:
                         self._tw("Many errors, cooling down 1s", "warn")
                         time.sleep(1.0)
@@ -459,20 +522,26 @@ class MisconfigurationAuditorPro:
                             self._record_finding(f)
                     except Exception as ex:
                         self._tw(f"Analyzer {analyzer.__name__} on {m} {path}: {ex}", "debug")
-            if method not in ("HEAD", "OPTIONS"):
+            if method == "GET":
                 with self._lock:
                     if self._endpoint_error_counts.get(error_key, 0) >= 3:
                         if pbar:
                             pbar.update(1)
                         return
-                
-                probe_names = getattr(self, "PARAM_PROBE_NAMES", [
-                    "probe", "debug", "verbose", "pretty", "format", "fields",
-                    "sort", "expand", "include", "lang", "locale", "cache",
-                    "nocache", "trace", "test"
-                ])
+
+                documented_query_params = [
+                    str(p.get("name"))
+                    for p in (ep.get("parameters") or [])
+                    if isinstance(p, dict) and p.get("in") == "query" and p.get("name")
+                ]
+                probe_names = documented_query_params
                 probe_vals = getattr(self, "PARAM_PROBE_VALUES", ["1", "true", "*"])
-                
+
+                if not probe_names:
+                    if pbar:
+                        pbar.update(1)
+                    return
+
                 max_probes = 3 if self._error_count > 0 else len(probe_names)
                 
                 for i, name in enumerate(probe_names[:max_probes]):
@@ -620,6 +689,13 @@ class MisconfigurationAuditorPro:
             req_origin = ""
 
         method = getattr(getattr(resp, "request", None), "method", "GET").upper()
+        endpoint_method = str((ep or {}).get("method") or "GET").upper()
+
+        # Avoid duplicate CORS findings from synthetic probes.
+        if method == "HEAD":
+            return None
+        if method == "OPTIONS" and endpoint_method == "GET":
+            return None
 
         # Default severity
         sev = "Info"
@@ -694,7 +770,14 @@ class MisconfigurationAuditorPro:
             if not duplicate:
                 self._findings.append(finding)
                 if self.show_progress:
-                    tqdm.write(f"[ISSUE] {finding['severity']}: {finding['description']} @ {finding['endpoint']}")
+                    _R   = '\033[0m'
+                    _YEL = '\033[93m'; _CYN = '\033[96m'
+                    _SEV = {'critical': '\033[1m\033[91m', 'high': '\033[1m\033[93m',
+                            'medium': '\033[92m', 'low': '\033[96m', 'info': '\033[97m'}
+                    sev = finding['severity'].lower()
+                    sc  = _SEV.get(sev, '\033[97m')
+                    badge = f"{sc}{finding['severity'].upper():<8}{_R}"
+                    tqdm.write(f"  {_YEL}\u25c8{_R}  {badge}  {finding['description']}  {_CYN}@{_R}  {finding['endpoint']}")
 
     
     #================funtion _title_for compose display title for endpoint ##########

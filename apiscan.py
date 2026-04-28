@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0 License                 #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2026  #
-# version 3.2.2 1-4-2026                                 #
+# version 4.0 26-04-2026                              #
 ########################################################
 
 """APISCAN is a private and proprietary API security tool, developed independently for internal use and research purposes.
@@ -39,6 +39,20 @@ import requests
 import urllib3
 from tqdm import tqdm
 import math
+
+_METHODS = {'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS', 'TRACE'}
+
+def _split_method_endpoint(method: str | None, endpoint: str | None) -> tuple[str, str]:
+    m = str(method or '').strip().upper()
+    ep = str(endpoint or '').strip()
+    parts = ep.split(None, 1)
+    if (not m or m not in _METHODS) and len(parts) == 2 and parts[0].upper() in _METHODS:
+        m = parts[0].upper()
+        ep = parts[1].strip()
+    if not m:
+        m = 'GET'
+    return m, ep
+
 # ================= AI CLIENT (new preferred, v3 fallback) =================
 try:
     from ai_client import live_probe, analyze_endpoints_with_llm, save_ai_summary
@@ -69,7 +83,6 @@ except Exception:
     Fore = _Dummy()
     Style = _Dummy()
 from requests.adapters import HTTPAdapter
-from tqdm import tqdm
 try:
     from bola_audit import BOLAAuditor
     from broken_auth_audit import AuthAuditor
@@ -101,13 +114,11 @@ except Exception:
 OUT_DIR: Path | None = None
 DB = None
 manual_file_map = {'BOLA': 'bola', 'BrokenAuth': 'broken_auth', 'Property': 'property', 'Resource': 'resource', 'AdminAccess': 'admin_access', 'BusinessFlows': 'business_flows', 'SSRF': 'ssrf', 'Misconfig': 'misconfig', 'Inventory': 'inventory', 'UnsafeConsumption': 'unsafe_consumption'}
-OUT_DIR: Path | None = None
 MAX_THREADS = 20
 DUMMY_MODE = False
 _ID_MAP = {}
 MISSING_RE = _re.compile('(missing|require[sd])\\s+[\'\\"]?([A-Za-z0-9_]+)[\'\\"]?', _re.I)
 logger = logging.getLogger('apiscan')
-DUMMY_MODE = False
 
 class EvidenceDatabase:
 
@@ -133,10 +144,9 @@ class EvidenceDatabase:
         self.conn.commit()
 
     #================funtion record_endpoint record_endpoint =============
-    def record_endpoint(self, method: str, url: str, run_id: str | None=None, severity: str | None=None) -> None:
-        from datetime import datetime as _dt
+    def record_endpoint(self, method: str, url: str, run_id: str | None=None, severity: str | None=None, status: int | None=None, ms: int | None=None, ok: bool | None=None) -> None:
+        now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
         run_id = run_id or self.run_id or ''
-        now = _dt.utcnow().isoformat(timespec='seconds') + 'Z'
         sev = (severity or '').strip().lower()
         order = {'critical': 4, 'high': 3, 'medium': 2, 'low': 1, 'info': 0, '': -1, None: -1}
         cur = self.conn.cursor()
@@ -145,9 +155,15 @@ class EvidenceDatabase:
         if row:
             old = (row[0] or '').lower()
             keep = sev if order.get(sev, -1) > order.get(old, -1) else old
-            cur.execute('UPDATE endpoint SET last_seen=?, max_severity=? WHERE run_id=? AND method=? AND url=?', (now, keep or None, run_id, method, url))
+            cur.execute(
+                'UPDATE endpoint SET last_seen=?, max_severity=?, last_status=?, last_ms=? WHERE run_id=? AND method=? AND url=?',
+                (now, keep or None, status, ms, run_id, method, url)
+            )
         else:
-            cur.execute('INSERT INTO endpoint(run_id, method, url, first_seen, last_seen, max_severity) VALUES (?,?,?,?,?,?)', (run_id, method, url, now, now, sev or None))
+            cur.execute(
+                'INSERT INTO endpoint(run_id, method, url, first_seen, last_seen, max_severity, last_status, last_ms) VALUES (?,?,?,?,?,?,?,?)',
+                (run_id, method, url, now, now, sev or None, status, ms)
+            )
         self.conn.commit()
 
     #================funtion store_issues store_issues =============
@@ -162,7 +178,8 @@ class EvidenceDatabase:
             d = it if isinstance(it, dict) else it.to_dict() if hasattr(it, 'to_dict') else {'raw': repr(it)}
             method = str(d.get('method') or d.get('http_method') or d.get('verb') or '').upper()
             endpoint = d.get('endpoint') or d.get('url') or d.get('path') or ''
-            title = d.get('title') or d.get('description') or method + ' ' + endpoint
+            method, endpoint = _split_method_endpoint(method, endpoint)
+            title = d.get('title') or d.get('issue') or d.get('description') or method + ' ' + endpoint
             desc = d.get('description') or d.get('message') or ''
             sev = d.get('severity') or 'Info'
             status = d.get('status') or ''
@@ -382,10 +399,89 @@ def extract_endpoints_from_paths(spec):
 
 #================funtion styled_print styled_print =============
 def styled_print(message: str, status: str='info') -> None:
-    symbols = {'info': 'Info:', 'ok': 'OK:', 'warn': 'WARNING:', 'fail': 'FAIL:', 'run': '->', 'done': 'Done'}
-    colors = {'info': Fore.BLUE, 'ok': Fore.GREEN, 'warn': Fore.YELLOW, 'fail': Fore.RED, 'run': Fore.CYAN, 'done': Fore.GREEN}
-    reset = Style.RESET_ALL
-    print(f"{colors.get(status, '')}{symbols.get(status, '')} {message}{reset}")
+    icons   = {'info': '◆', 'ok': '✔', 'warn': '▲', 'fail': '✖', 'run': '▶', 'done': '●'}
+    labels  = {'info': 'Info', 'ok': 'OK', 'warn': 'WARN', 'fail': 'FAIL', 'run': '...', 'done': 'Done'}
+    colors  = {'info': Fore.CYAN, 'ok': Fore.GREEN, 'warn': Fore.YELLOW, 'fail': Fore.RED, 'run': Fore.CYAN, 'done': Fore.GREEN}
+    bright  = {'ok': True, 'done': True, 'fail': True}
+    R = Style.RESET_ALL
+    br = Style.BRIGHT if bright.get(status) else ''
+    ic = icons.get(status, '◆')
+    lb = labels.get(status, 'Info')
+    co = colors.get(status, Fore.CYAN)
+    print(f"  {br}{co}{ic}{R}  {Style.BRIGHT}{lb}:{R} {message}")
+
+
+#================funtion print_banner print_banner =============
+def print_banner() -> None:
+    """Print a styled APISCAN startup banner."""
+    try:
+        from version import __version__ as _v
+    except Exception:
+        _v = '4.0'
+    C = Style.BRIGHT + Fore.CYAN
+    G = Style.BRIGHT + Fore.GREEN
+    W = Style.BRIGHT + Fore.WHITE
+    M = Fore.MAGENTA
+    Y = Fore.YELLOW
+    R = Style.RESET_ALL
+    art = [
+        f" {G}█████╗ ██████╗ ██╗███████╗ ██████╗ █████╗ ███╗   ██╗{R}",
+        f"{G}██╔══██╗██╔══██╗██║██╔════╝██╔════╝██╔══██╗████╗  ██║{R}",
+        f"{G}███████║██████╔╝██║███████╗██║     ███████║██╔██╗ ██║{R}",
+        f"{G}██╔══██║██╔═══╝ ██║╚════██║██║     ██╔══██║██║╚██╗██║{R}",
+        f"{G}██║  ██║██║     ██║███████║╚██████╗██║  ██║██║ ╚████║{R}",
+        f"{G}╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═══╝{R}",
+    ]
+    sep = C + '═' * 62 + R
+    print()
+    print(sep)
+    for line in art:
+        print(f'  {line}')
+    print()
+    print(f'  {W}API Security Scanner{R}  {C}·{R}  {Y}OWASP API Top 10 (2023){R}  {C}·{R}  {C}v{_v}{R}')
+    print(f'  {M}Perry Mertens{R}  {C}·{R}  pamsniffer@gmail.com  {C}·{R}  {W}© 2026{R}')
+    print(sep)
+    print()
+
+#================funtion _scan_section _scan_section =============
+def _scan_section(num: int, title: str) -> None:
+    """Print a styled section divider for an API scan module."""
+    C = Style.BRIGHT + Fore.CYAN
+    W = Style.BRIGHT + Fore.WHITE
+    D = Fore.CYAN
+    R = Style.RESET_ALL
+    rule = D + '─' * 60 + R
+    tqdm.write(f'\n{rule}')
+    tqdm.write(f'  {C}▶{R}  {W}API{num}{R}  {Fore.CYAN}{title}{R}')
+    tqdm.write(rule)
+
+#================funtion _scan_issue _scan_issue =============
+def _scan_issue(sev: str, desc: str, ep: str) -> None:
+    """Print a styled finding line (thread-safe via tqdm.write)."""
+    _SEV = {
+        'critical': Style.BRIGHT + Fore.RED,
+        'high':     Style.BRIGHT + Fore.YELLOW,
+        'medium':   Fore.GREEN,
+        'low':      Fore.CYAN,
+        'info':     Fore.WHITE,
+    }
+    R = Style.RESET_ALL
+    sc = _SEV.get(sev.lower(), Fore.WHITE)
+    badge = f"{sc}{sev.upper():<8}{R}"
+    tqdm.write(f"  {Fore.YELLOW}◈{R}  {badge}  {desc}  {Fore.CYAN}@{R}  {ep}")
+
+#================funtion _scan_err _scan_err =============
+def _scan_err(label: str, err: object) -> None:
+    """Print a compact, readable error line (thread-safe via tqdm.write)."""
+    R  = Style.RESET_ALL
+    msg = str(err)
+    if 'timed out' in msg.lower() or 'timeout' in msg.lower():
+        msg = 'Timeout'
+    elif 'ConnectionError' in msg or 'Connection refused' in msg:
+        msg = 'Connection refused'
+    elif len(msg) > 90:
+        msg = msg[:87] + '...'
+    tqdm.write(f"  {Style.BRIGHT}{Fore.RED}✖{R}  {Fore.RED}{label}{R}  {Style.DIM}{msg}{R}")
 
 #================funtion normalize_url normalize_url =============
 def normalize_url(url: str) -> str:
@@ -469,7 +565,8 @@ def _filter_auth_issues_min(issues):
         except Exception:
             continue
         if code in {0, 400, 404, 405}:
-            continue
+            if it.get('severity') not in ('High', 'Critical'):
+                continue
         if 500 <= code < 600:
             continue
         body = it.get('response_body') or ''
@@ -521,24 +618,23 @@ def _filter_auth_issues_min(issues):
 def check_api_reachable(url: str, session: requests.Session, retries: int=3, delay: int=3) -> None:
     for attempt in range(1, retries + 1):
         try:
-            print('APISCAN by Perry Mertens pamsniffer@gmail.com (2025)')
-            print(f'Checking connection to {url} (attempt {attempt}/{retries})...')
+            styled_print(f'Connecting to {url}  (attempt {attempt}/{retries})', 'run')
             resp = session.get(url, timeout=5, verify=getattr(session, 'verify', True))
-            print(f'Response status code: {resp.status_code}')
-            if not resp.content:
-                print('Empty response body detected.')
             code = resp.status_code
+            if not resp.content:
+                styled_print('Empty response body from server', 'warn')
             if 200 <= code < 400 or code in (401, 403, 404, 405):
-                print(f'Connection successful to {url} (status: {code})')
+                styled_print(f'Reachable  {Style.BRIGHT}{Fore.WHITE}{url}{Style.RESET_ALL}  →  HTTP {code}', 'ok')
                 return
-            print(f'Unexpected response from server: {code}')
+            styled_print(f'Unexpected HTTP {code} from {url}', 'warn')
         except requests.exceptions.RequestException as e:
             logger.error(f'Attempt {attempt} failed: {e}')
+            styled_print(f'Connection attempt {attempt} failed: {e}', 'warn')
         if attempt < retries:
-            print(f'Retrying in {delay} seconds...')
+            styled_print(f'Retrying in {delay}s ...', 'info')
             time.sleep(delay)
         else:
-            print(f'ERROR: Cannot connect to {url} after {retries} attempts.')
+            styled_print(f'Cannot reach {url} after {retries} attempts — aborting', 'fail')
             sys.exit(1)
 
 #================funtion load_id_map load_id_map =============
@@ -575,10 +671,10 @@ def _apply_rewrites(full_url, rewrites):
         try:
             new_url = _re.sub(pat, rep, full_url)
             if new_url != full_url:
-                print(f'[rewrite] {pat!r} => {rep!r} :: {full_url} -> {new_url}')
+                logger.debug('[rewrite] %r => %r :: %s -> %s', pat, rep, full_url, new_url)
             full_url = new_url
         except _re.error as e:
-            print(f'[rewrite] invalid regex {pat!r}: {e}')
+            logger.warning('[rewrite] invalid regex %r: %s', pat, e)
     return full_url
 
 #================funtion _normalize_path_generic _normalize_path_generic =============
@@ -791,7 +887,7 @@ def plan_requests(spec, base_url, csv_path=None, rewrites=None, disable_sanitize
             else:
                 blen = len(body or '') if body is not None else 0
                 mode = 'raw'
-            print(f"[PLAN] {method} {url} ct={ctype or ''} len={blen} json={mode == 'json'}")
+            logger.debug('[PLAN] %s %s ct=%s len=%d json=%s', method, url, ctype or '', blen, mode == 'json')
             rows.append([method, url, ctype or '', blen, mode])
             count += 1
         used_universal = True
@@ -820,7 +916,7 @@ def plan_requests(spec, base_url, csv_path=None, rewrites=None, disable_sanitize
                     if ct and 'json' in str(ct).lower():
                         ct = 'application/json; charset=UTF-8'
                 blen = (len(json.dumps(body)) if isinstance(body, (dict, list)) else len(body or '')) if body is not None else 0
-                print(f'[PLAN] {m} {url} ct={ct} len={blen} json={as_json}')
+                logger.debug('[PLAN] %s %s ct=%s len=%d json=%s', m, url, ct, blen, as_json)
                 rows.append([m, url, ct or '', blen, 'json' if as_json else 'raw'])
                 count += 1
                 try:
@@ -833,9 +929,9 @@ def plan_requests(spec, base_url, csv_path=None, rewrites=None, disable_sanitize
             w = _csv.writer(f)
             w.writerow(['method', 'url', 'content_type', 'body_len', 'mode'])
             w.writerows(rows)
-        print(f'[PLAN] written: {csv_path} ({count} requests)')
+        logger.debug('[PLAN] written: %s (%d requests)', csv_path, count)
     except Exception as e:
-        print(f'[PLAN] CSV write failed: {e}')
+        logger.debug('[PLAN] CSV write failed: %s', e)
     return count
 
 #================funtion verify_plan verify_plan =============
@@ -868,7 +964,7 @@ def verify_plan(args, session, spec: dict, base_url: str, csv_path: str=None, re
             total += 1
             oks += 1 if ok else 0
             fails += 1 if not ok else 0
-            print(f"[VERIFY] {method} {url} -> {status} ({ms} ms){(' OK' if ok else ' FAIL')}")
+            logger.debug('[VERIFY] %s %s -> %d (%d ms)%s', method, url, status, ms, ' OK' if ok else ' FAIL')
             results.append([method, url, status, ms, 'OK' if ok else 'FAIL'])
             try:
                 if 'DB' in globals() and DB:
@@ -935,7 +1031,7 @@ def verify_plan(args, session, spec: dict, base_url: str, csv_path: str=None, re
                 total += 1
                 oks += 1 if ok else 0
                 fails += 1 if not ok else 0
-                print(f"[VERIFY] {m} {url} -> {status} ({ms} ms){(' OK' if ok else ' FAIL')}")
+                logger.debug('[VERIFY] %s %s -> %d (%d ms)%s', m, url, status, ms, ' OK' if ok else ' FAIL')
                 results.append([m, url, status, ms, 'OK' if ok else 'FAIL'])
                 try:
                     if 'DB' in globals() and DB:
@@ -947,9 +1043,9 @@ def verify_plan(args, session, spec: dict, base_url: str, csv_path: str=None, re
             w = _csv.writer(f)
             w.writerow(['method', 'url', 'status', 'ms', 'result'])
             w.writerows(results)
-        print(f'[VERIFY] written: {csv_path}  OK={oks} FAIL={fails} TOTAL={total}')
+        logger.debug('[VERIFY] written: %s  OK=%d FAIL=%d TOTAL=%d', csv_path, oks, fails, total)
     except Exception as e:
-        print(f'[VERIFY] CSV write failed: {e}')
+        logger.debug('[VERIFY] CSV write failed: %s', e)
     return (oks, fails, total)
 
 #================funtion main main =============
@@ -963,7 +1059,7 @@ def main() -> None:
     parser.add_argument('--plan-then-scan', action='store_true', help='First build full plan (CSV), then perform the scan')
     parser.add_argument('--verify-plan', action='store_true', help='After planning, actually send each planned request and expect success')
     parser.add_argument('--success-codes', default='200-299', help='Comma list of codes or ranges, e.g., 200-299,302')
-    parser.add_argument('--flow', choices=['none', 'token', 'client', 'basic', 'ntlm', 'auth'], default='none', help='Authentication flow: none, token (Bearer), client (OAuth2 Client Credentials), basic (Basic Auth), ntlm (Windows NTLM), auth (OAuth2 Authorization Code)')
+    parser.add_argument('--flow', choices=['none', 'token', 'client', 'basic', 'digest', 'ntlm', 'auth'], default='none', help='Authentication flow: none, token (Bearer), client (OAuth2 Client Credentials), basic (Basic Auth), digest (HTTP Digest), ntlm (Windows NTLM), auth (OAuth2 Authorization Code)')
     parser.add_argument('--token', help='Bearer token value (used with --flow token)')
     parser.add_argument('--basic-auth', help='Basic auth in the form user:password (used with --flow basic)')
     parser.add_argument('--apikey', help='API key value (sent in header specified by --apikey-header)')
@@ -990,6 +1086,7 @@ def main() -> None:
     parser.add_argument('--ids-file', help='JSON file mapping path parameter names to concrete values')
     parser.add_argument('--rewrite', action='append', default=[], help='Regex=>replacement rewrite applied to each URL (can be repeated)')
     parser.add_argument('--no-sanitize', action='store_true', help='Disable built-in URL normalization; only apply explicit --rewrite rules')
+    parser.add_argument('--api3-active', action='store_true', dest='api3_active', help='Enable active mass-assignment write tests for API3 (sends modified JSON to write endpoints)')
     parser.add_argument('--api11', action='store_true', help='Run AI-assisted OWASP Top 10 analysis')
     for i in range(1, 11):
         parser.add_argument(f'--api{i}', action='store_true', help=f'Run only API{i} audit')
@@ -997,11 +1094,22 @@ def main() -> None:
     group_nv.add_argument('--normalize-version', dest='normalize_version', action='store_true', help='Normalize version segments in URLs like /v2.00/ -> /v2.0/ during planning and verify.')
     group_nv.add_argument('--no-normalize-version', dest='normalize_version', action='store_false', help='Disable version normalization in URLs (default).')
     parser.set_defaults(normalize_version=False)
-    args = parser.parse_args()
+    # Normalize argument names to lowercase so --URL, --Token, --Swagger etc. all work
+    _argv = []
+    for _a in sys.argv[1:]:
+        if _a.startswith('--'):
+            _name, _, _val = _a[2:].partition('=')
+            _a = '--' + _name.lower() + ('=' + _val if _ else '')
+        elif _a.startswith('-') and len(_a) > 1 and not _a[1:].lstrip('-'):
+            _a = '-' + _a[1:].lower()
+        _argv.append(_a)
+    args = parser.parse_args(_argv)
     builtins.args = args
     if args.url and '://' not in args.url:
         args.url = 'http://' + args.url
     args.url = normalize_url(args.url)
+    clear_screen()
+    print_banner()
     if getattr(args, 'dummy', False):
         try:
             enable_dummy_mode(True)
@@ -1076,8 +1184,6 @@ def main() -> None:
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     except Exception:
         pass
-    except Exception:
-        pass
     if getattr(args, 'proxy', None):
         pr = args.proxy if '://' in args.proxy else f'http://{args.proxy}'
         sess.proxies.update({'http': pr, 'https': pr})
@@ -1087,7 +1193,11 @@ def main() -> None:
             print(Fore.MAGENTA + banner + Style.RESET_ALL)
         except Exception:
             print(banner)
-    adapter = HTTPAdapter(pool_connections=args.threads * 4, pool_maxsize=args.threads * 4, max_retries=3)
+    _retry = (
+        Retry(total=3, read=0, connect=1, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504], allowed_methods=False)
+        if Retry else 3
+    )
+    adapter = HTTPAdapter(pool_connections=args.threads * 4, pool_maxsize=args.threads * 4, max_retries=_retry)
     sess.mount('http://', adapter)
     sess.mount('https://', adapter)
     check_api_reachable(args.url, sess)
@@ -1102,13 +1212,11 @@ def main() -> None:
         logger.info(f'Loading Swagger from: {swagger_path}')
         styled_print(f'Loading validated Swagger file: {swagger_path}', 'info')
         spec = oas_load_spec(str(swagger_path), inject_base_url=args.url)
-        bola = BOLAAuditor(session=sess, base_url=args.url, swagger_spec=spec)
-        endpoints = bola.get_object_endpoints(spec) or []
+        _bola_workers = int(os.environ.get('APISCAN_BOLA_WORKERS', str(max(1, min(args.threads, MAX_THREADS)))))
+        # Single-pass endpoint extraction — avoid creating BOLAAuditor just for discovery;
+        # it will be created again (with caching) when the BOLA scan actually runs.
         uni_eps = _endpoints_from_universal(spec)
-        if uni_eps:
-            key = lambda d: (d.get('method', '').upper(), d.get('path', ''))
-            seen = {key(e) for e in endpoints}
-            endpoints.extend([e for e in uni_eps if key(e) not in seen])
+        endpoints = uni_eps[:]
         if not endpoints:
             print('[debug] No endpoints found by discovery; falling back to raw paths')
             endpoints = extract_endpoints_from_paths(spec)
@@ -1171,12 +1279,13 @@ def main() -> None:
     vulnerability_summary = {}
     
     if 1 in selected_apis:
-        tqdm.write(f'{Fore.CYAN}[API1] Starting BOLA (threads={args.threads}){Style.RESET_ALL}')
+        _bola_workers = int(os.environ.get('APISCAN_BOLA_WORKERS', str(max(1, min(args.threads, MAX_THREADS)))))
+        _scan_section(1, f'BOLA – Broken Object Level Authorization  (threads={_bola_workers})')
         logger.info('Running API1 - BOLA')
-        bola = BOLAAuditor(session=sess, base_url=args.url, swagger_spec=spec)
+        bola = BOLAAuditor(session=sess, base_url=args.url, swagger_spec=spec, show_subbars=(_bola_workers == 1))
         endpoints = bola.get_object_endpoints(spec) or []
         bola_results = []
-        max_workers = max(1, min(args.threads, MAX_THREADS))
+        max_workers = _bola_workers
         if max_workers == 1:
             for ep in tqdm(endpoints, desc='BOLA endpoints', unit='endpoint'):
                 try:
@@ -1184,7 +1293,7 @@ def main() -> None:
                     if res:
                         bola_results.extend(res)
                 except Exception as e:
-                    tqdm.write(f"{Fore.RED}[API1][ERR] {ep.get('method')} {ep.get('path')}: {e}{Style.RESET_ALL}")
+                    _scan_err(f"{ep.get('method')} {ep.get('path')}", e)
         else:
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
                 futures = {ex.submit(bola.test_endpoint, args.url, ep): ep for ep in endpoints}
@@ -1195,22 +1304,22 @@ def main() -> None:
                         if res:
                             bola_results.extend(res)
                     except Exception as e:
-                        tqdm.write(f"{Fore.RED}[API1][ERR] {ep.get('method')} {ep.get('path')}: {e}{Style.RESET_ALL}")
+                        _scan_err(f"{ep.get('method')} {ep.get('path')}", e)
         bola.issues = [r.to_dict() for r in bola_results if getattr(r, 'status_code', 0) != 0]
         try:
             bola.generate_report()
         except Exception as e:
-            tqdm.write(f'{Fore.RED}[API1][ERR] report generation failed: {e}{Style.RESET_ALL}')
-        found = sum((1 for r in bola_results if getattr(r, 'is_vulnerable', False)))
+            _scan_err('API1 report generation', e)
+        found = len(bola.issues)
         vulnerability_summary['BOLA'] = found
-        msg = f'{Fore.GREEN}API1 complete -  vulnerabilities found{Style.RESET_ALL}' if found == 0 else f'{Fore.YELLOW}API1 complete -vulnerabilities found{Style.RESET_ALL}' if found < 5 else f'{Fore.RED}API1 complete - vulnerabilities found{Style.RESET_ALL}'
+        msg = f'{Fore.GREEN}API1 complete - {found} vulnerabilities found{Style.RESET_ALL}' if found == 0 else f'{Fore.YELLOW}API1 complete - {found} vulnerabilities found{Style.RESET_ALL}' if found < 5 else f'{Fore.RED}API1 complete - {found} vulnerabilities found{Style.RESET_ALL}'
         save_html_report(bola.issues, 'BOLA', args.url, output_dir)
         if db is not None:
             db.store_issues('BOLA', bola.issues, base_url=args.url)
         styled_print(msg, 'done')
     
     if 2 in selected_apis:
-        tqdm.write(f'{Fore.CYAN}API2 - Broken Authentication{Style.RESET_ALL}')
+        _scan_section(2, 'Broken Authentication')
         logger.info('Running API2 - Broken Authentication')
         norm_eps = []
         for ep in endpoints:
@@ -1227,7 +1336,7 @@ def main() -> None:
             desc = issue.get('description', 'Unknown')
             ep = issue.get('endpoint', issue.get('url', ''))
             sev = issue.get('severity', 'Info')
-            tqdm.write(f'-> Auth issue [{sev}]: {desc} @ {ep}')
+            _scan_issue(sev, desc, ep)
         vulnerability_summary['Authentication'] = len(auth_issues)
         save_html_report(auth_issues, 'BrokenAuth', args.url, output_dir)
         if db is not None:
@@ -1235,16 +1344,19 @@ def main() -> None:
         styled_print(f'API2 complete - {len(auth_issues)} issues', 'done')
     
     if 3 in selected_apis:
-        tqdm.write(f'{Fore.CYAN}API3 - Property-level Authorization{Style.RESET_ALL}')
+        _scan_section(3, 'Object Property Level Authorization')
         logger.info('Running API3 - Property-level Authorization')
         pa = ObjectPropertyAuditor(
             base_url=args.url,
             session=sess,
             show_progress=True,
+            timeout=5.0,
+            active_mode=getattr(args, 'api3_active', False),
+            active_ok=getattr(args, 'api3_active', False),
         )
         prop_issues = pa.test_object_properties(endpoints)
         for issue in prop_issues:
-            tqdm.write(f"-> Property issue: {issue.get('description', 'Unknown')} @ {issue.get('endpoint', 'Unknown')}")
+            _scan_issue(issue.get('severity', 'info'), issue.get('description', 'Unknown'), issue.get('endpoint', 'Unknown'))
         vulnerability_summary['Property-Level Auth'] = len(prop_issues)
         save_html_report(prop_issues, 'Property', args.url, output_dir)
         if db is not None:
@@ -1252,7 +1364,7 @@ def main() -> None:
         styled_print(f'API3 complete - {len(prop_issues)} issues', 'done')
     
     if 4 in selected_apis:
-        tqdm.write(f'{Fore.CYAN}API4 - Resource Consumption{Style.RESET_ALL}')
+        _scan_section(4, 'Unrestricted Resource Consumption')
         logger.info('Running API4 - Resource Consumption')
         rc = ResourceAuditor(session=sess, base_url=args.url, swagger_spec=spec, show_progress=True)
         res_issues = rc.test_resource_consumption()
@@ -1263,12 +1375,12 @@ def main() -> None:
         styled_print(f'API4 complete - {len(res_issues)} issues', 'done')
     
     if 5 in selected_apis:
-        tqdm.write(f'{Fore.CYAN}API5 - Function-level Authorization{Style.RESET_ALL}')
+        _scan_section(5, 'Function Level Authorization')
         logger.info('Running API5 - Function-level Authorization')
         za = AuthorizationAuditor(session=sess, base_url=args.url, spec=spec, flow=getattr(args, 'flow', 'none'), logger=logger)
         authz_issues = za.test_authorization(show_progress=True)
         for issue in authz_issues:
-            tqdm.write(f"-> Authorization issue: {issue.get('description', 'Unknown')} @ {issue.get('endpoint', 'Unknown')}")
+            _scan_issue(issue.get('severity', 'info'), issue.get('description', 'Unknown'), issue.get('endpoint', 'Unknown'))
         vulnerability_summary['Admin Access'] = len(authz_issues)
         save_html_report(authz_issues, 'AdminAccess', args.url, output_dir)
         if db is not None:
@@ -1276,10 +1388,26 @@ def main() -> None:
         styled_print(f'API5 complete - {len(authz_issues)} issues', 'done')
     
     if 6 in selected_apis:
-        print('API6 - Sensitive Business Flows')
+        _scan_section(6, 'Unrestricted Access to Sensitive Business Flows')
         logger.info('Running API6 - Sensitive Business Flows')
         bf = BusinessFlowAuditor(session=sess, base_url=args.url, swagger_spec=spec, flow=getattr(args, 'flow', 'none'))
-        business_eps = [{'name': (ep.get('operationId') or f"{ep['method']} {ep['path']}").replace(' ', '_'), 'url': urljoin(args.url.rstrip('/') + '/', ep['path'].lstrip('/')), 'method': ep['method'], 'body': {}} for ep in endpoints if ep['method'] in {'POST', 'PUT', 'PATCH'}]
+        business_eps = []
+        for ep in [e for e in endpoints if e['method'] in {'POST', 'PUT', 'PATCH'}]:
+            raw_op = ep.get('raw') or {}
+            body = {}
+            rb = raw_op.get('requestBody') or {}
+            content = rb.get('content', {})
+            if 'application/json' in content:
+                ex = content['application/json'].get('example')
+                if isinstance(ex, dict):
+                    body = ex
+            business_eps.append({
+                'name': (ep.get('operationId') or f"{ep['method']} {ep['path']}").replace(' ', '_'),
+                'url': urljoin(args.url.rstrip('/') + '/', ep['path'].lstrip('/')),
+                'path': ep['path'],
+                'method': ep['method'],
+                'body': body,
+            })
         biz_issues = bf.test_business_flows(business_eps)
         vulnerability_summary['Business Flows'] = len(biz_issues)
         save_html_report(biz_issues, 'BusinessFlows', args.url, output_dir)
@@ -1288,7 +1416,7 @@ def main() -> None:
         styled_print(f'API6 complete - {len(biz_issues)} issues', 'done')
     
     if 7 in selected_apis:
-        tqdm.write(f'{Fore.CYAN}API7 - SSRF{Style.RESET_ALL}')
+        _scan_section(7, 'Server Side Request Forgery')
         logger.info('Running API7 - SSRF')
         ss_eps = SSRFAuditor.endpoints_from_swagger(args.swagger, default_base=args.url)
         if ss_eps:
@@ -1304,7 +1432,7 @@ def main() -> None:
             vulnerability_summary['SSRF'] = 0
     
     if 8 in selected_apis:
-        tqdm.write(f'{Fore.CYAN}API8 - Security Misconfiguration{Style.RESET_ALL}')
+        _scan_section(8, 'Security Misconfiguration')
         logger.info('Running API8 - Security Misconfiguration')
         misconf_eps = MisconfigurationAuditor.endpoints_from_swagger(args.swagger)
         if misconf_eps:
@@ -1320,7 +1448,7 @@ def main() -> None:
             vulnerability_summary['Misconfiguration'] = 0
     
     if 9 in selected_apis:
-        print('API9 - Improper Inventory Management')
+        _scan_section(9, 'Improper Inventory Management')
         logger.info('Running API9 - Improper Inventory Management')
         inv_eps = InventoryAuditor.endpoints_from_swagger(args.swagger) or []
         if not inv_eps and spec:
@@ -1334,12 +1462,9 @@ def main() -> None:
         styled_print(f'API9 complete - {len(inv_issues)} issues', 'done')
    
     if 10 in selected_apis:
-        print('API10 - Safe Consumption of 3rd-Party APIs')
+        _scan_section(10, 'Unsafe Consumption of APIs')
         logger.info('Running API10 - Safe Consumption')
         safe_eps = SafeConsumptionAuditor.endpoints_from_swagger(args.swagger)
-        print(f'[DEBUG] Parsed {len(safe_eps)} endpoints from swagger')
-        for e in safe_eps[:5]:
-            print(' ', e)
         if db is not None:
             from urllib.parse import urljoin as _uij
             try:

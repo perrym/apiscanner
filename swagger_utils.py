@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 3.2 1-4-2026                                  #
+# version 4.0 26-04-2026                              #
 ########################################################                                         
 from __future__ import annotations
 from typing import Any, Optional, Dict, List
@@ -93,6 +93,14 @@ class OpenAPIRequestBuilder:
                     self.value_cache[cache_key] = industry_value
                 return industry_value
                                    
+        # Use example/default from schema for more realistic values
+        for key in ("example", "default", "x-example"):
+            v = schema.get(key)
+            if v is not None:
+                if self.config.enable_caching:
+                    self.value_cache[cache_key] = v
+                return v
+
         combinator_value = self._handle_combinators(field_name, schema)
         if combinator_value is not None:
             if self.config.enable_caching:
@@ -107,7 +115,7 @@ class OpenAPIRequestBuilder:
         value = self._type_based_value(field_name, schema)
         if self.config.enable_caching:
             self.value_cache[cache_key] = value
-        print(f"[DUMMY] {field_name} -> {value}")
+        logger.debug("[DUMMY] %s -> %r", field_name, value)
         return value
           
                                                                   
@@ -204,15 +212,30 @@ class OpenAPIRequestBuilder:
         if fmt in ("date-time", "datetime"):
             return datetime.datetime.now(datetime.timezone.utc).isoformat()
             
-        if fmt == "binary":
+        if fmt == "binary" or fmt == "byte":
             return secrets.token_urlsafe(16)
-            
+
+        if fmt in ("uri", "url"):
+            return "https://example.com/resource"
+
+        if fmt == "hostname":
+            return "example.com"
+
+        if fmt == "ipv4":
+            return f"{random.randint(1,254)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}"
+
+        if fmt == "ipv6":
+            return "2001:db8::1"
+
+        if fmt == "password":
+            return secrets.token_urlsafe(16)
+
         if fmt == "email" or "email" in field_name.lower():
             return f"{self._random_string(8)}@example.com"
-            
+
         if "phone" in field_name.lower() or "tel" in field_name.lower():
             return self._generate_phone_number()
-                                                
+
         return self._heuristic_based_value(field_name, schema)
 
     # ----------------------- Funtion _generate_object ----------------------------#
@@ -267,7 +290,97 @@ class OpenAPIRequestBuilder:
             
         if "zip" in name or "postal" in name:
             return self._generate_postal_code()
-                                   
+
+        if any(k in name for k in ("username", "user_name", "login", "handle", "nickname")):
+            return f"user_{self._random_string(6)}"
+
+        if "firstname" in name or "first_name" in name:
+            return "John"
+
+        if "lastname" in name or "last_name" in name or "surname" in name:
+            return "Doe"
+
+        if name in ("name", "fullname", "full_name", "display_name", "displayname"):
+            return "John Doe"
+
+        if name in ("title", "label", "subject"):
+            return "Sample Title"
+
+        if any(k in name for k in ("description", "desc", "notes", "comment", "message", "text", "content", "body", "detail")):
+            return "Sample description text"
+
+        if name in ("status", "state"):
+            return "active"
+
+        if name in ("type", "category", "kind"):
+            return "default"
+
+        if any(k in name for k in ("role", "group", "permission", "scope")):
+            return "user"
+
+        if any(k in name for k in ("url", "uri", "link", "href", "endpoint", "callback")):
+            return "https://example.com"
+
+        if any(k in name for k in ("access_token", "refresh_token", "id_token", "bearer")):
+            return secrets.token_urlsafe(32)
+
+        if "token" in name and name not in ("access_token", "refresh_token"):
+            return secrets.token_urlsafe(24)
+
+        if any(k in name for k in ("api_key", "apikey", "x-api-key")):
+            return secrets.token_hex(16)
+
+        if any(k in name for k in ("password", "passwd", "passphrase")):
+            return "P@ssw0rd!" + self._random_string(4)
+
+        if "secret" in name:
+            return secrets.token_urlsafe(20)
+
+        if name in ("limit", "per_page", "page_size", "pagesize", "size"):
+            return 10
+
+        if name in ("offset", "skip"):
+            return 0
+
+        if name in ("page", "pagenumber", "page_number"):
+            return 1
+
+        if any(k in name for k in ("count", "total", "num")):
+            return random.randint(1, 100)
+
+        if "rating" in name or "score" in name or "rank" in name:
+            return round(random.uniform(1.0, 5.0), 1)
+
+        if "color" in name or "colour" in name:
+            return "#" + secrets.token_hex(3)
+
+        if "country" in name:
+            return random.choice(["US", "NL", "DE", "GB", "FR"])
+
+        if "city" in name:
+            return random.choice(["Amsterdam", "New York", "Berlin", "London", "Paris"])
+
+        if "street" in name or ("address" in name and "email" not in name):
+            return f"{random.randint(1, 999)} Main Street"
+
+        if "version" in name:
+            return "1.0.0"
+
+        if name in ("ip", "ipaddress", "ip_address", "host", "hostname", "server"):
+            return f"{random.randint(1,254)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}"
+
+        if any(k in name for k in ("tag", "label", "keyword")):
+            return self._random_string(6)
+
+        if name in ("sort", "order", "sort_by", "order_by"):
+            return "id"
+
+        if name in ("direction", "sort_direction", "order_direction"):
+            return "asc"
+
+        if name in ("format", "output_format"):
+            return "json"
+
         max_len = schema.get("maxLength", self.config.default_string_length)
         return self._random_string(min(max_len, 50))
 
@@ -396,11 +509,22 @@ class OpenAPIRequestBuilder:
         headers: Dict[str, str] = {}
         
         for p in operation.get("parameters", []):
-            param_schema = p.get("schema", {})
+            if "$ref" in p:
+                p = self._resolve_ref(p) or {}
+            if not p.get("name"):
+                continue
+            param_schema = self._resolve_ref(p.get("schema") or {})
+            # prefer example/default from parameter directly
+            if p.get("example") is not None:
+                val = p["example"]
+            elif (p.get("schema") or {}).get("example") is not None:
+                val = p["schema"]["example"]
+            else:
+                val = self.generate_value(p["name"], param_schema)
             if p.get("in") == "query":
-                params[p["name"]] = self.generate_value(p["name"], param_schema)
+                params[p["name"]] = val
             elif p.get("in") == "header":
-                headers[p["name"]] = str(self.generate_value(p["name"], param_schema))
+                headers[p["name"]] = str(val)
         full_url = self.fill_url_placeholders(base_url, path)
         body = None
         content_type = "application/json"

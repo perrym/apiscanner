@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 3.2.2 1-4-2026                                 #
+# version 4.0 26-04-2026                              #
 ########################################################
 from __future__ import annotations
 
@@ -184,7 +184,7 @@ class SSRFAuditor:
         self._issues: List[Dict[str, Any]] = []
         self._tested_payloads: set[Tuple[str, str, str, str, str, str]] = set()
 
-    #================funtion _expand_base_urls expand URL into http+https if scheme missing ##########
+    #================funtion _expand_base_urls expand URL into http+https only if scheme missing ##########
     @staticmethod
     def _expand_base_urls(base_url: str) -> List[str]:
         b = (base_url or "").strip()
@@ -201,14 +201,9 @@ class SSRFAuditor:
         if scheme not in {"http", "https"}:
             return [normalized]
 
-        alternate_scheme = "https" if scheme == "http" else "http"
-        alternate = parsed._replace(scheme=alternate_scheme).geturl().rstrip("/")
-
-        expanded: List[str] = []
-        for candidate in (normalized, alternate):
-            if candidate and candidate not in expanded:
-                expanded.append(candidate)
-        return expanded
+        # Respect an explicitly provided scheme. Only expand to both when the
+        # caller omitted the scheme entirely.
+        return [normalized]
 
     @staticmethod
     #================funtion endpoints_from_swagger parse Swagger/OpenAPI to endpoint list ##########
@@ -247,11 +242,36 @@ class SSRFAuditor:
         return out
 
     #================funtion _tw tqdm-safe write helper ##########
-    def _tw(self, msg: str) -> None:
+    def _tw(self, msg: str, level: str = "info") -> None:
+        _R  = '\033[0m';  _DIM = '\033[2m'
+        _RED = '\033[91m'; _YEL = '\033[93m'; _CYN = '\033[96m'
+        _icons  = {'error': _RED+'\u2716'+_R, 'warn': _YEL+'\u25b2'+_R,
+                   'info':  _CYN+'\u25c6'+_R, 'debug': _DIM+'\u00b7'+_R,
+                   'skip':  _DIM+'\u2014'+_R,  'run':  _CYN+'\u25b6'+_R}
+        _labels = {'error': _RED+'Error'+_R, 'warn': _YEL+'Warn'+_R,
+                   'info':  _CYN+'Info'+_R,  'debug': _DIM+'Debug'+_R,
+                   'skip':  _DIM+'Skip'+_R,   'run':  _CYN+'Test'+_R}
+        ic = _icons.get(level, _icons['info'])
+        lb = _labels.get(level, _labels['info'])
+        # Condense timeout noise
+        _msg = msg
+        if 'timed out' in msg.lower() or 'timeout' in msg.lower():
+            import re as _re
+            _ep = _re.search(r'((?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+/\S*)', msg)
+            _mt = _re.search(r'(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)', msg)
+            if _ep:
+                _msg = _ep.group(1) + '  \033[2mTimeout\033[0m'
+            elif _mt:
+                _msg = _mt.group(1) + '  \033[2mTimeout\033[0m'
+            else:
+                _msg = '\033[2mTimeout\033[0m'
+        elif len(msg) > 110:
+            _msg = msg[:107] + '...'
+        text = f"  {ic}  {lb}  {_msg}"
         if self.show_progress:
-            tqdm.write(msg)
+            tqdm.write(text)
         else:
-            print(msg)
+            print(text)
 
     #================funtion _pace simple rate limiting between requests ##########
     def _pace(self) -> None:
@@ -356,11 +376,11 @@ class SSRFAuditor:
         host = (urlparse(url_base).hostname or "").lower()
 
         if not self.CONFIG.test_localhost and host in {"127.0.0.1", "localhost", "::1"}:
-            self._tw(f"[ABORT] Localhost target ({host}) - skipping endpoint {method} {url_base}")
+            self._tw(f"Localhost target — skipping {method} {url_base}", "skip")
             return
 
         if self.show_progress:
-            self._tw(f"-> Testing {method} {url_base}")
+            self._tw(f"{method} {url_base}", "run")
 
         ep["_baseline"] = self._baseline_latency(url_base, method)
 
@@ -404,11 +424,11 @@ class SSRFAuditor:
 
         loopback_hosts = {"localhost", "127.0.0.1", "::1"}
         if any(lp in payload for lp in loopback_hosts):
-            self._tw(f"[WARN] Payload targets localhost: {payload}")
+            self._tw(f"Payload targets localhost: {payload}", "warn")
 
         host = (urlparse(base_url).hostname or "").lower()
         if not self.CONFIG.test_localhost and host in loopback_hosts:
-            self._tw(f"[SKIP] Base URL is localhost; skip param={param}")
+            self._tw(f"Base URL is localhost; skipping param={param}", "skip")
             return
 
         qs_url = f"{base_url}?{param}={payload}"
@@ -600,9 +620,11 @@ class SSRFAuditor:
             key = (issue["endpoint"], issue["parameter"], issue["payload"], issue["description"])
             if not any((i["endpoint"], i["parameter"], i["payload"], i["description"]) == key for i in self._issues):
                 if self.show_progress:
+                    _R = '\033[0m'; _YEL = '\033[93m'; _CYN = '\033[96m'; _BR = '\033[1m\033[91m'
                     tqdm.write(
-                        f"[!] SSRF finding: {issue['description']} at {issue['endpoint']} "
-                        f"(param: {issue['parameter']}, confidence: {confidence})"
+                        f"  {_YEL}\u25c8{_R}  {_BR}SSRF{_R}  {issue['description']}  "
+                        f"{_CYN}@{_R}  {issue['endpoint']}  "
+                        f"\033[2m(param: {issue['parameter']}, confidence: {confidence})\033[0m"
                     )
                 self._issues.append(issue)
 

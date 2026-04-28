@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 3.2 1-4-2026                                  #
+# version 4.0 26-04-2026                              #
 ########################################################
 from __future__ import annotations
 
@@ -133,7 +133,7 @@ class ObjectPropertyAuditor:
         base_url: str,
         session: requests.Session,
         show_progress: bool = True,
-        timeout: float = 10.0,
+        timeout: float = 5.0,
         max_body: int = 4096,
         active_mode: bool = False,
         active_ok: bool = False,
@@ -386,6 +386,13 @@ class ObjectPropertyAuditor:
                                 keys = _flatten_keys(data)
                                 self._check_sensitive_fields(path, method, url, resp)
                                 self._check_field_expansion(path, method, url, keys)
+                else:
+                    # For write endpoints: do a GET on the same URL to inspect response fields
+                    get_resp = self._probe('GET', url)
+                    if get_resp is not None and get_resp.status_code not in (401, 403, 404, 405) and (
+                        200 <= get_resp.status_code < 500
+                    ):
+                        self._check_sensitive_fields(path, 'GET', url, get_resp)
 
                 if self.active_mode:
                     self._active_mass_assignment(path, url)

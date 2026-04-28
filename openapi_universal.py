@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2025  #
-# version 3.2 1-4-2026                                 #
+# version 4.0 26-04-2026                              #
 ########################################################                                                    
 from __future__ import annotations
 from dataclasses import dataclass
@@ -365,15 +365,37 @@ def load_spec(source, inject_base_url: str | None = None) -> dict:
         spec = deepcopy(source)
     else:
         path = str(source)
-        text = open(path, "r", encoding="utf-8").read()
+        ext = os.path.splitext(path)[1].lower()
+        # Try orjson first (3-5x faster), fall back to stdlib json
         try:
-            spec = json.loads(text)
-        except json.JSONDecodeError:
+            import orjson
+            _json_loads = lambda data: orjson.loads(data)
+            _json_load = lambda f: orjson.loads(f.read())
+        except ImportError:
+            _json_loads = json.loads
+            _json_load = json.load
+        if ext in (".yaml", ".yml"):
             try:
-                import yaml 
-                spec = yaml.safe_load(text)  
+                import yaml
+                with open(path, "r", encoding="utf-8") as f:
+                    spec = yaml.safe_load(f)
             except Exception as e:
-                raise ValueError(f"Spec parse failed (not JSON/YAML): {e}") from e
+                raise ValueError(f"Spec parse failed (YAML): {e}") from e
+        else:
+            # JSON path (also handles .json and unknown extensions)
+            try:
+                with open(path, "rb") as f:
+                    spec = _json_load(f)
+            except (json.JSONDecodeError, ValueError):
+                if ext == ".json":
+                    raise ValueError(f"Spec parse failed: invalid JSON in {path}")
+                # Unknown extension — try YAML fallback
+                try:
+                    import yaml
+                    with open(path, "r", encoding="utf-8") as f:
+                        spec = yaml.safe_load(f)
+                except Exception as e:
+                    raise ValueError(f"Spec parse failed (not JSON/YAML): {e}") from e
         if not isinstance(spec, dict):
             raise ValueError("Spec content must be a JSON/YAML object.")
 

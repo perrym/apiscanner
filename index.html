@@ -4,13 +4,13 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta content="VvYq2k5BFp5dpIL6JpQhoe90sWEXZTEBbaynlEKCWRE" name="google-site-verification">
-  <meta name="description" content="APISCAN v5.0.0 OWASP API Security Scanner by Perry Mertens" />
-  <meta property="og:title" content="APISCAN v5.0.0 OWASP API Security Scanner by Perry Mertens" />
+  <meta name="description" content="APISCAN v5.0.1 OWASP API Security Scanner by Perry Mertens" />
+  <meta property="og:title" content="APISCAN v5.0.1 OWASP API Security Scanner by Perry Mertens" />
   <meta property="og:description" content="Production-ready OWASP API Security Top 10 scanner with auto form-login, crawl validation, deep scanning, and rich HTML reporting." />
   <meta property="og:type" content="website" />
   <meta property="og:image" content="./apiscan_logo.jpg" />
   <meta name="theme-color" content="#0ea5e9" />
-  <title>APISCAN v5.0.0 — OWASP API Security Scanner</title>
+  <title>APISCAN v5.0.1 — OWASP API Security Scanner</title>
   <style>
     :root {
       --bg:      #0d1117;
@@ -251,7 +251,7 @@
       <div class="sidebar-logo-icon">A</div>
       <div>
         <div class="sidebar-logo-text">APISCAN</div>
-        <div class="sidebar-logo-sub">OWASP API Scanner v5.0.0</div>
+        <div class="sidebar-logo-sub">OWASP API Scanner v5.0.1</div>
       </div>
     </div>
     <div class="sidebar-nav">
@@ -290,7 +290,7 @@
     <div class="page-banner">
       <div>
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;">
-          <span class="pill accent">v5.0.0</span>
+          <span class="pill accent">v5.0.1</span>
           <span class="pill">AI-aware · OWASP Top 10</span>
         </div>
         <h1>APISCAN — OWASP API Security Scanner</h1>
@@ -353,7 +353,7 @@
     </section>
 
     <section id="whatsnew">
-      <h2>What's New in v5.0.0</h2>
+      <h2>What's New in v5.0.1</h2>
       <div class="grid-auto">
         <article class="card">
           <h3>Auto Form-Login</h3>
@@ -384,6 +384,14 @@
         <article class="card">
           <h3>Real-World Attack Patterns</h3>
           <p>Detects real-world threat actor TTPs: <strong>ShinyHunters</strong> unauthenticated data exposure (UNC6040), <strong>Salesforce</strong> enumeration &amp; Data Loader bulk exfiltration, plus many more attack patterns.</p>
+        </article>
+        <article class="card">
+          <h3>Chain Mode <code>--chain-mode</code></h3>
+          <p>Automatic escalation of BOLA findings: leaked tokens, email addresses, user IDs, and roles are extracted from BOLA responses and automatically re-injected into other endpoints from the same Swagger spec.</p>
+          <p><strong>How it works:</strong> BOLA findings with <code>cross_user=True</code> or <code>sensitive_hit=True</code> are used to generate <em>chained requests</em>. Leaked data (JWT tokens, API keys, user IDs, roles) is recognized via regex patterns and reused in parameters of other endpoints. Detects privilege escalations, horizontal/vertical access leaks, and reports them in <code>api_chain_escalation_report.html</code>.</p>
+          <pre><code>python apiscan.py --url https://api.example.com \
+  --swagger openapi.json --flow token --token "&lt;JWT&gt;" \
+  --chain-mode</code></pre>
         </article>
       </div>
     </section>
@@ -464,10 +472,10 @@ python apiscan.py --url http://127.0.0.1:8888 \
   --login-password "Password123"
 
 # Juice Shop
-python apiscan.py --url http://192.168.168.132:3000 \
+python apiscan.py --url http://10.1.1.1:3000 \
   --crawl --flow form \
-  --login-username aa@aa.de \
-  --login-password "Banaan@+565"</code></pre>
+  --login-username jaa@sample.de \
+  --login-password "sample@$AS"</code></pre>
         </article>
       </div>
     </section>
@@ -615,6 +623,7 @@ python test_env.py</code></pre>
             <tr><td class="opt">--plan-then-scan</td><td class="desc">First build full plan (CSV), then perform the scan</td></tr>
             <tr><td class="opt">--verify-plan</td><td class="desc">After planning, send each planned request and expect success</td></tr>
             <tr><td class="opt">--success-codes</td><td class="desc">Comma list of codes or ranges, e.g. 200-299,302 (default: 200-299)</td></tr>
+            <tr><td class="opt">--chain-mode</td><td class="desc">Auto-escalate BOLA findings: re-inject leaked data (tokens, emails, user IDs, roles) into other endpoints</td></tr>
           </table>
         </div>
 

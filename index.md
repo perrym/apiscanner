@@ -1,5 +1,5 @@
 ---
-title: APISCAN v5.0.0 – Production-Ready OWASP API Security Scanner by Perry Mertens (AGPL-v3.0)
+title: APISCAN v5.0.1 – Production-Ready OWASP API Security Scanner by Perry Mertens (AGPL-v3.0)
 description: Free and open-source OWASP API Security Top 10 scanner with auto form-login, crawl validation, deep scanning, GUI, and rich HTML reporting.
 ---
 
@@ -14,7 +14,7 @@ It understands **OpenAPI/Swagger**, supports **multiple authentication flows**, 
 
 This page is the documentation corresponding to the v5.0.0 GitHub Pages landing (`index.html`).
 
-![APISCAN v5.0.0](./APISCAN-mainmenu%20v5.0.0.jpg)
+![APISCAN v5.0.1](./APISCAN-mainmenu%20v5.0.0.jpg)
 
 ---
 
@@ -28,7 +28,7 @@ Use APISCAN only on systems and APIs for which you have explicit authorization.
 
 ---
 
-## What's new in v5.0.0
+## What's new in v5.0.1
 
 v5.0.0 is the first production-ready release — tested on Juice Shop and crAPI.
 
@@ -52,6 +52,10 @@ v5.0.0 is the first production-ready release — tested on Juice Shop and crAPI.
 
 - **Stability & Crash Fixes**
   Session retry fix for 500 responses, dedup fix for dict payloads, HTML response skip in form detection, error spam suppression, circular import resolution.
+
+- **Chain Mode --chain-mode**
+Automatic escalation of BOLA findings: leaked tokens, email addresses, user IDs, and roles are extracted from BOLA responses and automatically re-injected into other endpoints from the same Swagger spec.
+How it works: BOLA findings with cross_user=True or sensitive_hit=True are used to generate chained requests. Leaked data (JWT tokens, API keys, user IDs, roles) is recognized via regex patterns and reused in parameters of other endpoints. Detects privilege escalations, horizontal/vertical access leaks, and reports them in api_chain_escalation_report.html
 
 ---
 

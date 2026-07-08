@@ -1,10 +1,10 @@
 <meta content="VvYq2k5BFp5dpIL6JpQhoe90sWEXZTEBbaynlEKCWRE" name="google-site-verification">
 
-**APISCAN OWASP 5.0 APIscanner by Perry Mertens**
+**APISCAN OWASP 5.01 APIscanner by Perry Mertens**
 
 **Author:** Perry Mertens (pamsniffer@gmail.com)  
 **Year:**  2026 Perry Mertens  
-**Version:** 5.0.0 (Release)  
+**Version:** 5.0.1 (Release)  
 **License:** GNU Affero General Public License v3.0 (AGPL-v3.0)
 
 APISCAN is an API vulnerability scanner that proactively identifies security risks by testing against the OWASP API Security Top 10 (2023).
@@ -28,8 +28,8 @@ If you modify APISCAN and make it available as a hosted service, you must make t
 APISCAN focuses on API-specific risks instead of generic web scanning.  
 It is built for testing APIs against the OWASP API Security Top 10 (2023), with one module per risk area and HTML reporting suitable for auditors and developers.
 
-## What's New in v5.0.0
-![APISCAN v5.0.0 GUI](./APISCAN-mainmenu%20v5.0.0.jpg)
+## What's New in v5.0.1
+![APISCAN v5.0.1 GUI](./APISCAN-mainmenu%20v5.0.0.jpg)
 
 - **Auto Form-Login** — Automatic login form detection for crAPI, Juice Shop, and custom apps. HTML form parsing, JSON API detection, token auto-extraction. Use `--flow form --login-username ... --login-password ...` or the GUI Auto-Detect button.
 - **Crawl Validator** — Smart endpoint validation filters fake paths. `--crawl-validate` (on), `--no-crawl-validate`, `--crawl-validate-mode balanced|strict`, `--crawl-validate-workers N`. From 71→4 endpoints on Juice Shop.

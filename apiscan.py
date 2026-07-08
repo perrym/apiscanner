@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0 License                 #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2026  #
-# version 5.0 24-06-2026                              #
+# version 5.1 07-07-2026                              #
 ########################################################
 
 
@@ -92,6 +92,7 @@ try:
     from misconfiguration_audit import MisconfigurationAuditorPro as MisconfigurationAuditor
     from inventory_audit import InventoryAuditor
     from safe_consumption_audit import SafeConsumptionAuditor
+    from chain_audit import ChainAuditor
     from version import __version__
     from auth_utils import configure_authentication, AuthConfigError
     from report_utils import HTMLReportGenerator, RISK_INFO
@@ -289,7 +290,7 @@ def _validate_rewrite_pattern(rule: str) -> str:
 
 OUT_DIR: Path | None = None
 DB = None
-manual_file_map = {'BOLA': 'bola', 'BrokenAuth': 'broken_auth', 'Property': 'property', 'Resource': 'resource', 'AdminAccess': 'admin_access', 'BusinessFlows': 'business_flows', 'SSRF': 'ssrf', 'Misconfig': 'misconfig', 'Inventory': 'inventory', 'UnsafeConsumption': 'unsafe_consumption'}
+manual_file_map = {'BOLA': 'bola', 'BrokenAuth': 'broken_auth', 'Property': 'property', 'Resource': 'resource', 'AdminAccess': 'admin_access', 'BusinessFlows': 'business_flows', 'SSRF': 'ssrf', 'Misconfig': 'misconfig', 'Inventory': 'inventory', 'UnsafeConsumption': 'unsafe_consumption', 'Chain-Escalation': 'chain_escalation'}
 MAX_THREADS = 20
 DUMMY_MODE = False
 _ID_MAP = {}
@@ -1731,6 +1732,8 @@ def main() -> None:
     parser.add_argument('--rewrite', action='append', default=[], help='Regex=>replacement rewrite applied to each URL (can be repeated)')
     parser.add_argument('--no-sanitize', action='store_true', help='Disable built-in URL normalization; only apply explicit --rewrite rules')
     parser.add_argument('--api3-active', action='store_true', dest='api3_active', help='Enable active mass-assignment write tests for API3 (sends modified JSON to write endpoints)')
+    parser.add_argument('--chain-mode', action='store_true', dest='chain_mode', help='Auto-escalate BOLA findings: re-inject leaked data into other endpoints')
+    parser.add_argument('--chain-depth', type=int, default=1, dest='chain_depth', metavar='N', help='Recursive chain depth (default: 1, max: 3)')
     parser.add_argument('--api11', action='store_true', help='Run AI-assisted OWASP Top 10 analysis')
     for i in range(1, 11):
         parser.add_argument(f'--api{i}', action='store_true', help=f'Run only API{i} audit')
@@ -1991,7 +1994,7 @@ def main() -> None:
                             bola_results.extend(res)
                     except Exception as e:
                         _scan_err(f"{ep.get('method')} {ep.get('path')}", e)
-        bola.issues = [r.to_dict() for r in bola_results if getattr(r, 'status_code', 0) != 0]
+        bola.issues = [r.to_dict() for r in bola_results if getattr(r, 'status_code', 0) != 0 and getattr(r, 'test_case', '') != 'valid']
         try:
             bola.generate_report()
         except Exception as e:
@@ -2003,6 +2006,54 @@ def main() -> None:
         if db is not None:
             db.store_issues('BOLA', bola.issues, base_url=args.url)
         styled_print(msg, 'done')
+
+        # ── Chain-mode: escalation after BOLA ──────────────────────
+        if getattr(args, 'chain_mode', False) and bola_results:
+            chain_depth = min(max(1, int(getattr(args, 'chain_depth', 1) or 1)), 3)
+            all_chain_issues: list = []
+            source_results = bola_results  # start with BOLA results
+
+            for depth in range(1, chain_depth + 1):
+                label = f'Chain L{depth} – Escalation of BOLA leaks' if chain_depth > 1 else 'Chain – Escalation of BOLA leaks'
+                _scan_section(0, label)
+                logger.info('Running Chain Auditor depth %d/%d (post-BOLA escalation)', depth, chain_depth)
+
+                try:
+                    chain = ChainAuditor(
+                        session=sess,
+                        base_url=args.url,
+                        swagger_spec=spec,
+                        bola_results=source_results,
+                        timeout=args.timeout,
+                        max_workers=min(args.threads, 4),
+                        show_progress=True,
+                    )
+                    chain.findings = chain.run()
+                    chain_issues = chain.get_issues()
+                    all_chain_issues.extend(chain_issues)
+
+                    depth_found = len(chain_issues)
+                    if depth_found == 0:
+                        logger.info('Chain depth %d: no escalations found, stopping recursion.', depth)
+                        break
+
+                    # Feed chain results back as source for next depth
+                    source_results = chain_issues
+                except Exception as e:
+                    _scan_err('Chain auditor', e)
+                    logger.exception('Chain auditor exception at depth %d', depth)
+                    break
+
+            chain_found = len(all_chain_issues)
+            vulnerability_summary['Chain-Escalation'] = chain_found
+            if all_chain_issues:
+                save_html_report(all_chain_issues, 'Chain-Escalation', args.url, output_dir)
+                if db is not None:
+                    db.store_issues('Chain-Escalation', all_chain_issues, base_url=args.url)
+            cmsg = (f'{Fore.GREEN}Chain complete - {chain_found} escalations found{Style.RESET_ALL}'
+                    if chain_found == 0
+                    else f'{Fore.RED}Chain complete - {chain_found} escalations found{Style.RESET_ALL}')
+            styled_print(cmsg, 'done')
     
     if 2 in selected_apis:
         _scan_section(2, 'Broken Authentication')

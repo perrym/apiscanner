@@ -96,6 +96,21 @@ class TestResult:
 
         cross_for_risk = bool(self.cross_user and self.method.upper() in {"GET", "PUT", "DELETE"})
         sens_for_risk = bool(self.sensitive_hit or self.true_positive)
+
+        # Baseline ("valid") test cases: forceer severity naar "Info" zodat ze
+        # niet als kwetsbaarheid in het rapport verschijnen, maar behoud wél
+        # sensitive_hit / cross_user / true_positive zodat chain-mode de
+        # gelekte data (e-mails, tokens, IDs) kan extraheren.
+        severity = classify_risk(
+            self.status_code,
+            self.response_sample,
+            sensitive=sens_for_risk,
+            size_alert=self.size_alert,
+            cross_user=cross_for_risk,
+        )
+        if self.test_case == "valid":
+            severity = "Info"
+
         return {
             "method": self.method,
             "url": self.url,
@@ -103,13 +118,7 @@ class TestResult:
             "status_code": self.status_code,
             "response_time": self.response_time,
             "description": self.test_case,
-            "severity": classify_risk(
-                self.status_code,
-                self.response_sample,
-                sensitive=sens_for_risk,
-                size_alert=self.size_alert,
-                cross_user=cross_for_risk,
-            ),
+            "severity": severity,
             "timestamp": self.timestamp or datetime.now().isoformat(),
             "request_parameters": self.params or {},
             "request_headers": self.headers or [],
@@ -890,6 +899,11 @@ class BOLAAuditor:
                 body = (it.get("response_sample") or "") + " " + (it.get("response_body") or "")
                 if "other_user" not in desc or not self._looks_like_server_error_leak(body):
                     continue
+
+            # Skip baseline ("valid") cases – dit zijn controles, geen bevindingen
+            desc_lower = (it.get("description") or "").strip().lower()
+            if desc_lower == "valid":
+                continue
 
             sev = (it.get("severity") or "").strip()
             cross_user = bool(it.get("cross_user"))

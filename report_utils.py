@@ -26,6 +26,7 @@ RISK_INFO = {
     "Misconfig": {"title": "API8:2023 - Security Misconfiguration"},
     "Inventory": {"title": "API9:2023 - Improper Inventory Management"},
     "UnsafeConsumption": {"title": "API10:2023 - Unsafe 3rd-Party API Consumption"},
+    "Chain-Escalation": {"title": "Chain Escalation – Post-BOLA Privilege Escalation"},
 }
 
 manual_file_map = {
@@ -39,6 +40,7 @@ manual_file_map = {
     "Misconfig": "misconfig",
     "Inventory": "inventory",
     "UnsafeConsumption": "safe_consumption",
+    "Chain-Escalation": "chain_escalation",
 }
 
 SEVERITY_ORDER = ["Critical", "High", "Medium", "Low", "Info"]

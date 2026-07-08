@@ -318,6 +318,8 @@ class APISCANApp:
         self.deep_scan_var = BooleanVar(value=False)   # APISCAN_DEEP_SCAN
         self.fast_mode_var = BooleanVar(value=True)    # APISCAN_FAST (default on)
         self.intensity_var = StringVar(value="medium")  # APISCAN_INTENSITY
+        self.chain_mode_var = BooleanVar(value=False)   # --chain-mode
+        self.chain_depth_var = StringVar(value="1")     # --chain-depth
 
         self._build_ui()
         self._poll_queue()
@@ -1277,6 +1279,18 @@ class APISCANApp:
         ttk.Checkbutton(inner2, text="API3 active mass-assignment tests (--api3-active)",
                         variable=self.api3_active_var,
                         style="Card.TCheckbutton").pack(anchor=W, padx=14, pady=3)
+        ttk.Checkbutton(inner2, text="Chain Mode  auto-escalate BOLA leaks into other endpoints (--chain-mode)",
+                        variable=self.chain_mode_var,
+                        style="Card.TCheckbutton").pack(anchor=W, padx=14, pady=3)
+
+        chain_depth_frame = ttk.Frame(inner2, style="Card.TFrame")
+        chain_depth_frame.pack(anchor=W, padx=14, pady=(0, 4))
+        ttk.Label(chain_depth_frame, text="Chain Depth", style="Card.TLabel",
+                  width=16, anchor=E).pack(side="left", padx=(0, 8))
+        ttk.Entry(chain_depth_frame, textvariable=self.chain_depth_var, width=4,
+                  font=FONTS["body"]).pack(side="left")
+        ttk.Label(chain_depth_frame, text="(1-3, recursive escalation depth)",
+                  style="Muted.TLabel").pack(side="left", padx=(6, 0))
 
         # --- Card: Plan / Verify ---
         card_plan = _make_card(parent, "Plan & Verification")
@@ -1715,9 +1729,19 @@ class APISCANApp:
             ("--verify-plan", self.verify_plan_var),
             ("--no-sanitize", self.no_sanitize_var),
             ("--api3-active", self.api3_active_var),
+            ("--chain-mode", self.chain_mode_var),
         ]:
             if var.get():
                 args.append(flag)
+
+        # Chain depth (only when chain-mode is active)
+        if self.chain_mode_var.get():
+            try:
+                cd = int(self.chain_depth_var.get())
+                if cd > 1:
+                    args.extend(["--chain-depth", str(min(cd, 3))])
+            except ValueError:
+                pass
 
         # Success codes (only if non-default)
         sc = self.success_codes_var.get().strip()

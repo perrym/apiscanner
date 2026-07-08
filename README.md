@@ -38,6 +38,7 @@ It is built for testing APIs against the OWASP API Security Top 10 (2023), with 
 - **Business Logic Testing** — Detects negative prices, excessive discounts, admin role assignment, and privilege escalation via deep scan mode.
 - **Production Ready** — Tested against Juice Shop and crAPI. Crash-free: dedup fix for dict payloads, session retry fix for 500 responses, HTML response skip in form detection, error spam suppression.
 - **GUI** — Cross-platform Tkinter interface (`python apiscan_gui.py`) with Target, Authentication, Form Login (Auto-Detect), and Advanced tabs. Crawl validate controls built in.
+- **Chain Mode** — Auto-escalates BOLA findings by extracting leaked data (tokens, user IDs, emails, roles) and re-injecting it into other endpoints. `--chain-mode` with optional `--chain-depth 1-3` for recursive privilege escalation chains. Generates `api_chain_escalation_report.html`.
 - **Real-World Attack Patterns** — Detects real-world threat actor TTPs: **ShinyHunters** unauthenticated data exposure (UNC6040), **Salesforce** enumeration & Data Loader bulk exfiltration, plus many more attack patterns.
 
 ## Install

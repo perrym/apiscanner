@@ -1,6 +1,13 @@
 # APISCAN - CHANGELOG
-Version:5.0.0 release 24-06-2026
+Version:5.0.1 release 07-07-2026
 Author: Perry Mertens pamsniffer@gmail.com
+
+07-07-2026
+- Chain Mode: new --chain-mode flag auto-escalates BOLA findings (cross-user/sensitive hits)
+  by extracting leaked tokens, emails, user IDs, and roles, then re-injecting them
+  into other endpoints from the same Swagger spec. Supports --chain-depth 1-3 for
+  recursive escalation. Generates api_chain_escalation_report.html.
+- some small bugs removed.
 
 24-06-2026 — v5.0.0 patch
 - All Python file headers unified to v5.0 with correct date (24-06-2026)

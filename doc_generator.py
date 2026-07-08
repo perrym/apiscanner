@@ -144,6 +144,19 @@ RISK_INFO = {
 - Keep third-party credentials secret & rotate regularly
 - Continuously monitor external service behavior"""
     },
+    "Chain-Escalation": {
+        "title": "Chain Escalation – Post-BOLA Privilege Escalation",
+        "description": (
+            "After a successful BOLA test reveals leaked data (emails, tokens, user IDs), "
+            "the chain auditor automatically injects that leaked data into other endpoints "
+            "from the same API specification. This simulates a real attacker who escalates "
+            "an initial BOLA finding into further unauthorized access or account takeover."
+        ),
+        "recommendation": """- Never expose sensitive fields (emails, tokens) in API responses
+- Use resource-level access control on every endpoint
+- Rate-limit password reset and sensitive endpoints
+- Implement audit logging for suspicious data reuse patterns"""
+    },
 }
 
 # ------------------------------------------------------------------
@@ -186,9 +199,15 @@ ALIASES = {
     r"misconfig": "Misconfig",
     r"inventory": "Inventory",
     r"unsafe[_-]?consumption": "UnsafeConsumption",
+    r"chain[_-]?escalation": "Chain-Escalation",
 }
 
 # ---------------------- UTILITIES ---------------------------------
+
+def _api_sort_key(title: str) -> int:
+    """Extract API number from title for sorting. Non-API reports sort last."""
+    m = re.search(r"API(\d+)", title)
+    return int(m.group(1)) if m else 99
 
 def discover_files(pattern: str) -> List[str]:
     paths = glob.glob(pattern)
@@ -353,11 +372,7 @@ def generate_combined_html(output: str, files: List[str]):
 
     files_sorted = sorted(
         files,
-        key=lambda fp: int(
-            re.search(
-                r"API(\d+)", RISK_INFO[infer_risk_key(Path(fp).name)]["title"]
-            ).group(1)
-        ),
+        key=lambda fp: _api_sort_key(RISK_INFO[infer_risk_key(Path(fp).name)]["title"]),
     )
 
     risk_keys: list[str] = []

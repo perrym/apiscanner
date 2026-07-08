@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2026  #
-# version 5.0 26-04-2026                               #
+# version 5.0 07-07-2026                               #
 ########################################################
 
 from __future__ import annotations
@@ -1957,34 +1957,71 @@ class SafeConsumptionAuditor:
 
         total_phase2_tests = len(target_endpoints) * len(intensive_tests)
 
+        # ── Build human-readable labels for each test ──
+        _TEST_LABELS = {
+            "_test_basic_security": "Basic Security Headers",
+            "_test_waf_detection": "WAF Detection",
+            "_test_crlf_injection": "CRLF Injection",
+            "_test_hpp": "HTTP Parameter Pollution",
+            "_test_sensitive_data_exposure": "Sensitive Data Exposure",
+            "_test_graphql_introspection": "GraphQL Introspection",
+            "_test_open_redirect": "Open Redirect",
+            "_test_host_header_injection": "Host Header Injection",
+            "_test_directory_traversal": "Directory Traversal",
+            "_test_jwt_vulnerabilities": "JWT Vulnerabilities",
+            "_test_business_logic": "Business Logic",
+            "_test_blind_sqli": "Blind SQL Injection",
+            "_test_directory_traversal_body": "Directory Traversal (Body)",
+            "_test_header_manipulation": "Header Manipulation",
+            "_test_rate_limit_bypass": "Rate Limit Bypass",
+            "_run_injection_tests_parallel": None,  # dynamic label from test_type
+            "_run_intensive_sql_tests": "Intensive SQL Tests",
+            "_test_ssrf_advanced": "SSRF Advanced",
+        }
+        def _test_label(test) -> str:
+            """Return a human-readable label for a test partial."""
+            try:
+                fn = test.func if hasattr(test, 'func') else test
+                name = fn.__name__
+                if name == "_run_injection_tests_parallel":
+                    kw = getattr(test, 'keywords', {}) or {}
+                    tt = kw.get('test_type', 'Injection')
+                    return f"Injection ({tt.upper()})"
+                return _TEST_LABELS.get(name, name.replace('_', ' ').strip().title())
+            except Exception:
+                return "Unknown"
+
         if HAS_TQDM and not self.no_tqdm:
             sys.stdout.flush()
-            with tqdm(total=total_phase2_tests, desc="Phase 2 - Targeted", unit="test", ncols=80, mininterval=0.1) as pbar:
+            with tqdm(total=total_phase2_tests, desc="Phase 2 - Starting", unit="test", ncols=80, mininterval=0.1) as pbar:
                 with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                    futures = []
-                    for endpoint in target_endpoints:
-                        for test in intensive_tests:
-                            futures.append(executor.submit(self._run_test_with_callback, test, endpoint, pbar.update))
+                    # Process test types in batches so we can show the current test name
+                    for test in intensive_tests:
+                        label = _test_label(test)
+                        pbar.set_description(f"Phase 2 - {label}")
+                        batch_futures = []
+                        for endpoint in target_endpoints:
+                            batch_futures.append(executor.submit(self._run_test_with_callback, test, endpoint, pbar.update))
+                        for future in concurrent.futures.as_completed(batch_futures):
+                            try:
+                                future.result()
+                            except Exception:
+                                pass
+        else:
+            progress = ProgressBar(total_phase2_tests, desc="Phase 2 - Starting")
 
-                    for future in concurrent.futures.as_completed(futures):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                for test in intensive_tests:
+                    label = _test_label(test)
+                    progress.desc = f"Phase 2 - {label}"
+                    batch_futures = []
+                    for endpoint in target_endpoints:
+                        batch_futures.append(executor.submit(self._run_test_with_callback, test, endpoint, progress.update))
+                    for future in concurrent.futures.as_completed(batch_futures):
                         try:
                             future.result()
                         except Exception:
                             pass
-        else:
-            progress = ProgressBar(total_phase2_tests, desc="Phase 2 - Targeted")
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                futures = []
-                for endpoint in target_endpoints:
-                    for test in intensive_tests:
-                        futures.append(executor.submit(self._run_test_with_callback, test, endpoint, progress.update))
-
-                for future in concurrent.futures.as_completed(futures):
-                    try:
-                        future.result()
-                    except Exception:
-                        pass
 
             progress.close()
 

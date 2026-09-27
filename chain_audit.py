@@ -345,6 +345,23 @@ def _validate_value_format(ev: ExtractedValue, param: Dict[str, Any]) -> bool:
     return True
 
 
+# Endpoints die nooit een escalatiedoel zijn: auth/actie-paden geven vrijwel
+# altijd 200 terug ongeacht de geinjecteerde waarde (bijv. forget-password,
+# login, signup) en leveren daardoor alleen maar false positives op.
+_CHAIN_ACTION_WORDS = {
+    "login", "logout", "register", "signup", "sign-up", "sign-in", "signin",
+    "reset-password", "reset_password", "resetpassword",
+    "forgot-password", "forgot_password", "forgotpassword",
+    "forget-password", "forget_password", "forgetpassword",
+    "change-password", "change_password", "changepassword",
+    "change-email", "change_email", "changeemail",
+    "verify", "verify-email", "verify_email", "verify-otp", "verify_otp",
+    "confirm", "activate", "deactivate", "resend", "resend-otp",
+    "token", "refresh-token", "refresh_token",
+    "auth", "authenticate", "oauth", "callback", "authorize",
+}
+
+
 def find_chainable_endpoints(
     extracted: List[ExtractedValue],
     swagger_spec: Dict[str, Any],
@@ -353,6 +370,7 @@ def find_chainable_endpoints(
     """
     For each ExtractedValue, search the Swagger spec for endpoints that:
       - are NOT the BOLA source endpoint itself
+      - are NOT auth/action endpoints (those always return 200)
       - have a parameter that accepts the same 'kind' of data
 
     Returns: list of (ExtractedValue, op_dict, match_param_name)
@@ -366,6 +384,11 @@ def find_chainable_endpoints(
 
         # Skip the source endpoint itself
         if op_path in bola_endpoint_paths:
+            continue
+
+        # Skip auth/action endpoints: altijd 200, geen escalatiedoel
+        last_seg = (op_path or "").rstrip("/").rsplit("/", 1)[-1].lower()
+        if last_seg in _CHAIN_ACTION_WORDS:
             continue
 
         # Merge path-level + operation-level parameters
@@ -823,6 +846,9 @@ class ChainAuditor:
         logger.info("Chain: %d of %d chain-requests were successful (Medium).",
                      len(real), len(self.findings))
 
+        # Alleen echte hits rapporteren: HTTP 0/4xx/5xx zijn verbindingsfouten of
+        # correcte autorisatie-afwijzingen, geen escalaties.
+        self.findings = real
         return self.findings
 
     def get_issues(self) -> List[Dict[str, Any]]:

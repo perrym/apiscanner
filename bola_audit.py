@@ -384,7 +384,11 @@ class BOLAAuditor:
         except Exception:
             other_ids = []
         base_ids = base.get("ids") or []
-        if base_ids and other_ids:
+        # Alleen bij GET duidt een ander object-ID in de response op cross-user
+        # toegang. Bij PUT/POST/DELETE betekent een nieuw ID gewoon dat de server
+        # een resource heeft aangemaakt/bijgewerkt, niet dat er toegang tot andermans
+        # object is verkregen.
+        if key[0] == "GET" and base_ids and other_ids:
             for oid in other_ids[:5]:
                 if oid and oid not in base_ids:
                     return True
@@ -452,7 +456,10 @@ class BOLAAuditor:
             return False
         if method.upper() in {"GET", "PUT", "DELETE"} and cross_user and status_code in (200, 206, 302):
             return True
-        if contains_sensitive and status_code in (200, 206):
+        # Sensitive data (e-mails/tokens) telt alleen als BOLA-hit wanneer het
+        # daadwerkelijk om cross-user data gaat. Een 200 met de eigen gegevens
+        # van de ingelogde gebruiker is geen kwetsbaarheid.
+        if cross_user and contains_sensitive and status_code in (200, 206):
             return True
         return False
 
@@ -829,7 +836,7 @@ class BOLAAuditor:
 
         successful = status_code in (200, 206, 302)
         non_generic = not self._is_generic_success(body_text or "")
-        is_vuln = bool(successful and (true_pos or contains_sensitive or (cross_user and non_generic) or (large_body and non_generic)))
+        is_vuln = bool(successful and (true_pos or (cross_user and non_generic) or (cross_user and contains_sensitive) or (large_body and non_generic)))
 
         effective_url = getattr(getattr(resp, "request", None), "url", req.get("url"))
         req_headers = (
@@ -905,15 +912,12 @@ class BOLAAuditor:
             if desc_lower == "valid":
                 continue
 
-            sev = (it.get("severity") or "").strip()
             cross_user = bool(it.get("cross_user"))
             body_sample = (it.get("response_body") or it.get("response_sample") or "")
             non_generic = not self._is_generic_success(body_sample)
 
             keep = False
             if bool(it.get("is_vulnerable")) or bool(it.get("true_positive")):
-                keep = True
-            elif sev in ("Medium", "High", "Critical"):
                 keep = True
             elif cross_user and code in (200, 206, 302) and non_generic:
                 keep = True

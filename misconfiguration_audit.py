@@ -1173,7 +1173,17 @@ class MisconfigurationAuditorPro:
 
                 # Schema / spec files
                 elif any(k in path.lower() for k in ("schema", "swagger", "openapi", "api-docs")) and resp.status_code == 200:
-                    if "json" in ctype or "yaml" in ctype or path.endswith((".json", ".yaml", ".yml")):
+                    if "text/html" in ctype:
+                        continue
+                    is_json = "json" in ctype
+                    is_yaml = "yaml" in ctype
+                    if not (is_json or is_yaml):
+                        stripped = (resp.text or "").lstrip()
+                        if path.endswith(".json") and stripped.startswith(("{", "[")):
+                            is_json = True
+                        elif path.endswith((".yaml", ".yml")) and ":" in stripped and not stripped.startswith("<"):
+                            is_yaml = True
+                    if is_json or is_yaml:
                         size = len(resp.content or b"")
                         if size > 500:
                             self._record_finding(

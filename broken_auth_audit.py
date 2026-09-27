@@ -36,6 +36,15 @@ def _headers_to_list(h):
     except Exception:
         return []
 
+#================funtion _looks_like_html_page detect catch-all/SPA HTML responses =============
+def _looks_like_html_page(text: str, content_type: str = "") -> bool:
+    """A catch-all route (SPA/login page) returns 200 + HTML for every path."""
+    ct = (content_type or "").lower()
+    if "text/html" in ct:
+        return True
+    t = (text or "").lstrip().lower()
+    return t.startswith(("<!doctype html", "<html", "<head", "<body"))
+
 class AuthAuditor:
 
     #================funtion __init__ __init__ =============
@@ -625,7 +634,11 @@ class AuthAuditor:
                 if int(head.headers.get('content-length', '0')) > 2000000:
                     continue
                 resp = self.session.get(url, timeout=5)
-                if resp.status_code == 200 and token_rx.search(resp.text or ''):
+                if resp.status_code != 200:
+                    continue
+                if _looks_like_html_page(resp.text or '', resp.headers.get('Content-Type', '')):
+                    continue
+                if token_rx.search(resp.text or ''):
                     self._log_issue(url, f'Sensitive file {path} exposed', 'High', response_obj=resp)
             except requests.RequestException:
                 continue
@@ -648,6 +661,8 @@ class AuthAuditor:
             try:
                 r = self.session.get(url, timeout=5)
                 if r.status_code != 200:
+                    continue
+                if _looks_like_html_page(r.text or '', r.headers.get('Content-Type', '')):
                     continue
                 if weak_re.search(r.text or ''):
                     self._log_issue(url, 'Potential password hash exposure or weak hash presence in response', 'High', response_obj=r)

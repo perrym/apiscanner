@@ -2,6 +2,65 @@
 Version:5.5.0 release 03-11-2026
 Author: Perry Mertens pamsniffer@gmail.com
 
+03-11-2026 — v5.5.0 stability, fewer false positives, wider coverage
+API10 (Safe Consumption)
+- Fixed a deadlock: directory-traversal created a tqdm progress bar per worker
+  thread while colorama was forced to convert=True; cleaning up a failed bar left
+  the whole scan hanging forever with no error. Removed colorama.init(convert=True)
+  and disabled per-thread dirtrav bars by default (APISCAN_DIRTRAV_PROGRESS=0).
+- CRLF, HPP and XSS/injection tests now use the query parameters declared in the
+  spec first, instead of a fixed list of guesses; parameter selection is no longer
+  random (set -> ordered). Without a spec, at most 3 guesses; broad in deep mode.
+- XSS is only reported on an HTML/XML response; reflection in a JSON body is no
+  longer a finding (false positive removed).
+- SQL injection: the probe now sends the real field value + quote (not just a bare
+  quote), so input validation cannot block it up front. Added a quote-pair
+  differential for servers that return a plain 500 on a quote with no DB error.
+- Phase 2 no longer repeats the tests Phase 1 already ran on the same endpoint.
+- Schema SQL probes also run on endpoints beyond the Phase 2 cap; request bodies
+  declared via $ref/allOf are now recognised in the SQL prioritisation.
+- Directory traversal: a 301/302 to the same normalised path on the same host
+  (server-side path normalisation) is no longer reported as traversal.
+- JWT: an "invalid token" response means the forged token was rejected; this is
+  now a diagnostic, not a finding.
+- Coverage: an unusable baseline (401/403/404/5xx/validation) counts as 'untested'
+  instead of 'failed' - the scan did not fail, the test could not start.
+
+Probe policy
+- New: a route is skipped after 10 consecutive 5xx responses (server_error_streak);
+  any normal response resets the counter. Prevents thousands of pointless requests
+  against an endpoint that keeps crashing.
+
+API8 (Misconfiguration)
+- CORS: an arbitrary Origin reflected together with credentials is now High; the
+  baseline GET sends a probe value as the Origin header to detect this.
+
+API6 (Business Flows) - evidence-based severity
+- Price manipulation (0 or -1) is Medium when the value is echoed in the response,
+  otherwise Low.
+- Mass assignment is Medium only when the injected values (role=admin, isAdmin,
+  a unique owner_id) come back in the response, not when only a field name matches.
+- An anonymously processed request is Medium when the operation declares auth in
+  the spec.
+- A guessed coupon is Medium only when a random control code is rejected.
+- Repeated sequential/parallel observations are merged into one line per type.
+
+API3 (Object Property)
+- Credential-like fields (password, DB_PASSWORD, api_key, ...) with a real value in
+  the response are Low; email/role stay Info.
+- New: response fields that are not declared in the OpenAPI response schema are
+  reported (possible excessive data exposure).
+
+Other
+- Replaced an invalid escape (\{ \}) in broken_object_property_audit.py with raw
+  strings (no more SyntaxWarning on Python 3.12).
+- requirements.txt: added aiohttp (needed by ai_client) and cryptography;
+  requirements-gui.txt: added pillow.
+- Bumped version to 5.5.0 everywhere; updated documentation (index.html/index.md):
+  new CLI options (--request-data-file, --authorization-cases-file, --api10-data-file,
+  --mcp, ...), --threads default 16, APISCAN_API10_QUICK_MAX_ENDPOINTS=30, and
+  documented APISCAN_DEEP_MAX_ENDPOINTS and APISCAN_RATE_LIMIT.
+
 27-09-2026 — false-positive reduction
 - BOLA (API1): sensitive data (e-mail/token) telt alleen nog als BOLA-hit bij
   daadwerkelijk gedetecteerde cross-user-toegang; een 200 met de eigen gegevens

@@ -62,23 +62,22 @@ Other
   documented APISCAN_DEEP_MAX_ENDPOINTS and APISCAN_RATE_LIMIT.
 
 27-09-2026 — false-positive reduction
-- BOLA (API1): sensitive data (e-mail/token) telt alleen nog als BOLA-hit bij
-  daadwerkelijk gedetecteerde cross-user-toegang; een 200 met de eigen gegevens
-  is geen kwetsbaarheid meer (bola_audit.py).
-- BOLA: het "ander object-ID in de response"-heuristiek geldt alleen nog voor GET;
-  bij PUT/POST/DELETE betekent een nieuw ID dat de server een resource aanmaakte.
-- BOLA: _filter_issues houdt alleen nog bevindingen met cross-user-bewijs; de regel
-  die elke Medium/High/Critical-severity hield is verwijderd.
-- Chain Mode: rapporteert alleen nog geslaagde (2xx) Medium/High-escalaties in
-  plaats van alle requests; HTTP 0/4xx/5xx "Low"-ruis wordt niet meer gerapporteerd.
-- Chain Mode: auth/actie-endpoints (login, signup, forget-password, reset-password,
-  verify, ...) worden overgeslagen als escalatiedoel (altijd 200 -> false positives).
-- Broken Auth (API2): secret-exposure en password-hash checks slaan HTML-pagina's
-  over; een catch-all/loginpagina (200 + text/html) wordt niet meer als uitgelekt
-  secretbestand gemarkeerd.
-- Misconfiguration (API8): schema/spec-exposure vereist nu echte JSON/YAML-content
-  in plaats van alleen de bestandsextensie; HTML-pagina's worden overgeslagen.
-- Swagger generator: ontbrekende `import os` toegevoegd (crash-fix bij crawl).
+- BOLA (API1): sensitive data (email/token) only counts as a BOLA hit when actual
+  cross-user access is detected; a 200 with the user's own data is no longer a
+  vulnerability (bola_audit.py).
+- BOLA: the "different object ID in the response" heuristic now applies to GET only;
+  for PUT/POST/DELETE a new ID means the server created a resource.
+- BOLA: _filter_issues now keeps only findings with cross-user evidence; the rule
+  that kept every Medium/High/Critical severity has been removed.
+- Chain Mode: reports only successful (2xx) Medium/High escalations instead of all
+  requests; HTTP 0/4xx/5xx "Low" noise is no longer reported.
+- Chain Mode: auth/action endpoints (login, signup, forget-password, reset-password,
+  verify, ...) are skipped as escalation targets (always 200 -> false positives).
+- Broken Auth (API2): secret-exposure and password-hash checks skip HTML pages; a
+  catch-all/login page (200 + text/html) is no longer flagged as a leaked secret file.
+- Misconfiguration (API8): schema/spec exposure now requires real JSON/YAML content
+  instead of just the file extension; HTML pages are skipped.
+- Swagger generator: added the missing `import os` (crash fix during crawl).
 
 07-07-2026
 - Chain Mode: new --chain-mode flag auto-escalates BOLA findings (cross-user/sensitive hits)
@@ -148,9 +147,9 @@ Other
 
 16-1-2026
 - Risk rating errors solved
-- Beter payloads
+- Better payloads
 - setup.py some fixes
-- disable h2 en use modern version for http/2
+- disable h2 and use modern version for http/2
 - fix many bug fixes
 
 7-1-2026
@@ -159,10 +158,10 @@ Other
 - disable h2 fixed in next version
 
 1-4-2026
-- much beter scanner
-- beter report function
+- much better scanner
+- better report function
 - lot a code changes 
-- beter report function.
+- better report function.
 - directory in many ways
 - Blind SQL injection
 - Waf detection
@@ -171,7 +170,7 @@ Other
 14-12-2025
 - change a lot of code
 - problems in reporting working on it.
-- beter scanner 
+- better scanner 
 
 26-11-2025
 - using sqlite database
@@ -189,7 +188,7 @@ New
 - Modules cleaned up and stabilized (fewer side effects, clearer interfaces).
 
 18-10-2025
-- Beter error handeling, but still need some extra work to do, working on a new version that use a sqlite database for all scan results, is now in Beta
+- Better error handling, but still need some extra work to do, working on a new version that use a sqlite database for all scan results, is now in Beta
 - Using openapi_universal.py. A version-agnostic OpenAPI helper that loads specs (JSON/YAML), iterates operations, builds concrete HTTP requests (params/bodies), and applies security config. Because Swagger 2.0 and OpenAPI 3+ differ in structure, a universal loader lets the scanner treat every spec the same no per-version parsing or special    
   cases. That consistency reduces maintenance and bugs, builds accurate requests from schemas/auth automatically, improves coverage, and cuts false positives.
 - much faster 
@@ -200,15 +199,15 @@ APISCAN supports:
 - OpenAPI/Swagger-based  json and YML analysis
 - Active endpoint testing
 - Improved error handling and modular design
-- proxy support add en more 
-- need to work on error handeling on apis is very difficult  
+- proxy support add and more 
+- need to work on error handling on apis is very difficult  
 
 This marks a solid foundation for further development, with focus on scalability, accuracy, and extensibility in future versions.
-- Beter interface
-- Beter error handeling
+- Better interface
+- Better error handling
 - Need more tester for help
 - work great this version.
-- Still working on error handeling
+- Still working on error handling
 
 
 Version:2.0-beta 3-8-2025
@@ -223,9 +222,9 @@ Add Crypto  checks in API2  normal this is in api8.
 23-7-2025
 Because I’m home recovering, I finally have the time and focus to dive into my project!
 ## Added Features:
-  - Beter control of false Positive (need still some work)
-  - Beter testing for API
-  - Beter report tool in html 
+  - Better control of false Positive (need still some work)
+  - Better testing for API
+  - Better report tool in html 
   - Added support for multiple authentication mechanisms:
   - Multithreading
   - Bearer Token
@@ -237,7 +236,7 @@ Because I’m home recovering, I finally have the time and focus to dive into my
   - OAuth2 Authorization Code Flow (interactive browser login)
   - report function is updated.
   - HTML Report function
-  - Beter testing on false positives
+  - Better testing on false positives
   - More PAYLOADS for testing 
 
 13-06-2025
@@ -245,19 +244,19 @@ Because I’m home recovering, I finally have the time and focus to dive into my
   - Fully restructured to keep all logic inside the `main()` function:
   - Prevents variable scope issues
   - Clean execution from CLI
-  = beter test on false positives
+  = better test on false positives
 
   - extra work to do
   - Logs are saved to timestamped file: `apiscan_YYYYMMDD_HHMMSS.log`
   - Log output is still limited 
-  - Log wil includes connection attempts, warnings, and errors
+  - Log will include connection attempts, warnings, and errors
 
 ## Bug Fixes:
 -  Fixed `NameError: name 'args' is not defined` caused by code being placed outside `main()`.
--  Nee to add extra logging, next release
+-  Need to add extra logging, next release
 -  PDF output
 -  Testers for support and comment
--  Speeds scanner for testing, diffcult part for me (many api's has speed limitation
+-  Speeds scanner for testing, difficult part for me (many api's has speed limitation
 
 ## Notes:
 - This version is now suitable for scheduled use, auditing APIs with different authentication schemes.

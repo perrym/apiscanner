@@ -425,7 +425,7 @@ python apiscan.py --url https://api.example.com \
         <article class="card">
           <h3>Full or deep scan</h3>
           <pre><code># PowerShell: optional quick tuning
-$env:APISCAN_API10_QUICK_MAX_ENDPOINTS="20"
+$env:APISCAN_API10_QUICK_MAX_ENDPOINTS="30"
 $env:APISCAN_API10_QUICK_SQL_MAX_TESTS="10"
 
 # PowerShell: full API10 scan
@@ -435,14 +435,18 @@ $env:APISCAN_API10_QUICK="0"
 $env:APISCAN_DEEP_SCAN="1"
 
 # Bash/Linux/macOS: optional quick tuning
-export APISCAN_API10_QUICK_MAX_ENDPOINTS=20
+export APISCAN_API10_QUICK_MAX_ENDPOINTS=30
 export APISCAN_API10_QUICK_SQL_MAX_TESTS=10
 
 # Bash/Linux/macOS: full API10 scan
 export APISCAN_API10_QUICK=0
 
 # Bash/Linux/macOS: deep scan
-export APISCAN_DEEP_SCAN=1</code></pre>
+export APISCAN_DEEP_SCAN=1
+# Deep scan tests 15 endpoints by default; raise it to cover more:
+export APISCAN_DEEP_MAX_ENDPOINTS=40
+# Delay (seconds) between requests to the same host; 0 for a lab, higher to be gentle:
+export APISCAN_RATE_LIMIT=0</code></pre>
         </article>
       </div>
     </section>
@@ -590,7 +594,7 @@ python test_env.py</code></pre>
           <table class="cli-table">
             <tr><td class="opt">--url</td><td class="desc">Base URL of the API to scan (required)</td></tr>
             <tr><td class="opt">--swagger</td><td class="desc">Path to Swagger/OpenAPI JSON file (required)</td></tr>
-            <tr><td class="opt">--threads</td><td class="desc">Number of concurrent threads (default: 2)</td></tr>
+            <tr><td class="opt">--threads</td><td class="desc">Number of concurrent threads (default: 16)</td></tr>
             <tr><td class="opt">--debug</td><td class="desc">Enable debug output (verbose logging)</td></tr>
             <tr><td class="opt">--insecure</td><td class="desc">Disable TLS certificate validation</td></tr>
             <tr><td class="opt">--crawl</td><td class="desc">Auto-discovery via HTTP crawling</td></tr>
@@ -613,6 +617,9 @@ python test_env.py</code></pre>
             <tr><td class="opt">--client-key</td><td class="desc">Path to private key file (PEM, used for mTLS)</td></tr>
             <tr><td class="opt">--basic-auth</td><td class="desc">Basic auth in the form user:password</td></tr>
             <tr><td class="opt">--ntlm</td><td class="desc">NTLM credentials in the form DOMAIN\user:password</td></tr>
+            <tr><td class="opt">--login-url / --login-username / --login-password</td><td class="desc">Auto form-login (for --flow form)</td></tr>
+            <tr><td class="opt">--token-path</td><td class="desc">JSON dot-path to the token in the login response, e.g. authentication.token</td></tr>
+            <tr><td class="opt">--client-id / --client-secret / --token-url</td><td class="desc">OAuth2 client credentials (for --flow client or auth)</td></tr>
           </table>
         </div>
 
@@ -645,6 +652,18 @@ python test_env.py</code></pre>
             <tr><td class="opt">--crawl-validate</td><td class="desc">Validate crawled endpoints (default: on). Use --no-crawl-validate to skip</td></tr>
             <tr><td class="opt">--crawl-validate-mode</td><td class="desc">Validator strictness: balanced (default) or strict</td></tr>
             <tr><td class="opt">--crawl-validate-workers</td><td class="desc">Concurrent validator workers (default: 8)</td></tr>
+            <tr><td class="opt">--request-data-file</td><td class="desc">JSON mapping METHOD /path to valid request data for all modules (fills bodies so more endpoints get a usable baseline)</td></tr>
+            <tr><td class="opt">--api10-data-file</td><td class="desc">JSON mapping METHOD /path to valid API10 request data and local files</td></tr>
+            <tr><td class="opt">--authorization-cases-file</td><td class="desc">Private JSON with two accounts and known private GET objects, for real BOLA (API1) checks</td></tr>
+            <tr><td class="opt">--api3-active</td><td class="desc">Enable active mass-assignment write tests for API3 (sends modified JSON to write endpoints)</td></tr>
+            <tr><td class="opt">--db-path</td><td class="desc">Optional SQLite DB file to cache findings</td></tr>
+            <tr><td class="opt">--timeout</td><td class="desc">Request timeout in seconds (float, 0 &lt; t &lt;= 600)</td></tr>
+            <tr><td class="opt">--no-open</td><td class="desc">Do not automatically open the HTML review when the scan finishes</td></tr>
+            <tr><td class="opt">--chain-depth</td><td class="desc">Recursive chain depth for --chain-mode (default: 1, max: 3)</td></tr>
+            <tr><td class="opt">--mcp</td><td class="desc">Audit a Streamable HTTP MCP endpoint at --url; no Swagger required</td></tr>
+            <tr><td class="opt">--mcp-version</td><td class="desc">MCP protocol version to negotiate</td></tr>
+            <tr><td class="opt">--mcp-max-pages</td><td class="desc">Maximum discovery pages per MCP list (1-100)</td></tr>
+            <tr><td class="opt">--mcp-calls-file</td><td class="desc">JSON array of explicit {name, arguments} tool calls; tools are not called by default</td></tr>
           </table>
         </div>
       </div>

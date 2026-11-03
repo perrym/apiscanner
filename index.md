@@ -199,6 +199,8 @@ Defaults:
 - `APISCAN_API10_QUICK_DIRTRAV_MAX_TESTS=8`
 - `APISCAN_API10_QUICK_HPP_MAX_PARAMS=3`
 - `APISCAN_API10_QUICK_REDIRECT_MAX_TESTS=6`
+- `APISCAN_DEEP_MAX_ENDPOINTS=15` (deep-scan endpoint cap; raise to cover more)
+- `APISCAN_RATE_LIMIT=0` (seconds between requests to the same host; raise to be gentle)
 
 PowerShell:
 
@@ -224,7 +226,7 @@ Bash/Linux/macOS:
 export APISCAN_API10_QUICK=1
 
 # Optional quick tuning
-export APISCAN_API10_QUICK_MAX_ENDPOINTS=20
+export APISCAN_API10_QUICK_MAX_ENDPOINTS=30
 export APISCAN_API10_QUICK_SQL_MAX_TESTS=10
 
 # Full API10 scan
@@ -232,6 +234,8 @@ export APISCAN_API10_QUICK=0
 
 # Deep scan, slower and more intensive
 export APISCAN_DEEP_SCAN=1
+export APISCAN_DEEP_MAX_ENDPOINTS=40    # cover more than the default 15 endpoints
+export APISCAN_RATE_LIMIT=0            # no inter-request delay in a lab
 ```
 
 ---

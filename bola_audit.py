@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2026  #
-# version 5.0 24-06-2026                               #
+# version 5.5 24-06-2026                               #
 ########################################################
 
 from __future__ import annotations
@@ -631,6 +631,8 @@ class BOLAAuditor:
             schema = p.get("schema", {}) or {}
             fmt = _param_attr(p, "format")
             ptype = _param_attr(p, "type", "string")
+            if name in getattr(self.swagger_spec, 'path_parameter_values', {}):
+                return str(self.swagger_spec.path_parameter_values[name])
             if seeds.get(name):
                 return str(seeds[name][0])
             for k in ("example", "default"):
@@ -699,14 +701,13 @@ class BOLAAuditor:
         out = dict(req)
         out.setdefault("headers", {})
         out.setdefault("params", {})
-        url = out.get("url") or self._abs_url(endpoint["path"])
-
-        for prm in endpoint.get("parameters", []):
-            pname = prm.get("name")
-            loc = prm.get("in", "query")
-            val = values.get(pname, "1")
-            if loc == "path":
-                url = url.replace(f"{{{pname}}}", str(val))
+        from urllib.parse import urljoin
+        from scanner_quality import normalize_endpoint, path_values
+        path = endpoint.get('path') or out.get('url')
+        template = urljoin(self.base_url.rstrip('/')+'/', path.lstrip('/'))
+        resolved = path_values(self.swagger_spec)
+        resolved.update(values)
+        url = normalize_endpoint(template, self.base_url, resolved)
 
         out["url"] = url
 
@@ -803,7 +804,8 @@ class BOLAAuditor:
 
         try:
             req = self._build_req_from_op(method, endpoint["path"])
-        except KeyError:
+        except (KeyError, ValueError):
+            # ValueError: unresolved path parameters are filled from the test case values in _apply_param_values.
             req = {
                 "method": method.upper(),
                 "url": self._abs_url(endpoint["path"]),
@@ -925,6 +927,14 @@ class BOLAAuditor:
             if not keep:
                 continue
 
+            if desc_lower == 'other_user':
+                # Different object IDs alone do not establish different owners.
+                # Preserve the observation without claiming a proven access violation.
+                it['description'] = 'Observation: alternate object ID accessible; ownership and authorization boundary unverified'
+                it['severity'] = 'Info'
+                it['confidence'] = 'low'
+                it['evidence_status'] = 'observation'
+                it['true_positive'] = False
             filtered.append(it)
 
         dedup: Dict[str, dict] = {}

@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2026  #
-# version 5.0 24-06-2026                               #
+# version 5.5 24-06-2026                               #
 ########################################################
                                              
 from __future__ import annotations
@@ -91,6 +91,8 @@ class MisconfigurationAuditorPro:
         self.show_progress = show_progress
 
         self._findings: List[Finding] = []
+        self.diagnostics = []
+        self.coverage = dict(audit="API8",state="not_applicable",started=0,completed=0,failed=0,skipped=0)
         self._lock = threading.Lock()
         self._last_request_time = 0.0
         self._error_count = 0
@@ -273,7 +275,10 @@ class MisconfigurationAuditorPro:
         sec = OASSecurityConfig() if OASSecurityConfig else None
         try:
             for op in oas_iter_ops(self.spec):
-                req = oas_build_request(self.spec, self.base_url + "/", op, sec)
+                try:
+                    req = oas_build_request(self.spec, self.base_url + "/", op, sec)
+                except ValueError:
+                    continue
                 endpoints.append({
                     "base": self.base_url,
                     "path": op.get("path", ""),
@@ -465,7 +470,7 @@ class MisconfigurationAuditorPro:
         try:
             method = ep["method"]
             path   = ep["path"]
-            base   = ep.get("base") or self.base_url
+            base   = self.base_url
             
             error_key = f"{method} {path}"
             with self._lock:
@@ -474,11 +479,8 @@ class MisconfigurationAuditorPro:
                         pbar.update(1)
                     return
             
-            full_url = urljoin(base, path.lstrip("/"))
-            
-            if "{" in path and "}" in path:
-                path = re.sub(r"\{[^}]+\}", "123", path)
-                full_url = urljoin(base, path.lstrip("/"))
+            from scanner_quality import normalize_endpoint, path_values
+            full_url = normalize_endpoint(path,base,path_values(self.spec,getattr(self,"path_parameter_values",{})))
             
             host_key = urlparse(full_url).netloc.lower()
             
@@ -509,11 +511,25 @@ class MisconfigurationAuditorPro:
                         headers.pop("Authorization", None)
                         headers.pop("X-API-Key", None)
                         headers.pop("X-Auth-Token", None)
+                    request_options = {}
+                    if m == 'GET' and self.spec:
+                        operation = next((op for op in oas_iter_ops(self.spec) if op['path']==path and op['method']=='GET'), None)
+                        if operation:
+                            try:
+                                built = oas_build_request(self.spec, self.base_url, operation, None)
+                            except ValueError as exc:
+                                self.diagnostics.append(dict(audit='API8',url=full_url,error=str(exc)))
+                                built = {}
+                            request_options = {key: built[key] for key in ('params','cookies') if key in built}
+                            headers.update(built.get('headers',{}))
+                    if m == 'GET':
+                        headers.setdefault('Origin', self.CORS_PROBE_ORIGIN)
                     resp = self.session.request(
                         m, 
                         full_url, 
                         headers=headers, 
                         timeout=self.timeout, 
+                        **request_options,
                         allow_redirects=True
                     )
                     dur = time.time() - start
@@ -524,6 +540,8 @@ class MisconfigurationAuditorPro:
                             del self._endpoint_error_counts[error_key]
                     
                 except requests.RequestException as e:
+                    with self._lock:
+                        self.diagnostics.append(dict(audit='API8',url=full_url,error=str(e)))
                     self._error_count += 1
                     with self._lock:
                         self._endpoint_error_counts[error_key] = \
@@ -570,7 +588,10 @@ class MisconfigurationAuditorPro:
                         break
                     continue
                 
-                if not host_already_reported:
+                if m == "GET" and resp.status_code >= 400 and resp.status_code not in (401,403,404,405):
+                    with self._lock:
+                        self.diagnostics.append(dict(audit='API8',url=full_url,status=resp.status_code,error='Baseline request rejected or server error'))
+                if not host_already_reported and m == "GET" and 200 <= resp.status_code < 300:
                     f = self._security_header_analyzer(ep, f"<{m}>", resp, dur)
                     if f:
                         self._record_finding(f)
@@ -585,6 +606,8 @@ class MisconfigurationAuditorPro:
                         if f:
                             self._record_finding(f)
                     except Exception as ex:
+                        with self._lock:
+                            self.diagnostics.append(dict(audit='API8',url=full_url,error=str(ex),analyzer=analyzer.__name__))
                         self._tw(f"Analyzer {analyzer.__name__} on {m} {path}: {ex}", "debug")
                 if 500 <= resp.status_code < 600:
                     replay_key = (method, path, m)
@@ -701,15 +724,17 @@ class MisconfigurationAuditorPro:
                                 if self._endpoint_error_counts.get(error_key, 0) >= 3:
                                     break
                         
-        except Exception as e:
-            if self._suppress_excessive_errors(method, path):
-                self._tw(f"Unexpected test error at {method} {path}: {e}", "error")
+        except Exception:
+            # Let the future consumer count and record this failed endpoint task.
+            raise
         finally:
             if pbar:
                 pbar.update(1)                              
                                                                                                 
     #================funtion _security_header_analyzer detect missing security headers ##########
     def _security_header_analyzer(self, ep, payload, resp, dur):
+        if payload != "<GET>" or not 200 <= resp.status_code < 300:
+            return None
         if self._is_api_json(resp):
             return None
             
@@ -749,6 +774,8 @@ class MisconfigurationAuditorPro:
             "Low",
         )
                                                                                   
+    CORS_PROBE_ORIGIN = "https://apiscan-cors-probe.example"
+
     #================funtion _cors_analyzer analyze CORS exposure ##########
     def _cors_analyzer(self, ep, payload, resp, dur):
         hdrs = resp.headers or {}
@@ -780,55 +807,37 @@ class MisconfigurationAuditorPro:
             sev = "Medium"
             desc_parts.append("Multiple origins in ACAO")
         elif acao == "*" and acac == "true":
-            sev = "High"
-            desc_parts.append("Wildcard with credentials")
+            sev = "Low"
+            desc_parts.append("Wildcard with credentials: browser credentialed reads are blocked by this combination")
         elif req_origin and acao == req_origin:
-            sev = "Medium" if "origin" not in vary else "Low"
-            desc_parts.append("ACAO reflects request Origin")
+            if req_origin == self.CORS_PROBE_ORIGIN and acac == "true":
+                sev = "High"
+                desc_parts.append("Arbitrary Origin reflected with credentials: cross-origin credentialed reads allowed")
+            elif req_origin == self.CORS_PROBE_ORIGIN:
+                sev = "Low"
+                desc_parts.append("Arbitrary Origin reflected without credentials")
+            else:
+                sev = "Low"
+                desc_parts.append("ACAO reflects request Origin")
         elif acao == "*":
             sev = "Low" if method != "OPTIONS" else "Info"
             desc_parts.append("Wildcard CORS")
 
-        # ── Data exposure check: does the response body leak sensitive data? ──
+        # This response uses the configured session. Field names and collection size
+        # cannot establish anonymous access, ownership, or cross-origin readability.
         try:
-            body_text = getattr(resp, "text", "") or ""
-            ct = (hdrs.get("Content-Type", "") or "").lower()
-            if "application/json" in ct and len(body_text) > 200:
-                import json as _json
-                try:
-                    data = _json.loads(body_text)
-                except Exception:
-                    data = None
-
-                if isinstance(data, dict):
-                    # Check for wrapped data: {"status":"success","data":[...]}
-                    inner = data.get("data") or data
-                    if isinstance(inner, list) and len(inner) >= 3:
-                        first = inner[0] if isinstance(inner[0], dict) else {}
-                        # Detect user/account objects with sensitive fields
-                        sensitive_fields = {"email", "role", "token", "password", "secret", "key",
-                                           "ssn", "credit", "ip", "lastLoginIp", "deluxeToken"}
-                        found_fields = [k for k in first if k.lower() in sensitive_fields or
-                                       any(s in k.lower() for s in ("token", "secret", "key", "password", "pass"))]
-                        if len(found_fields) >= 2:
-                            sev = "Critical"
-                            desc_parts.append(f"DATA LEAK: {len(inner)} records exposed with fields: {', '.join(found_fields[:5])}")
-                        elif len(inner) >= 10:
-                            sev = max(sev, "High") if sev in ("Info", "Low", "Medium") else sev
-                            desc_parts.append(f"Large data dump: {len(inner)} records returned without auth")
-                elif isinstance(data, list) and len(data) >= 3:
-                    first = data[0] if isinstance(data[0], dict) else {}
-                    sensitive_fields = {"email", "role", "token", "password", "secret", "key",
-                                       "ssn", "credit", "ip", "lastLoginIp", "deluxeToken"}
-                    found_fields = [k for k in first if k.lower() in sensitive_fields or
-                                   any(s in k.lower() for s in ("token", "secret", "key", "password", "pass"))]
-                    if len(found_fields) >= 2:
-                        sev = "Critical"
-                        desc_parts.append(f"DATA LEAK: {len(data)} records exposed with fields: {', '.join(found_fields[:5])}")
-                    elif len(data) >= 10:
-                        sev = max(sev, "High") if sev in ("Info", "Low", "Medium") else sev
-                        desc_parts.append(f"Large data dump: {len(data)} records returned without auth")
-        except Exception:
+            if 'json' in (hdrs.get('Content-Type') or '').lower():
+                data = resp.json()
+                records = data.get('data') if isinstance(data, dict) else data
+                if isinstance(records, list) and records and isinstance(records[0], dict):
+                    names = sorted({str(k) for item in records[:25] if isinstance(item, dict)
+                                    for k in item if str(k).lower() in
+                                    {'email', 'role', 'password', 'token', 'secret', 'ssn', 'deluxetoken'}})
+                    if names:
+                        desc_parts.append('Potentially sensitive fields in configured-session response: '
+                                          + ', '.join(names)
+                                          + '; anonymous access and authorization policy unverified')
+        except (ValueError, TypeError, AttributeError):
             pass
 
         return self._build_finding(ep, payload, resp, dur, ", ".join(desc_parts), sev)
@@ -1060,28 +1069,43 @@ class MisconfigurationAuditorPro:
         if not endpoints and getattr(self, "spec", None):
             endpoints = self.endpoints_from_spec_universal()
         if not endpoints:
+            self._findings.clear()
+            self.diagnostics = []
+            self.coverage = dict(audit='API8',state='not_applicable',started=0,completed=0,failed=0,skipped=0)
             return []
 
         # Reset error tracking voor nieuwe scan
         self._endpoint_error_counts = {}
         self._param_error_logged = set()
+        self._findings.clear()
+        self._reported_header_hosts.clear()
+        self._printed_categories.clear()
+        self.diagnostics = []
+        self.coverage = dict(audit='API8',started=len(endpoints),completed=0,failed=0,skipped=0,
+                             note='Endpoint tasks; passive GET/OPTIONS checks. Other method bodies are not tested.')
         self._crash_signature_counts = {}
         self._repeatable_probe_done = set()
 
         with ThreadPoolExecutor(max_workers=self.concurrency) as pool:
-            futures = [pool.submit(self._test_single_endpoint, ep) for ep in endpoints]
+            futures = {pool.submit(self._test_single_endpoint, ep): ep for ep in endpoints}
+            iterator = as_completed(futures)
             if self.show_progress:
-                for _ in tqdm(as_completed(futures), total=len(futures), desc="API8 misconfiguration endpoints", unit="endpoint", dynamic_ncols=True):
-                    pass
-            else:
-                for _ in as_completed(futures):
-                    pass
+                iterator = tqdm(iterator,total=len(futures),desc='API8 misconfiguration endpoints',unit='endpoint')
+            for future in iterator:
+                try:
+                    future.result()
+                    self.coverage['completed'] += 1
+                except Exception as exc:
+                    self.coverage['failed'] += 1
+                    self.diagnostics.append(dict(audit='API8',endpoint=futures[future],error=str(exc)))
 
         # ── API enumeration / metadata exposure (Salesforce attack Step 2) ──
         # Attackers use /limits/, /sobjects/, and schema endpoints to profile
         # the API before data exfiltration.  Detecting these as misconfigurations.
         self._test_enumeration_exposure()
 
+        self.coverage['diagnostics'] = len(self.diagnostics)
+        self.coverage['state'] = 'incomplete' if self.diagnostics else 'completed'
         return self._filter_issues()
 
 

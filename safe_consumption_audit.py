@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2026  #
-# version 5.0 07-07-2026                               #
+# version 5.5 07-07-2026                               #
 ########################################################
 
 from __future__ import annotations
@@ -71,6 +71,9 @@ SAFE_STATUSES = {400, 401, 403, 404, 405, 422}
 WAF_MARKERS = ('cloudflare', 'akamai', 'imperva', 'mod_security', 'aws waf', 'request blocked', 'access denied')
 PROBLEM_JSON_CT = 'application/problem+json'
 stop_requested = threading.Event()
+# Input or baseline prevented the test from starting; not an execution failure.
+UNTESTED_ISSUES = frozenset(('SQL baseline unsuitable', 'SQL request input unavailable',
+                             'SQL test unavailable', 'NoSQL baseline unsuitable'))
 
 os.environ.setdefault('APISCAN_MAX_WORKERS', '6')
 os.environ.setdefault('APISCAN_TIMEOUT', '2')
@@ -90,7 +93,7 @@ os.environ.setdefault('APISCAN_API10_QUICK_DIRTRAV_MAX_TESTS', '8')
 os.environ.setdefault('APISCAN_API10_QUICK_HPP_MAX_PARAMS', '3')
 os.environ.setdefault('APISCAN_API10_QUICK_REDIRECT_MAX_TESTS', '6')
 os.environ.setdefault('APISCAN_HTTP_RETRIES', '0')
-os.environ.setdefault('APISCAN_DIRTRAV_PROGRESS', '1')
+os.environ.setdefault('APISCAN_DIRTRAV_PROGRESS', '0')
 os.environ.setdefault('APISCAN_DIRTRAV_WORKERS', '6')
 os.environ.setdefault('APISCAN_TRAV_MAX_DDOT', '2')        # was 3; fewer traversal variants
 os.environ.setdefault('APISCAN_TRAV_MAX_ELLIPSIS', '1')    # was 2; fewer ellipsis variants
@@ -255,6 +258,28 @@ if os.getenv('APISCAN_ENABLE_CONSOLE_STOP', '0') == '1':
 #================ _headers_to_list description ##########
 
 
+def _resolve_schema_ref(spec, schema, depth=0):
+    # Follow local $ref pointers and composed schemas to the object that declares properties.
+    while isinstance(schema, dict) and '$ref' in schema and depth < 8:
+        ref = schema['$ref']
+        if not isinstance(ref, str) or not ref.startswith('#/'):
+            return {}
+        target = spec
+        try:
+            for part in ref[2:].split('/'):
+                target = target[part.replace('~1', '/').replace('~0', '~')]
+        except (KeyError, TypeError):
+            return {}
+        schema, depth = target, depth + 1
+    if isinstance(schema, dict) and not schema.get('properties') and depth < 8:
+        for key in ('allOf', 'oneOf', 'anyOf'):
+            for part in schema.get(key) or []:
+                resolved = _resolve_schema_ref(spec, part, depth + 1)
+                if resolved.get('properties'):
+                    return resolved
+    return schema if isinstance(schema, dict) else {}
+
+
 def _headers_to_list(headerobj):
     if hasattr(headerobj, 'getlist'):
         out = []
@@ -296,7 +321,7 @@ class ProgressBar:
         if self.total > 0:
             percent = (self.current / self.total) * 100
             filled = int(self.width * self.current // self.total)
-            bar = '█' * filled + '░' * (self.width - filled)
+            bar = '#' * filled + '-' * (self.width - filled)
 
             if self.current > 0:
                 eta = (elapsed / self.current) * (self.total - self.current)
@@ -529,7 +554,7 @@ class SafeConsumptionAuditor:
         self.quick_hpp_max_params = max(1, int(os.getenv('APISCAN_API10_QUICK_HPP_MAX_PARAMS', '3')))
         self.quick_redirect_max_tests = max(1, int(os.getenv('APISCAN_API10_QUICK_REDIRECT_MAX_TESTS', '6')))
         self.intensity = os.getenv('APISCAN_INTENSITY', 'medium').lower()
-        # Honor TQDM_DISABLE (set by GUI subprocess) — tqdm carriage returns
+        # Honor TQDM_DISABLE (set by GUI subprocess) â€” tqdm carriage returns
         # block line-buffered pipe readers; use ProgressBar fallback instead.
         self.no_tqdm = (
             os.getenv('APISCAN_NO_TQDM', '0').strip().lower() in ('1', 'true', 'yes', 'on')
@@ -562,13 +587,13 @@ class SafeConsumptionAuditor:
         self.param_cache = {}
         self._options_cache: dict[str, set] = {}
         self._options_cache_lock = threading.Lock()
-        # Traversal config cached once — read in every _test_directory_traversal call otherwise
+        # Traversal config cached once â€” read in every _test_directory_traversal call otherwise
         self._trav_repl_index    = int(os.getenv('APISCAN_TRAV_REPLACE_INDEX',        '-2'))
         self._trav_ins_before    = int(os.getenv('APISCAN_TRAV_INSERT_BEFORE_INDEX',  '-1'))
         self._trav_max_dot       = int(os.getenv('APISCAN_TRAV_MAX_DOT',              '3'))
         self._trav_max_ddot      = int(os.getenv('APISCAN_TRAV_MAX_DDOT',             '3'))
         self._trav_max_ellipsis  = int(os.getenv('APISCAN_TRAV_MAX_ELLIPSIS',         '2'))
-        self._dirtrav_progress   = os.getenv('APISCAN_DIRTRAV_PROGRESS', '1') == '1'
+        self._dirtrav_progress   = os.getenv('APISCAN_DIRTRAV_PROGRESS', '0') == '1'
         self._dirtrav_workers_env = os.getenv('APISCAN_DIRTRAV_WORKERS')
         env_payloads = os.getenv("APISCAN_PAYLOADS_PATH", "").strip()
         base = Path(__file__).resolve().parent
@@ -677,7 +702,7 @@ class SafeConsumptionAuditor:
     def _print_banner(self):
         _C = '\033[96m'; _R = '\033[0m'; _D = '\033[2m'
         print(f"\n  {_C}\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500{_R}")
-        print(f"  {_C}\u25b6{_R}  \033[1m\033[97mAPI10{_R}  {_C}Unsafe Consumption of APIs{_R}  {_D}v5.0{_R}")
+        print(f"  {_C}\u25b6{_R}  \033[1m\033[97mAPI10{_R}  {_C}Unsafe Consumption of APIs{_R}  {_D}v5.5{_R}")
         print(f"  {_C}\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500{_R}")
 
     #================ _create_secure_session description ##########
@@ -715,10 +740,11 @@ class SafeConsumptionAuditor:
         retries = Retry(
             total=retry_total,
             connect=retry_total,
-            read=retry_total,
+            read=0,
+            status=0,
             backoff_factor=0.2,
-            status_forcelist=[500, 502, 503],
-            allowed_methods=['HEAD', 'GET', 'OPTIONS', 'POST', 'PUT', 'DELETE', 'PATCH'],
+            status_forcelist=[],
+            allowed_methods=['HEAD', 'GET', 'OPTIONS'],
             raise_on_status=False,
             raise_on_redirect=False,
         )
@@ -759,12 +785,29 @@ class SafeConsumptionAuditor:
 
     #================ _record_telemetry description ##########
     def _record_telemetry(self, issue: str, target: str, *, payload=None, extra=None, response=None) -> None:
+        from probe_policy import ProbeSkipped, SKIP_REASONS
+        # Existing probe handlers record exceptions here. Propagate policy skips
+        # out of those handlers so their payload loops stop immediately.
+        state = getattr(self, '_execution_state', None)
+        if extra and extra.get('error') in SKIP_REASONS:
+            if state is not None and getattr(state, 'planning', False):
+                # Planning controls may encounter a route already bounded by probes.
+                # The policy retains its unique diagnostic; do not abort the scan.
+                return
+            raise ProbeSkipped(extra['error'])
+        untested = issue in UNTESTED_ISSUES
+        if state is not None and untested:
+            state.untested = True
+        elif state is not None and (extra and extra.get('error') or 'invalid host' in issue.lower()):
+            state.failed = True
         entry = {
             'issue': issue,
             'target': target,
             'payload': payload if payload is not None else '',
             'timestamp': datetime.now().isoformat(),
         }
+        if untested:
+            entry['execution_status'] = 'untested'
         if extra:
             entry.update(extra)
         if response is not None:
@@ -785,6 +828,15 @@ class SafeConsumptionAuditor:
 
     #================ _log description ##########
     def _log(self, issue: str, target: str, severity: str, *, payload=None, response=None, extra=None) -> None:
+        if issue == 'Request smuggling test borderline/timeout':
+            diagnostic = dict(extra or {})
+            diagnostic['execution_status'] = 'inconclusive'
+            diagnostic['error'] = 'Timeout or delayed response alone does not establish request smuggling'
+            self._record_telemetry(issue, target, payload=payload, extra=diagnostic, response=response)
+            return
+        if response is None and ('invalid host' in issue.lower() or (extra and extra.get('error'))):
+            self._record_telemetry(issue, target, payload=payload, extra=extra, response=response)
+            return
         if extra and getattr(self, 'IGNORE_NETWORK_TIMEOUTS', True):
             err_low = str(extra.get('error', '')).lower()
             for p in getattr(self, 'NETWORK_TIMEOUT_PATTERNS', ('timeout', 'timed out', 'read timed out', 'connect timeout')):
@@ -954,12 +1006,11 @@ class SafeConsumptionAuditor:
                     else:
 
                         severity = _sev_at_most(severity, 'Info')
-# Special-case: CORS wildcard + 200 + JSON-ish data => keep at least Medium.
-                # If it's not 200 or there's no data, it should not be Medium.
+                # Wildcard access alone does not prove exposure of confidential data.
                 low_issue = (issue or '').lower()
                 if 'cors' in low_issue:
-                    if sc == 200 and _is_cors_wildcard(response) and _has_sensitive_jsonish(body_preview):
-                        severity = _sev_at_least(severity, 'Medium')
+                    if _is_cors_wildcard(response):
+                        severity = 'Info'
                     else:
                         severity = _sev_at_most(severity, 'Low')
 
@@ -1029,7 +1080,14 @@ class SafeConsumptionAuditor:
         if entry.get('status_code') == '-' or 'timeout' in str(entry.get('error', '')).lower():
             entry['severity'] = 'Info'
 
-        entry['risk_score'] = self._calculate_risk_score(entry)
+        from scanner_quality import filtering_observation
+        if filtering_observation(entry.get('issue')):
+            entry['severity'] = 'Info'
+            entry['confidence'] = 'low'
+            entry['evidence_status'] = 'observation'
+            entry['risk_score'] = 0.0
+        else:
+            entry['risk_score'] = self._calculate_risk_score(entry)
 
         with self.issues_lock:
             self.issues.append(entry)
@@ -1047,6 +1105,20 @@ class SafeConsumptionAuditor:
 
     #================ _dump_raw_issues description ##########
     def _dump_raw_issues(self, output_dir: str) -> None:
+        from pathlib import Path
+        import json
+        output_root = Path(output_dir).parent
+        output_root.mkdir(parents=True, exist_ok=True)
+        (output_root / 'api10_sql_coverage.json').write_text(json.dumps({
+            'run_marker': getattr(self, 'sql_run_marker', ''),
+            'operations': getattr(self, 'sql_details', [])}, indent=2), encoding='utf-8')
+        (output_root / 'api10_write_journal.json').write_text(json.dumps({
+            'run_marker': getattr(self, 'sql_run_marker', ''),
+            'requests': getattr(self, 'sql_write_journal', [])}, indent=2), encoding='utf-8')
+        coverage_file = Path(output_dir) / 'coverage_api10.json'
+        coverage_file.parent.mkdir(parents=True, exist_ok=True)
+        coverage_file.write_text(json.dumps(getattr(self, 'coverage', {
+            'audit': 'API10', 'state': 'not_measured'}), indent=2), encoding='utf-8')
         try:
             import json
             from pathlib import Path
@@ -1071,7 +1143,7 @@ class SafeConsumptionAuditor:
             with open(filename, 'w', encoding='utf-8') as f:
                 json.dump(serializable_issues, f, indent=2, ensure_ascii=False)
 
-            print(f"  \033[92m\u2714\033[0m  \033[92mOK\033[0m  Raw issues saved: {filename}")
+            print(f"  \033[92m\u2714\033[0m  \033[92mOK\033[0m  API10 raw issues saved: {filename}")
 
             if self.telemetry:
                 telemetry_file = output_path / f"telemetry_{timestamp}.json"
@@ -1162,14 +1234,16 @@ class SafeConsumptionAuditor:
                             body_low = (r.text or '').lower()
 
                             if any(kw in body_low for kw in self.JWT_ERROR_KEYWORDS):
-                                self._log(
-                                    'JWT security issue detected',
-                                    endpoint,
-                                    'Medium',
-                                    payload=jwt_token[:50] + '...',
-                                    response=r,
-                                    extra={'jwt_error': 'Token validation error detected'}
-                                )
+                                # A validation message means the forged token was rejected: diagnostic only.
+                                with self._options_cache_lock:
+                                    seen = self.__dict__.setdefault('_jwt_reject_seen', set())
+                                    first = endpoint not in seen
+                                    seen.add(endpoint)
+                                if first:
+                                    self._record_telemetry('JWT rejection message observed', endpoint,
+                                        payload=jwt_token[:50] + '...', response=r,
+                                        extra={'execution_status': 'response_received',
+                                               'note': 'Forged token rejected with a validation message; expected behaviour'})
 
                             if 'alg' in jwt_token and 'none' in jwt_token.lower():
                                 if r.status_code < 400:
@@ -1210,7 +1284,7 @@ class SafeConsumptionAuditor:
                 pass
 
             # Only test bypass if the endpoint actually rate-limits us.
-            # Without this guard we send 7×5=35 extra requests per endpoint for nothing.
+            # Without this guard we send 7Ã—5=35 extra requests per endpoint for nothing.
             if baseline_status != 429:
                 return
 
@@ -1412,8 +1486,10 @@ class SafeConsumptionAuditor:
             params = self._discover_parameters(endpoint)
 
             redirect_param_candidates = {
-                'redirect', 'redirecturi', 'redirect_uri', 'return', 'returnurl', 'return_url',
-                'next', 'url', 'target', 'dest', 'destination', 'continue', 'callback'
+                'redirect', 'redirecturi', 'redirect_uri', 'redirecturl', 'redirect_url', 'redir',
+                'return', 'returnurl', 'return_url', 'returnto', 'return_to', 'next', 'nexturl',
+                'next_url', 'url', 'target', 'dest', 'destination', 'continue', 'callback',
+                'goto', 'forward', 'location', 'to'
             }
             test_params = [p for p in params if p.lower() in redirect_param_candidates]
             if not test_params:
@@ -1442,7 +1518,7 @@ class SafeConsumptionAuditor:
                         loc_low = location.lower()
 
                         if 300 <= int(getattr(r, 'status_code', 0)) < 400 and location:
-                            if 'evil.example' in loc_low or loc_low.startswith('//evil.example') or loc_low.startswith('https://evil.example') or loc_low.startswith('http://evil.example'):
+                            if __import__('response_evidence').redirect_to_host(location, test_url, 'evil.example'):
                                 self._log(
                                     'Possible open redirect',
                                     test_url,
@@ -1471,81 +1547,106 @@ class SafeConsumptionAuditor:
 
 
     #================ _test_host_header_injection description ##########
-    def _test_host_header_injection(self, endpoint: str) -> None:
-        if stop_requested.is_set():
-            return
-
-        header_sets = getattr(self, 'FORWARDED_HEADER_SETS', []) or []
-        host_values = getattr(self, 'HOST_HEADER_PAYLOADS', []) or []
-
-        if not header_sets and not host_values:
-            return
-
+    def _test_host_controls(self, endpoint):
+        import uuid
+        from urllib.parse import urlsplit
+        with self._options_cache_lock:
+            seen = getattr(self, '_host_control_seen', set())
+            if endpoint in seen:
+                return
+            seen.add(endpoint)
+            self._host_control_seen = seen
+        host = 'apiscan-' + uuid.uuid4().hex[:12] + '.invalid'
+        domain = urlsplit(endpoint).netloc
         try:
-            parsed = urlparse.urlparse(endpoint)
-            domain = parsed.netloc or parsed.hostname or ''
+            self._throttle(domain)
+            baseline = self.session.get(endpoint, timeout=(3, self.timeout), allow_redirects=False)
+        except requests.RequestException as exc:
+            self._record_telemetry('Host control baseline failed', endpoint, extra={'error': str(exc)})
+            return
+        for header in ('Host', 'X-Forwarded-Host', 'X-Host'):
+            if stop_requested.is_set():
+                return
+            try:
+                self._throttle(domain)
+                response = self.session.get(endpoint, headers={header: host}, timeout=(3, self.timeout), allow_redirects=False)
+            except requests.RequestException as exc:
+                self._record_telemetry('Host control probe failed', endpoint, extra={'error': str(exc)})
+                continue
+            location = response.headers.get('Location', '')
+            if host == urlsplit(location).hostname and location != baseline.headers.get('Location', ''):
+                self._log('Response redirect influenced by untrusted host header', endpoint, 'Low',
+                    response=response, extra={'header': header, 'injected_host': host,
+                    'baseline_status': baseline.status_code, 'location': location,
+                    'note': 'Redirect manipulation observed; security impact requires review'})
+            elif host in (response.text or '') and host not in (baseline.text or ''):
+                self._log('Observation: injected host reflected in response; impact unverified', endpoint, 'Info',
+                    response=response, extra={'header': header, 'injected_host': host,
+                    'baseline_status': baseline.status_code})
 
-            tests = []
-            for hs in header_sets[:10]:
-                if isinstance(hs, dict) and hs:
-                    tests.append(hs)
-
-            for hv in host_values[:5]:
-                tests.append({'X-Forwarded-Host': str(hv)})
-                tests.append({'X-Forwarded-Server': str(hv)})
-                tests.append({'X-Host': str(hv)})
-
-            for headers in tests:
-                if stop_requested.is_set():
-                    return
-                try:
-                    self._throttle(domain)
-                    r = self.session.get(endpoint, headers=headers, timeout=(3, self.timeout), allow_redirects=False)
-
-                    suspicious = False
-                    evidence = {}
-
-                    location = (r.headers.get('Location') or '').strip()
-                    if location and any(v in location.lower() for v in ('evil.example', 'internal.service', 'localhost', '127.0.0.1')):
-                        suspicious = True
-                        evidence['location'] = location[:500]
-
-                    body_low = (r.text or '').lower()
-                    if 'evil.example' in body_low:
-                        suspicious = True
-                        evidence['body_reflection'] = 'evil.example'
-
-                    if suspicious:
-                        self._log(
-                            'Possible host header / forwarded header injection',
-                            endpoint,
-                            'Low',
-                            payload=headers,
-                            response=r,
-                            extra={'headers': headers, **evidence, 'confidence': 'low'}
-                        )
-                except Exception:
-                    continue
-
-        except Exception as e:
-            self._log('Host header injection test failed', endpoint, 'Info', extra={'error': str(e)})
+    def _test_host_header_injection(self, endpoint: str) -> None:
+        return self._test_host_controls(endpoint)
 
 
+    @staticmethod
+    def _redirect_echoes_request(request_url: str, location: str) -> bool:
+        # Same-host redirect to the decoded, normalized request path: URL canonicalization, not file access.
+        import posixpath
+        from urllib.parse import urljoin, unquote
 
+        def normalized(u: str) -> str:
+            path = urlparse.urlsplit(u).path
+            for _ in range(3):
+                decoded = unquote(path)
+                if decoded == path:
+                    break
+                path = decoded
+            path = re.sub(r'/{2,}', '/', path.replace('\\', '/')) or '/'
+            return posixpath.normpath(path).rstrip('/').lower()
 
-    #================ _discover_parameters description ##########
+        if not location:
+            return False
+        target = urljoin(request_url, location)
+        if urlparse.urlsplit(target).netloc.lower() != urlparse.urlsplit(request_url).netloc.lower():
+            return False
+        return normalized(target) == normalized(request_url)
+
+    def _declared_query_params(self, endpoint: str) -> List[str]:
+        names: List[str] = []
+        matching = getattr(self.session, 'matching', None)
+        try:
+            operations = matching(endpoint) if callable(matching) else []
+        except Exception:
+            operations = []
+        for op in operations or []:
+            for param in op.get('parameters') or []:
+                name = param.get('name')
+                if param.get('in') == 'query' and name and name not in names:
+                    names.append(name)
+        return names
+
+    def _param_candidates(self, endpoint: str, fallback, limit: Optional[int] = None) -> List[str]:
+        declared = self._declared_query_params(endpoint)
+        if declared and not self.deep_scan:
+            return declared
+        fallback = list(fallback or [])
+        if limit and not self.deep_scan:
+            fallback = fallback[:limit]
+        return list(dict.fromkeys([*declared, *fallback]))
+
     def _discover_parameters(self, endpoint: str) -> List[str]:
         if endpoint in self.param_cache:
             return self.param_cache[endpoint]
 
-        discovered = set()
+        # Ordered: declared spec params first, then observed, then generic guesses.
+        discovered: Dict[str, None] = dict.fromkeys(self._declared_query_params(endpoint))
 
         try:
             parsed = urlparse.urlparse(endpoint)
 
             if parsed.query:
                 params = parse_qs(parsed.query)
-                discovered.update(params.keys())
+                discovered.update(dict.fromkeys(params.keys()))
 
             if self.param_discovery:
                 for method in ['GET', 'POST']:
@@ -1564,9 +1665,10 @@ class SafeConsumptionAuditor:
 
                         if 'application/json' in ctype:
                             try:
-                                data = r.json()
-                                self._extract_keys_from_json(data, discovered)
-                            except:
+                                found = set()
+                                self._extract_keys_from_json(r.json(), found)
+                                discovered.update(dict.fromkeys(sorted(found)))
+                            except Exception:
                                 pass
 
                         response_text = r.text or ''
@@ -1578,7 +1680,7 @@ class SafeConsumptionAuditor:
 
                         for pattern in param_patterns:
                             matches = re.findall(pattern, response_text, re.I)
-                            discovered.update(matches)
+                            discovered.update(dict.fromkeys(matches))
 
                     except Exception:
                         continue
@@ -1590,7 +1692,7 @@ class SafeConsumptionAuditor:
                 'file', 'path', 'url', 'redirect', 'callback', 'jsonp'
             ]
 
-            discovered.update(common_params)
+            discovered.update(dict.fromkeys(common_params))
 
             result = list(discovered)
             self.param_cache[endpoint] = result
@@ -1780,16 +1882,69 @@ class SafeConsumptionAuditor:
 
     #================ test_endpoints description ##########
     def test_endpoints(self, endpoints: List[str]) -> List[Issue]:
-        print(f"  \033[96m\u25c6\033[0m  \033[96mInfo\033[0m  Starting scan  \033[2mworkers={self.max_workers}  target={self.base_url}  endpoints={len(endpoints)}\033[0m")
-        print()
+        from probe_policy import ProbePolicySession
+        original = self.session
+        policy = ProbePolicySession(original, getattr(self,'swagger_spec',{}), self.base_url)
+        self.session = policy
+        try:
+            return self._test_endpoints_with_policy(endpoints)
+        finally:
+            self.session = original
+            self.coverage['probe_policy'] = policy.summary()
+            if policy.summary()['skipped_requests']:
+                self.coverage['scope_limited'] = True
 
+    def _test_endpoints_with_policy(self, endpoints: List[str]) -> List[Issue]:
+        self._schema_sql_seen = set()
+        import uuid
+        self.sql_run_marker = uuid.uuid4().hex[:12]
+        self.sql_details = []
+        self.sql_write_journal = []
+        self._host_control_seen = set()
+        from scanner_quality import normalize_endpoint, coverage_summary
+        self.coverage = {'audit': 'API10', 'input_endpoints': len(endpoints),
+                         'valid_endpoints': 0, 'started': 0, 'completed': 0,
+                         'failed': 0, 'untested': 0, 'skipped': 0, 'skipped_tasks': 0, 'not_applicable': 0,
+                         'unsupported_tests': ['request_smuggling', 'blind_sql_boolean_non_get', 'blind_sql_time', 'sql_delete', 'schema_body_non_sql_injection'], 'scope_limited': True}
+        self._coverage_lock = threading.Lock()
+        self._execution_state = threading.local()
+        self._execution_state.planning = True
+        normalized = []
+        for endpoint in endpoints:
+            try:
+                url = normalize_endpoint(endpoint, self.base_url,
+                                         getattr(self, 'path_parameter_values', {}))
+                if url not in normalized:
+                    normalized.append(url)
+            except (TypeError, ValueError) as exc:
+                self.coverage['skipped'] += 1
+                self._record_telemetry('Endpoint validation failed', str(endpoint),
+                                       extra={'error': str(exc), 'execution_status': 'skipped'})
+        self.coverage['valid_endpoints'] = len(normalized)
         global stop_requested
         stop_requested.clear()
+        try:
+            if not normalized:
+                return self.issues
+            if self.adaptive:
+                return self.adaptive_scanning_with_progress(normalized)
+            return self._comprehensive_scan_with_progress(normalized)
+        finally:
+            if stop_requested.is_set():
+                self.coverage['skipped'] += 1
+            if hasattr(self.session, 'diagnostics'):
+                for record in self.session.diagnostics('API10'):
+                    self._record_telemetry('Probe skipped by request policy', record['path'], extra=record)
+            self.coverage = coverage_summary(self.coverage, self.telemetry)
+            if hasattr(self.session,'summary'): self.coverage['probe_policy'] = self.session.summary()
+            self.coverage['sql'] = {
+                'operations_total': len(getattr(self, 'sql_details', [])),
+                'operations_tested': sum(x['state'] == 'completed' for x in getattr(self, 'sql_details', [])),
+                'details_file': 'api10_sql_coverage.json',
+                'probe_requests': sum(x['probe_requests'] for x in getattr(self, 'sql_details', [])),
+                'note': 'SQL error detection, repeated GET boolean checks and observed JSON-login bypass controls. Capped declared fields; invalid baselines remain untested. Boolean body/path and time-based checks remain unsupported.'}
 
-        if self.adaptive:
-            return self.adaptive_scanning_with_progress(endpoints)
-        else:
-            return self._comprehensive_scan_with_progress(endpoints)
+            print('API10 coverage: ' + json.dumps(self.coverage, ensure_ascii=False))
 
 
     #================ adaptive_scanning_with_progress description ##########
@@ -1810,6 +1965,8 @@ class SafeConsumptionAuditor:
         ]
         completed = 0
         total_tasks = len(sample_endpoints) * len(fast_tests)
+        self._phase1_pairs = set()
+        self._phase1_active = True
 
         if HAS_TQDM and not self.no_tqdm:
             sys.stdout.flush()
@@ -1819,7 +1976,7 @@ class SafeConsumptionAuditor:
                     futures = []
                     for endpoint in sample_endpoints:
                         for test in fast_tests:
-                            futures.append(executor.submit(self._run_test_with_callback, test, endpoint, pbar.update))
+                            futures.append(self._schedule_test(executor, test, endpoint, pbar.update))
 
                     for future in concurrent.futures.as_completed(futures):
                         try:
@@ -1834,7 +1991,7 @@ class SafeConsumptionAuditor:
                 futures = []
                 for endpoint in sample_endpoints:
                     for test in fast_tests:
-                        futures.append(executor.submit(self._run_test_with_callback, test, endpoint, progress.update))
+                        futures.append(self._schedule_test(executor, test, endpoint, progress.update))
 
                 for future in concurrent.futures.as_completed(futures):
                     try:
@@ -1844,6 +2001,7 @@ class SafeConsumptionAuditor:
 
             progress.close()
 
+        self._phase1_active = False
         print(f'{Colors.GREEN}  [] Phase 1 completed - {len(self.issues)} issues found{Colors.RESET}')
 
         sql_found = any('sql' in str(i).lower() for i in self.issues)
@@ -1907,7 +2065,7 @@ class SafeConsumptionAuditor:
                 partial(self._test_header_manipulation),
                 partial(self._test_rate_limit_bypass),
             ])
-        # Injection payloads (XSS, SQLi, NoSQLi, LFI, RCE, SSTI, …)
+        # Injection payloads (XSS, SQLi, NoSQLi, LFI, RCE, SSTI, â€¦)
         injection_types = list(self.INJECTION_PAYLOADS)
         if self.quick_mode and not self.deep_scan:
             quick_types = {'sql', 'path', 'xss', 'nosql', 'lfi', 'ssti'}
@@ -1936,6 +2094,8 @@ class SafeConsumptionAuditor:
 
         remaining = [e for e in endpoints if e not in set(promising_endpoints)]
         target_endpoints = promising_endpoints + remaining
+        target_endpoints = self._prioritize_sql_inputs(target_endpoints)
+        all_prioritized = list(target_endpoints)
         if self.quick_mode and not self.deep_scan:
             before_cap = len(target_endpoints)
             target_endpoints = target_endpoints[:self.quick_max_endpoints]
@@ -1953,11 +2113,28 @@ class SafeConsumptionAuditor:
             if before_cap > len(target_endpoints):
                 print(f'{Colors.MAGENTA}  [Deep] Limiting Phase 2 to {len(target_endpoints)}/{before_cap} endpoints ({len(intensive_tests)} tests each). Set APISCAN_DEEP_MAX_ENDPOINTS for more.{Colors.RESET}')
 
+        # Schema SQL probes are cheap; run them on endpoints beyond the cap as well.
+        kept = set(target_endpoints)
+        quick_only = self.quick_mode and not self.deep_scan
+        sql_only = [e for e in all_prioritized
+                    if e not in kept and not (quick_only and self._should_skip_heavy_endpoint(e))]
+        batches = [(test, target_endpoints) for test in intensive_tests]
+        if sql_only:
+            batches.append((partial(self._test_schema_sql), sql_only))
+            print(f'{Colors.WHITE}  [SQL] Schema SQL probes also run on {len(sql_only)} endpoints outside the Phase 2 cap{Colors.RESET}')
+
+        if hasattr(self, 'coverage'):
+            self.coverage['phase2_selection'] = {
+                'available_endpoints': len(endpoints), 'selected_endpoints': len(target_endpoints),
+                'excluded_endpoints': len(set(endpoints) - set(target_endpoints)),
+                'sql_only_endpoints': len(sql_only),
+                'note': 'Existing quick/deep endpoint caps apply; declared SQL inputs are prioritized. Excluded endpoints receive schema SQL probes only.'}
+
         print(f'{Colors.WHITE}  [Testing] {len(target_endpoints)} endpoints with {len(intensive_tests)} test types{Colors.RESET}')
 
-        total_phase2_tests = len(target_endpoints) * len(intensive_tests)
+        total_phase2_tests = sum(len(batch_endpoints) for _, batch_endpoints in batches)
 
-        # ── Build human-readable labels for each test ──
+        # â”€â”€ Build human-readable labels for each test â”€â”€
         _TEST_LABELS = {
             "_test_basic_security": "Basic Security Headers",
             "_test_waf_detection": "WAF Detection",
@@ -1977,6 +2154,7 @@ class SafeConsumptionAuditor:
             "_run_injection_tests_parallel": None,  # dynamic label from test_type
             "_run_intensive_sql_tests": "Intensive SQL Tests",
             "_test_ssrf_advanced": "SSRF Advanced",
+            "_test_schema_sql": "Schema SQL (outside cap)",
         }
         def _test_label(test) -> str:
             """Return a human-readable label for a test partial."""
@@ -1996,12 +2174,12 @@ class SafeConsumptionAuditor:
             with tqdm(total=total_phase2_tests, desc="Phase 2 - Starting", unit="test", ncols=80, mininterval=0.1) as pbar:
                 with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                     # Process test types in batches so we can show the current test name
-                    for test in intensive_tests:
+                    for test, batch_endpoints in batches:
                         label = _test_label(test)
                         pbar.set_description(f"Phase 2 - {label}")
                         batch_futures = []
-                        for endpoint in target_endpoints:
-                            batch_futures.append(executor.submit(self._run_test_with_callback, test, endpoint, pbar.update))
+                        for endpoint in batch_endpoints:
+                            batch_futures.append(self._schedule_test(executor, test, endpoint, pbar.update))
                         for future in concurrent.futures.as_completed(batch_futures):
                             try:
                                 future.result()
@@ -2011,12 +2189,12 @@ class SafeConsumptionAuditor:
             progress = ProgressBar(total_phase2_tests, desc="Phase 2 - Starting")
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                for test in intensive_tests:
+                for test, batch_endpoints in batches:
                     label = _test_label(test)
                     progress.desc = f"Phase 2 - {label}"
                     batch_futures = []
-                    for endpoint in target_endpoints:
-                        batch_futures.append(executor.submit(self._run_test_with_callback, test, endpoint, progress.update))
+                    for endpoint in batch_endpoints:
+                        batch_futures.append(self._schedule_test(executor, test, endpoint, progress.update))
                     for future in concurrent.futures.as_completed(batch_futures):
                         try:
                             future.result()
@@ -2032,12 +2210,100 @@ class SafeConsumptionAuditor:
 
 
     #================ _run_test_with_callback description ##########
+    def _prioritize_sql_inputs(self, endpoints):
+        from openapi_universal import iter_operations
+        from scanner_quality import normalize_endpoint, path_values
+        from urllib.parse import urlsplit
+        spec = getattr(self, 'swagger_spec', {})
+        values = path_values(spec, getattr(self, 'path_parameter_values', {}))
+        priority = {}
+        for operation in iter_operations(spec):
+            try:
+                path = urlsplit(normalize_endpoint(operation['path'], self.base_url, values)).path
+            except ValueError:
+                continue
+            raw = spec.get('paths', {}).get(operation['path'], {}).get(operation['method'].lower(), {})
+            rank = 4
+            if raw.get('x-discovery-state') == 'observed-login':
+                rank = 0
+            elif any(p.get('in') == 'query' for p in operation.get('parameters', [])):
+                rank = 1
+            elif any(_resolve_schema_ref(spec, media.get('schema')).get('properties') for media in (operation.get('requestBody') or {}).get('content', {}).values()):
+                rank = 2
+            elif any(p.get('in') == 'path' for p in operation.get('parameters', [])):
+                rank = 3
+            priority[path] = min(priority.get(path, 4), rank)
+        return sorted(endpoints, key=lambda endpoint: priority.get(urlsplit(endpoint).path, 4))
+
+    def _test_applicability(self, test_func, endpoint):
+        function = getattr(test_func, 'func', test_func)
+        name = getattr(function, '__name__', '')
+        if name == '_test_blind_sqli':
+            return 'Blind SQL probes unsupported'
+        matching = getattr(self.session, 'matching', None)
+        if not callable(matching):
+            return None
+        operations = matching(endpoint)
+        if not operations:
+            return None
+        methods = {op['method'].upper() for op in operations}
+        if name == '_run_injection_tests_parallel' and (getattr(test_func, 'keywords', {}) or {}).get('test_type') == 'sql':
+            return None if methods - {'DELETE', 'HEAD', 'OPTIONS'} else 'No supported SQL operation'
+        if name in ('_test_schema_sql', '_run_intensive_sql_tests'):
+            return None
+        known = {'_test_basic_security', '_test_waf_detection', '_test_crlf_injection', '_test_hpp', '_test_sensitive_data_exposure', '_test_graphql_introspection', '_test_directory_traversal_body', '_test_open_redirect', '_test_host_header_injection', '_test_header_manipulation', '_test_directory_traversal', '_test_jwt_vulnerabilities', '_test_rate_limit_bypass', '_test_ssrf_advanced', '_test_business_logic', '_run_injection_tests_parallel'}
+        if name not in known:
+            return None
+        needed = {'POST'} if name == '_test_graphql_introspection' else (
+            {'POST', 'PUT', 'PATCH'} if name == '_test_directory_traversal_body' else {'GET'})
+        if not methods & needed:
+            return 'Test requires declared ' + '/'.join(sorted(needed))
+        return None
+
+    def _schedule_test(self, executor, test_func, endpoint, callback):
+        key = (getattr(getattr(test_func, 'func', test_func), '__name__', ''), endpoint)
+        if getattr(self, '_phase1_active', False):
+            self._phase1_pairs.add(key)
+        elif key in getattr(self, '_phase1_pairs', ()):
+            callback(1)
+            done = concurrent.futures.Future()
+            done.set_result(None)
+            return done
+        reason = self._test_applicability(test_func, endpoint)
+        if reason:
+            with self._coverage_lock:
+                self.coverage['not_applicable'] = self.coverage.get('not_applicable', 0) + 1
+                reasons = self.coverage.setdefault('not_applicable_reasons', {})
+                reasons[reason] = reasons.get(reason, 0) + 1
+            callback(1)
+            result = concurrent.futures.Future()
+            result.set_result(None)
+            return result
+        return executor.submit(self._run_test_with_callback, test_func, endpoint, callback)
+
     def _run_test_with_callback(self, test_func, endpoint, callback):
+        from probe_policy import ProbeSkipped
+        state = self._execution_state
+        state.planning = False
+        state.failed = False
+        state.skipped = False
+        state.untested = False
+        with self._coverage_lock:
+            self.coverage['started'] += 1
         try:
             test_func(endpoint)
-        except Exception:
-            pass
+        except ProbeSkipped:
+            state.skipped = True
+        except Exception as exc:
+            state.failed = True
+            self._record_telemetry('Test execution failed', endpoint,
+                extra={'error': str(exc), 'test_name': getattr(test_func, '__name__', str(test_func)),
+                       'execution_status': 'failed'})
         finally:
+            with self._coverage_lock:
+                key = ('failed' if state.failed else 'skipped_tasks' if state.skipped
+                       else 'untested' if state.untested else 'completed')
+                self.coverage[key] = self.coverage.get(key, 0) + 1
             callback(1)
 
 
@@ -2071,69 +2337,9 @@ class SafeConsumptionAuditor:
 
     #================ _run_intensive_sql_tests description ##########
     def _run_intensive_sql_tests(self, endpoint: str):
-        if stop_requested.is_set():
-            return
-
-        extended_sql_payloads = [
-            "' UNION SELECT NULL--",
-            "' UNION SELECT username,password FROM users--",
-            "') UNION SELECT 1,2,3--",
-            "' AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT @@version),0x7e))--",
-            "' AND (SELECT * FROM (SELECT(SLEEP(5)))a)--",
-            "' AND 1=1--",
-            "' AND 1=2--",
-            "'; WAITFOR DELAY '0:0:5'--",
-            "' OR SLEEP(5)--",
-            "'; DROP TABLE users--",
-            "'; UPDATE users SET password='hacked' WHERE username='admin'--"
-        ]
-
-        content_types = [
-            ('application/x-www-form-urlencoded', 'data'),
-            ('application/json', 'json'),
-            ('multipart/form-data', 'multipart')
-        ]
-
-        for payload in extended_sql_payloads:
-            if stop_requested.is_set():
-                return
-
-            for ctype, ctype_name in content_types:
-                try:
-                    parsed = urlparse.urlparse(endpoint)
-                    domain = parsed.netloc or parsed.hostname or ''
-                    self._throttle(domain)
-
-                    if ctype == 'application/json':
-                        data = {'input': payload}
-                        headers = {'Content-Type': 'application/json'}
-                        r = self.session.post(endpoint, json=data, headers=headers, timeout=5)
-                    elif ctype == 'multipart/form-data':
-                        data = {'file': ('test.txt', payload, 'text/plain')}
-                        r = self.session.post(endpoint, files=data, timeout=5)
-                    else:
-                        data = {'input': payload}
-                        r = self.session.post(endpoint, data=data, timeout=5)
-
-                    if self._has_sql_evidence_improved(r.text or ''):
-                        self._log(
-                            'Intensive SQL test found vulnerability',
-                            endpoint,
-                            'Critical',
-                            payload=payload[:100],
-                            response=r,
-                            extra={
-                                'test_type': 'intensive_sql',
-                                'content_type': ctype_name,
-                                'confidence': 'high'
-                            }
-                        )
-
-                except Exception:
-                    continue
+        return self._test_schema_sql(endpoint)
 
 
-    #================ _comprehensive_scan_with_progress description ##########
     def _comprehensive_scan_with_progress(self, endpoints: List[str]) -> List[Issue]:
         print(f'{Colors.WHITE}  Total endpoints: {len(endpoints)}{Colors.RESET}')
         print(f'{Colors.WHITE}  [STEP 1] Checking endpoint reachability...{Colors.RESET}')
@@ -2161,7 +2367,7 @@ class SafeConsumptionAuditor:
                 progress.update(1)
             progress.close()
 
-        print(f'{Colors.WHITE}  Reachable endpoints: {len(reachable_endpoints)}{Colors.RESET}')
+        print(f'{Colors.WHITE}  Eligible endpoints (reachability or declared operation): {len(reachable_endpoints)}{Colors.RESET}')
 
         if not reachable_endpoints:
             print(f'{Colors.RED}  [] No reachable endpoints found{Colors.RESET}')
@@ -2223,8 +2429,8 @@ class SafeConsumptionAuditor:
                             if stop_requested.is_set():
                                 break
                             all_tasks.append(
-                                main_executor.submit(
-                                    self._run_test_with_callback, fn, ep, pbar.update
+                                self._schedule_test(
+                                    main_executor, fn, ep, pbar.update
                                 )
                             )
 
@@ -2269,8 +2475,8 @@ class SafeConsumptionAuditor:
                         if stop_requested.is_set():
                             break
                         all_tasks.append(
-                            main_executor.submit(
-                                self._run_test_with_callback, fn, ep, progress.update
+                            self._schedule_test(
+                                main_executor, fn, ep, progress.update
                             )
                         )
 
@@ -2309,17 +2515,28 @@ class SafeConsumptionAuditor:
         print(f'{Colors.BOLD}{Colors.GREEN}SCAN COMPLETED{Colors.RESET}')
         print(f'{Colors.BLUE}{"="*70}{Colors.RESET}')
 
-        total_issues = len(self.issues)
+        raw_count = len(self.issues)
+        raw_records = self.issues
+        raw_telemetry = list(self.telemetry)
+        self.issues = [dict(item) for item in raw_records]
+        try:
+            self._filter_issues()
+            filtered_records = self.issues
+        finally:
+            self.issues = raw_records
+            self.telemetry[:] = raw_telemetry
+        print(f'API10 raw observations: {raw_count}; filtered/deduplicated results: {len(filtered_records)}')
+        total_issues = len(filtered_records)
         if total_issues == 0:
-            print(f'{Colors.GREEN} No security issues found!{Colors.RESET}')
+            print(f'{Colors.GREEN} No reportable results after filtering; check coverage and diagnostics.{Colors.RESET}')
             return
 
         severity_counts = defaultdict(int)
-        for issue in self.issues:
+        for issue in filtered_records:
             severity = issue.get('severity', 'Info')
             severity_counts[severity] += 1
 
-        print(f'{Colors.WHITE}Total issues found: {total_issues}{Colors.RESET}')
+        print(f'{Colors.WHITE}Filtered results (including observations): {total_issues}{Colors.RESET}')
         print(f'\n{Colors.BOLD}{Colors.CYAN}[FINDINGS BY SEVERITY]{Colors.RESET}')
 
         for severity in ['Critical', 'High', 'Medium', 'Low', 'Info']:
@@ -2343,7 +2560,7 @@ class SafeConsumptionAuditor:
 
                 print(f'{color}  {symbol} {severity:8}: {count:3} issues{Colors.RESET}')
 
-        risk_scores = [i.get('risk_score', 0) for i in self.issues if i.get('severity') != 'Info']
+        risk_scores = [i.get('risk_score', 0) for i in filtered_records if i.get('severity') != 'Info']
         if risk_scores:
             avg_risk = sum(risk_scores) / len(risk_scores)
             max_risk = max(risk_scores)
@@ -2351,7 +2568,7 @@ class SafeConsumptionAuditor:
             print(f'{Colors.WHITE}  Average risk score: {avg_risk:.1f}/10.0{Colors.RESET}')
             print(f'{Colors.WHITE}  Maximum risk score: {max_risk:.1f}/10.0{Colors.RESET}')
 
-            high_risk = [i for i in self.issues if i.get('risk_score', 0) >= 7.0]
+            high_risk = [i for i in filtered_records if i.get('risk_score', 0) >= 7.0]
             if high_risk:
                 print(f'\n{Colors.BOLD}{Colors.RED}[HIGH RISK ISSUES FOUND]{Colors.RESET}')
                 for idx, issue in enumerate(high_risk[:5]):
@@ -2365,7 +2582,7 @@ class SafeConsumptionAuditor:
                     print(f'     Risk Score: {risk:.1f}/10.0{Colors.RESET}')
 
         categories = defaultdict(int)
-        for issue in self.issues:
+        for issue in filtered_records:
             if issue.get('severity') != 'Info':
                 cat = self._category_of_issue(issue.get('issue', ''))
                 categories[cat] += 1
@@ -2380,20 +2597,30 @@ class SafeConsumptionAuditor:
             print(f'\n{Colors.BOLD}{Colors.CYAN}[TELEMETRY]{Colors.RESET}')
             print(f'{Colors.WHITE}  Network/diagnostic events: {telemetry_count:3} saved separately{Colors.RESET}')
 
-        print(f'\n{Colors.GREEN} Scan completed successfully!{Colors.RESET}')
+        print(f'\n{Colors.GREEN} Module execution finished; coverage and diagnostics determine test completeness.{Colors.RESET}')
         print(f'{Colors.WHITE}   Run generate_report() for detailed HTML report{Colors.RESET}')
         print(f'{Colors.BLUE}{"="*70}{Colors.RESET}')
 
 
 
     #================ _test_basic_security description ##########
+    def _get_with_recovery(self, endpoint, **kwargs):
+        # Retry only this safe baseline GET once; write probes are never replayed.
+        for attempt in range(2):
+            try:
+                return self.session.get(endpoint, **kwargs)
+            except (requests.ConnectionError, requests.Timeout):
+                if attempt:
+                    raise
+                time.sleep(0.2)
+
     def _test_basic_security(self, endpoint: str) -> None:
         try:
-            r = self.session.get(endpoint, timeout=(3, self.timeout), allow_redirects=False)
+            r = self._get_with_recovery(endpoint, timeout=(3, self.timeout), allow_redirects=False)
             status = r.status_code
 
             if status in {401, 403}:
-                # If no authentication is configured, 401/403 is expected — suppress.
+                # If no authentication is configured, 401/403 is expected â€” suppress.
                 if self._has_auth_configured():
                     self._log('Auth required / forbidden', endpoint, 'Info', response=r)
             elif status == 404:
@@ -2480,7 +2707,7 @@ class SafeConsumptionAuditor:
 
                         waf_type = "Unknown WAF/Filter"
                         if 'openresty' in server_header.lower():
-                            waf_type = "OpenResty"
+                            waf_type = "OpenResty server (filter product unverified)"
                         elif 'cloudflare' in server_header.lower() or 'cloudflare' in body_low:
                             waf_type = "Cloudflare"
                         elif 'akamai' in server_header.lower() or 'akamai' in body_low:
@@ -2564,7 +2791,9 @@ class SafeConsumptionAuditor:
             except Exception:
                 pass
             variants = base_variants + extra_variants
-            params_to_try = ['q', 'search', 'redirect', 'url', 'return', 'next']
+            params_to_try = self._param_candidates(
+                endpoint, ['q', 'search', 'redirect', 'url', 'return', 'next'],
+                limit=3 if self.quick_mode else None)[:6]
 
 
             #================ _all_headers description ##########
@@ -2593,11 +2822,9 @@ class SafeConsumptionAuditor:
                             self._log('CRLF injection (response header injection)', test_url, 'High', payload=inj, response=r, extra={'param': param, 'injected_header': canary_name, 'value': canary_val})
                             continue
                         loc = r.headers.get('Location', '')
-                        if loc and canary_val in loc:
-                            self._log('CRLF injection (Location header poisoned)', test_url, 'High', payload=inj, response=r, extra={'param': param, 'location': loc})
-                            continue
+                        # Encoded canary reflection in a canonical redirect is not header injection.
                         set_cookie_lines = [v for k, v in hdrs if k.lower() == 'set-cookie']
-                        if any((canary_name.lower() in v.lower() and canary_val in v for v in set_cookie_lines)):
+                        if any(re.match(r'^\s*' + re.escape(canary_name) + r'\s*=\s*' + re.escape(canary_val) + r'(?:;|$)', v, re.I) for v in set_cookie_lines):
                             self._log('CRLF injection (Set-Cookie poisoned)', test_url, 'High', payload=inj, response=r, extra={'param': param, 'set_cookie': set_cookie_lines[:2]})
                             continue
                         if f'{canary_name.lower()}: {canary_val.lower()}' in body_low:
@@ -2624,7 +2851,7 @@ class SafeConsumptionAuditor:
                     return
             except Exception:
                 pass
-            hpp_params = self.HPP_PARAMS
+            hpp_params = self._param_candidates(endpoint, self.HPP_PARAMS)
             if self.quick_mode and not self.deep_scan:
                 hpp_params = hpp_params[:self.quick_hpp_max_params]
             for param in hpp_params:
@@ -2691,263 +2918,18 @@ class SafeConsumptionAuditor:
 
     #================ _test_header_manipulation description ##########
     def _test_header_manipulation(self, endpoint: str) -> None:
-        if stop_requested.is_set():
-            return
-        try:
-            parsed = urlparse.urlparse(endpoint)
-            domain = parsed.netloc or parsed.hostname or ''
-            if not domain:
-                self._log('Header manipulation test invalid host', endpoint, 'Low')
-                return
-            host_payloads = ['localhost', '127.0.0.1', 'evil.com', f'{domain}.evil.com', 'localhost:8080', '2130706433', '0x7f000001', '0177.0000.0000.0001']
-            for host in host_payloads:
-                if stop_requested.is_set():
-                    return
-                try:
-                    self._throttle(domain)
-                    r = self.session.get(endpoint, headers={'Host': host}, timeout=(3, self.timeout), allow_redirects=False)
-                    if host.lower() in (r.text or '').lower():
-                        self._log('Host header reflection', endpoint, 'Medium', extra={'host_header': host, 'response_sample': (r.text or '')[:200]}, response=r)
-                    ep_low = endpoint.lower()
-                    if ('password' in ep_low and 'reset' in ep_low) and (host in r.headers.get('Location', '') or host.lower() in (r.text or '').lower()):
-                        self._log('Possible password reset poisoning via Host', endpoint, 'High', extra={'host_header': host}, response=r)
-                except Exception as e:
-                    sev = self.classify_transport_anomaly(endpoint, 'GET', e, 0.0)
-                    self._log('Host header test failed', endpoint, sev, extra={'error': str(e), 'host': host})
-            smuggling_headers = [('Transfer-Encoding', 'chunked'), ('Content-Length', '0'), ('Content-Length', '100'), ('Content-Length', 'abc')]
-            for header, value in smuggling_headers:
-                if stop_requested.is_set():
-                    return
-                try:
-                    self._throttle(domain)
-                    payload = '0\r\n\r\n' if header.lower() == 'transfer-encoding' else ''
-                    t0 = time.monotonic()
-                    r = self.session.post(endpoint, headers={header: value}, data=payload, timeout=(3, self.timeout), allow_redirects=False)
-                    elapsed = max(0.0, time.monotonic() - t0)
-                    body_low = (r.text or '').lower()
-                    if r.status_code in (400, 502) and any((s in body_low for s in ('invalid header', 'invalid chunk size', 'hpe_invalid', 'http/1.1 400 bad request', 'bad chunk'))):
-                        self._log('HTTP Request Smuggling indicator', endpoint, 'Medium', extra={'header': f'{header}: {value}', 'status': r.status_code}, response=r)
-                    elif r.status_code == 408 or elapsed > self.timeout * 0.9:
-                        sev = self.classify_transport_anomaly(endpoint, 'POST', None, elapsed)
-                        self._log('Request smuggling test borderline/timeout', endpoint, sev, extra={'header': f'{header}: {value}', 'elapsed_s': round(elapsed, 3)}, response=r)
-                except Exception as e:
-                    sev = self.classify_transport_anomaly(endpoint, 'POST', e, 0.0)
-                    self._log('Request smuggling test failed', endpoint, sev, extra={'error': str(e), 'header': header})
-            sec_headers = {'X-Forwarded-For': '127.0.0.1', 'X-Real-IP': '127.0.0.1', 'X-Forwarded-Host': 'evil.com', 'X-Original-URL': '/admin', 'X-Rewrite-URL': '/admin'}
-            try:
-                self._throttle(domain)
-                r0 = self.session.get(endpoint, timeout=(3, self.timeout), allow_redirects=False)
-            except Exception:
-                r0 = None
+        return self._test_host_controls(endpoint)
 
 
-            #================ _is_html description ##########
-            def _is_html(resp: requests.Response) -> bool:
-                ct = (resp.headers.get('Content-Type') or '').lower()
-                if 'text/html' in ct or 'application/xhtml+xml' in ct:
-                    return True
-                head = (resp.text or '')[:200].lstrip().lower()
-                return head.startswith('<!doctype html') or head.startswith('<html')
-
-            ADMIN_RE = re.compile('(?i)(?:<title>[^<]*admin[^<]*</title>|\\badmin\\s*panel\\b|href=["\\\']/admin[^"\\\']*)')
-            for h, v in sec_headers.items():
-                if stop_requested.is_set():
-                    return
-                try:
-                    self._throttle(domain)
-                    r = self.session.get(endpoint, headers={h: v}, timeout=(3, self.timeout), allow_redirects=False)
-                    became_allowed = (r0 is not None and r0.status_code in {401, 403, 404}) and r.status_code == 200
-                    admin_like = _is_html(r) and ADMIN_RE.search(r.text or '') is not None
-                    loc = (r.headers.get('Location') or '').lower()
-                    rewrote_to_admin = '/admin' in loc
-                    poisoned_host = h == 'X-Forwarded-Host' and (v.lower() in loc or v.lower() in (r.text or '').lower())
-                    strong_signal = h in {'X-Original-URL', 'X-Rewrite-URL'} and (admin_like or rewrote_to_admin) or (h in {'X-Forwarded-For', 'X-Real-IP'} and became_allowed) or poisoned_host
-                    if strong_signal:
-                        self._log('Possible access control bypass via spoofed header', endpoint, 'High', extra={'header': f'{h}: {v}', 'baseline_status': getattr(r0, 'status_code', '-'), 'location': r.headers.get('Location', '')}, response=r)
-                except Exception as e:
-                    sev = self.classify_transport_anomaly(endpoint, 'GET', e, 0.0)
-                    self._log('Security header test failed', endpoint, sev, extra={'error': str(e), 'header': h})
-            inj_headers = [('User-Agent', '<script>alert(1)</script>'), ('Referer', 'javascript:alert(1)'), ('Origin', 'http://evil.com'), ('Cookie', 'session=../../../../etc/passwd')]
-            for h, p in inj_headers:
-                if stop_requested.is_set():
-                    return
-                try:
-                    self._throttle(domain)
-                    r = self.session.get(endpoint, headers={h: p}, timeout=(3, self.timeout), allow_redirects=False)
-                    body = r.text or ''
-                    if p.lower() in body.lower():
-                        self._log('Header-based XSS reflection', endpoint, 'High', extra={'header': h, 'payload': p}, response=r)
-                    loc = r.headers.get('Location', '')
-                    if loc and p in loc:
-                        self._log('Header-based open redirect', endpoint, 'Medium', extra={'header': h, 'payload': p, 'location': loc}, response=r)
-                except Exception as e:
-                    sev = self.classify_transport_anomaly(endpoint, 'GET', e, 0.0)
-                    self._log('Header injection test failed', endpoint, sev, extra={'error': str(e), 'header': h})
-            cors_origins = ['https://attacker.com', 'null', 'http://localhost', 'http://127.0.0.1']
-            for origin in cors_origins:
-                if stop_requested.is_set():
-                    return
-                try:
-                    self._throttle(domain)
-                    r = self.session.get(endpoint, headers={'Origin': origin}, timeout=(3, self.timeout), allow_redirects=False)
-                    status = r.status_code
-                    acao = r.headers.get('Access-Control-Allow-Origin') or ''
-                    acac = (r.headers.get('Access-Control-Allow-Credentials') or '').lower()
-                    ctype = (r.headers.get('Content-Type') or '').lower()
-                    disp = (r.headers.get('Content-Disposition') or '').lower()
-                    if status < 200 or status >= 300:
-                        continue
-                    is_textual = 'application/json' in ctype or ctype.startswith('text/') or 'application/xml' in ctype or ('application/javascript' in ctype)
-                    is_static = ctype.startswith(('image/', 'video/', 'audio/', 'font/')) or 'application/octet-stream' in ctype or 'application/pdf' in ctype or ('filename=' in disp)
-                    if not is_textual or is_static:
-                        continue
-                    if acao == '*' and acac == 'true':
-                        self._log('CORS misconfiguration: wildcard with credentials', endpoint, 'High', extra={'origin': origin, 'acao': acao, 'acac': acac}, response=r)
-                        continue
-                    if acao == '*' or origin in acao:
-                        sev = 'Medium' if acac == 'true' else 'Info'
-                        self._log('Broad CORS policy', endpoint, sev, extra={ 'origin': origin, 'acao': acao, 'acac': acac, 'content_type': ctype, 'vector':'cors' }, response=r)
-                except Exception as e:
-                    sev = self.classify_transport_anomaly(endpoint, 'GET', e, 0.0)
-                    self._log('CORS test failed', endpoint, sev, extra={'error': str(e), 'origin': origin})
-        except Exception as e:
-            self._log('Header manipulation test setup failed', endpoint, 'Medium', extra={'error': str(e)})
-
-
-    #================ _test_blind_sqli description ##########
     def _test_blind_sqli(self, endpoint: str) -> None:
-        try:
-            parsed = urlparse.urlparse(endpoint)
-        except Exception:
-            return
-
-        base = endpoint.split("?", 1)[0]
-        domain = parsed.netloc or urlparse.urlparse(base).netloc
-        if not domain:
-            return
-
-        from urllib.parse import parse_qsl, urlencode
-
-        q_items = parse_qsl(parsed.query, keep_blank_values=True)
-        q = dict(q_items)
-        if q:
-            keys = list(q.keys())[:3]
-        else:
-            keys = ["id", "q", "search"]
+        # Response length alone cannot establish a boolean SQL injection.
+        with self._options_cache_lock:
+            unsupported = self.coverage.setdefault('unsupported_tests', [])
+            for name in ('blind_sql_boolean_non_get', 'blind_sql_time'):
+                if name not in unsupported:
+                    unsupported.append(name)
 
 
-        #================ _signature description ##########
-        def _signature(resp) -> tuple:
-            try:
-                body = self._safe_body(resp)
-            except Exception:
-                body = ""
-            ct = (resp.headers.get("Content-Type", "") if getattr(resp, "headers", None) else "")
-            return (getattr(resp, "status_code", 0), len(body or ""), ct.split(";", 1)[0].lower())
-
-        true_p = "' OR 1=1--"
-        false_p = "' OR 1=2--"
-
-        time_payloads = [
-            "' OR SLEEP(5)-- ",
-            "'; SELECT SLEEP(5)-- ",
-            "' OR pg_sleep(5)--",
-            "'; SELECT pg_sleep(5)--",
-            "'; WAITFOR DELAY '0:0:5'--",
-        ]
-
-        for k in keys:
-            q0 = dict(q) if q else {}
-            q0[k] = q0.get(k, "1") or "1"
-            u0 = base + "?" + urlencode(q0, doseq=True)
-
-            qt = dict(q0); qt[k] = true_p
-            qf = dict(q0); qf[k] = false_p
-            ut = base + "?" + urlencode(qt, doseq=True)
-            uf = base + "?" + urlencode(qf, doseq=True)
-
-            try:
-                self._throttle(domain)
-                r0 = self.session.get(u0, timeout=(3, max(self.timeout, 10)), allow_redirects=False)
-                self._throttle(domain)
-                rt = self.session.get(ut, timeout=(3, max(self.timeout, 10)), allow_redirects=False)
-                self._throttle(domain)
-                rf = self.session.get(uf, timeout=(3, max(self.timeout, 10)), allow_redirects=False)
-            except Exception as e:
-                self._log("Blind SQLi probe failed", base, "Info", extra={"error": str(e), "param": k})
-                continue
-
-            s0 = _signature(r0)
-            st = _signature(rt)
-            sf = _signature(rf)
-
-            len0, lent, lenf = s0[1], st[1], sf[1]
-            maxlen = max(len0, lent, lenf, 1)
-            diff_tf = abs(lent - lenf) / maxlen
-            diff_t0 = abs(lent - len0) / maxlen
-            diff_f0 = abs(lenf - len0) / maxlen
-
-            status_changed = (st[0] != sf[0]) or (st[0] != s0[0]) or (sf[0] != s0[0])
-
-            if diff_tf >= 0.25 and (diff_t0 >= 0.15 or diff_f0 >= 0.15 or status_changed):
-                self._log(
-                    "Possible Blind SQL Injection (boolean-based)",
-                    base,
-                    "High",
-                    payload={"param": k, "true": true_p, "false": false_p},
-                    response=rt,
-                    extra={
-                        "confidence": "medium",
-                        "baseline_status": s0[0],
-                        "true_status": st[0],
-                        "false_status": sf[0],
-                        "baseline_len": len0,
-                        "true_len": lent,
-                        "false_len": lenf,
-                    },
-                )
-
-                try:
-                    import time as _time
-
-                    t0 = 0.0
-                    for _ in range(2):
-                        self._throttle(domain)
-                        t_start = _time.perf_counter()
-                        self.session.get(u0, timeout=(3, max(self.timeout, 10)), allow_redirects=False)
-                        t0 += (_time.perf_counter() - t_start)
-                    t0 /= 2.0
-
-                    confirmed = False
-                    for tp in time_payloads:
-                        qd = dict(q0); qd[k] = tp
-                        ud = base + "?" + urlencode(qd, doseq=True)
-                        delays = []
-                        for _ in range(2):
-                            self._throttle(domain)
-                            t_start = _time.perf_counter()
-                            self.session.get(ud, timeout=(3, max(self.timeout, 15)), allow_redirects=False)
-                            delays.append(_time.perf_counter() - t_start)
-
-                        if all((d - t0) >= 3.5 for d in delays):
-                            confirmed = True
-                            self._log(
-                                "Possible Blind SQL Injection (time-based)",
-                                base,
-                                "Critical",
-                                payload={"param": k, "time_payload": tp},
-                                extra={"confidence": "high", "baseline_avg_s": round(t0, 3), "delays_s": [round(d, 3) for d in delays]},
-                            )
-                            break
-                    if confirmed:
-                        return
-                except Exception:
-                    pass
-                return
-        return
-
-
-    #================ _dirtrav_success_indicators description ##########
     def _dirtrav_success_indicators(self, body: str) -> bool:
         if not body:
             return False
@@ -3006,8 +2988,7 @@ class SafeConsumptionAuditor:
                     return True
                 if status in (301, 302, 307, 308) and any(t in loc for t in login_tokens):
                     return True
-                if status in (200, 302) and any(t in body_low for t in login_tokens):
-                    return True
+                # Words in successful API data or SPA bundles do not prove denial.
                 return False
 
             baseline_protected = False
@@ -3061,22 +3042,18 @@ class SafeConsumptionAuditor:
 
             #================ looks_interesting description ##########
             def looks_interesting(text: str) -> tuple[bool, str]:
-                if not text:
-                    return (False, 'none')
-                low = text.lower()
-                for ind in strong_indicators:
-                    if ind in low:
-                        return (True, 'high')
-                weak_count = sum(1 for ind in weak_indicators if ind in low)
-                if weak_count >= 2:
-                    return (True, 'medium')
-                if weak_count == 1:
-                    import re as _re
-                    has_links = any(t in low for t in ('<a href="', '&lt;a href=', 'href="', '>./<', '>.</a>'))
-                    has_sizes = _re.search(r'\b\d+\s*(bytes?|kb|mb|gb)\b', low)
-                    if has_links or has_sizes:
-                        return (True, 'medium')
-                return (False, 'none')
+                # Challenge prose, reflected paths and links do not establish file access.
+                # Require actual file structure, absent from the baseline response.
+                signatures = (
+                    r'(?m)^root:[^:\r\n]*:0:0:[^\r\n]+$',
+                    r'(?m)^daemon:[^:\r\n]*:\d+:\d+:[^\r\n]+$',
+                    r'(?m)^\[extensions\]\s*$',
+                    r'<title>\s*index of [^<]+</title>',
+                )
+                for signature in signatures:
+                    if re.search(signature, text or '', re.I) and not re.search(signature, base_resp.text if base_resp is not None else '', re.I):
+                        return True, 'high'
+                return False, 'none'
 
             use_dirtrav_pb = HAS_TQDM and not self.no_tqdm and self._dirtrav_progress
             dirtrav_pbar = None
@@ -3100,11 +3077,22 @@ class SafeConsumptionAuditor:
 
                     if baseline_protected:
                         new_protected = is_protected_status(r.status_code, loc.lower(), body_low)
-                        if not new_protected and r.status_code == 200:
+                        # A route change alone cannot prove access to the same protected object.
+                        # Exclude frontend HTML fallbacks and retain structured data as a candidate.
+                        structured_data = False
+                        if 'json' in (r.headers.get('Content-Type') or '').lower():
+                            try:
+                                data = r.json()
+                                structured_data = isinstance(data, (dict, list)) and bool(data)
+                                if isinstance(data, dict) and any(k in data for k in ('error', 'errors')):
+                                    structured_data = False
+                            except (ValueError, TypeError):
+                                pass
+                        if not new_protected and r.status_code == 200 and structured_data:
                             self._log(
-                                'Possible access control bypass via path traversal',
+                                'Unverified access-control candidate via path traversal',
                                 url,
-                                'High',
+                                'Info',
                                 payload=url,
                                 response=r,
                                 extra={
@@ -3115,7 +3103,8 @@ class SafeConsumptionAuditor:
                                     'new_status': r.status_code,
                                     'new_location': loc,
                                     'label': label,
-                                    'confidence': 'high',
+                                    'confidence': 'unverified',
+                                    'note': 'Denied baseline changed to structured data; protected resource identity and authorization policy require verification.',
                                 },
                             )
                             return
@@ -3149,7 +3138,8 @@ class SafeConsumptionAuditor:
 
                     elif r.status_code in (301, 302, 307, 308):
                         loc2 = loc
-                        if any(p in loc2 for p in ('./', '.\\', '%2e%2e', 'etc/passwd', 'web-inf')):
+                        if (not self._redirect_echoes_request(url, loc2)
+                                and any(p in loc2.lower() for p in ('./', '.\\', '%2e%2e', 'etc/passwd', 'web-inf'))):
                             self._log(
                                 f'Directory traversal ({label}) - suspicious redirect [{r.status_code}]',
                                 url,
@@ -3608,7 +3598,353 @@ class SafeConsumptionAuditor:
 
 
     #================ _run_injection_tests_parallel description ##########
+    def _inspect_sql_error_response(self, response, url, *, baseline):
+        body = response.text or ''
+        low = body.lower()
+        database = self._has_sql_evidence_improved(body) or any(marker in low for marker in (
+            'mongo: no documents', 'mongoerror', 'pymongo.errors', 'bson', 'elasticsearch_exception'))
+        stacktrace = any(marker in low for marker in (
+            'traceback (most recent call last)', 'java.lang.',
+            'org.springframework.', 'at system.', 'stack trace:',
+            'exception in thread', 'fatal error: uncaught'))
+        internal_path = re.search(r'(?:/usr/|/var/www/|/home/|[A-Za-z]:\\)[^\r\n<>]{3,120}', body) is not None
+        if 'mongo: no documents in result' in low and not stacktrace and not internal_path:
+            self._log('Observation: MongoDB reports no matching document', url, 'Info',
+                response=response, extra={'vector': 'error-observation', 'baseline_response': baseline,
+                    'note': 'No matching object; this does not demonstrate SQL injection or sensitive data exposure'})
+            return
+        if database or stacktrace or internal_path:
+            self._log('Database error details disclosed' if database else ('Stack trace disclosed' if stacktrace else 'Internal file path disclosed'),
+                url, 'Medium', response=response,
+                extra={'vector': 'error-disclosure', 'confidence': 'medium',
+                       'baseline_response': baseline,
+                       'note': 'Error detail disclosure; this does not establish SQL injection'})
+
+    def _test_schema_sql(self, endpoint):
+        from copy import deepcopy
+        from openapi_universal import iter_operations, build_request
+        from scanner_quality import normalize_endpoint, path_values
+        from urllib.parse import urlsplit
+        if stop_requested.is_set():
+            return
+        endpoint = endpoint[0] if isinstance(endpoint, tuple) else endpoint
+        with self._options_cache_lock:
+            seen = getattr(self, '_schema_sql_seen', set())
+            if endpoint in seen:
+                return
+            seen.add(endpoint)
+            self._schema_sql_seen = seen
+        spec = getattr(self, 'swagger_spec', {})
+        values = path_values(spec, getattr(self, 'path_parameter_values', {}))
+        operations = []
+        for op in iter_operations(spec):
+            try:
+                url = normalize_endpoint(op['path'], self.base_url, values)
+            except ValueError:
+                continue
+            if urlsplit(url).path == urlsplit(endpoint).path:
+                operations.append((op, url))
+        if not operations:
+            self._record_telemetry('SQL test unavailable', endpoint,
+                extra={'error': 'No matching OpenAPI operation', 'execution_status': 'inconclusive'})
+            return
+        def leaves(value, prefix=()):
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    yield from leaves(child, prefix + (key,))
+            elif isinstance(value, list):
+                for index, child in enumerate(value[:3]):
+                    yield from leaves(child, prefix + (index,))
+            elif isinstance(value, (str, int, float)) and not isinstance(value, bool):
+                yield prefix
+        import uuid
+        from api10_support import prepare_sql_request, write_record
+        if not hasattr(self, 'sql_run_marker'):
+            self.sql_run_marker = uuid.uuid4().hex[:12]
+        if not hasattr(self, 'sql_details'):
+            self.sql_details = []
+            self.sql_write_journal = []
+        payloads = ["'", "' OR '1'='1'--"]
+        field_limit = 4 if self.quick_mode else 12
+        for op, url in operations:
+            req = build_request(spec, self.base_url, op, None)
+            # The shared builder creates empty nested objects; populate declared JSON fields.
+            from openapi_universal import _body_from_schema
+            def json_example(schema, depth=0):
+                if not isinstance(schema, dict) or depth > 6:
+                    return {}
+                if '$ref' in schema:
+                    ref = schema['$ref']
+                    if not ref.startswith('#/'):
+                        return {}
+                    resolved = spec
+                    try:
+                        for part in ref[2:].split('/'):
+                            resolved = resolved[part.replace('~1', '/').replace('~0', '~')]
+                    except (KeyError, TypeError):
+                        return {}
+                    return json_example(resolved, depth + 1)
+                if 'example' in schema:
+                    return deepcopy(schema['example'])
+                if schema.get('type') == 'object' or 'properties' in schema:
+                    return {name: json_example(child, depth + 1)
+                            for name, child in schema.get('properties', {}).items()}
+                if schema.get('type') == 'array':
+                    return [json_example(schema.get('items', {}), depth + 1)]
+                return _body_from_schema(schema, spec)
+            content = (op.get('requestBody') or {}).get('content', {})
+            json_schema = (content.get('application/json') or {}).get('schema')
+            if json_schema:
+                media_example = content['application/json'].get('example')
+                req['json'] = deepcopy(media_example) if media_example is not None else json_example(json_schema)
+                req.pop('data', None)
+            sql_fixtures = dict(getattr(spec, 'request_data', {}))
+            sql_fixtures.update(getattr(self, 'sql_request_data', {}))
+            req = prepare_sql_request(req, op, sql_fixtures, self.sql_run_marker)
+            req.update(url=url, timeout=self.timeout, allow_redirects=False)
+            req.setdefault('headers', {})['X-Apiscan-Run'] = self.sql_run_marker
+            detail = {'method': op['method'], 'path': op['path'], 'url': url,
+                      'state': 'not_applicable', 'baseline_status': None,
+                      'fields_available': 0, 'fields_tested': [], 'probe_requests': 0,
+                      'probe_responses': 0, 'probe_failures': 0, 'reason': 'No supported scalar fields'}
+            with self._options_cache_lock:
+                self.sql_details.append(detail)
+            if op['method'].upper() == 'DELETE':
+                detail.update(reason='DELETE excluded from SQL baseline/probe requests')
+                continue
+            fields = []
+            for location in ('params', 'json', 'data'):
+                if location in req and isinstance(req[location], (dict, list)):
+                    fields.extend((location, chain) for chain in leaves(req[location]))
+            for name, file in req.get('files', {}).items():
+                fields.append(('files', (name, 0 if file[0] is not None else 1)))
+            for param in op.get('parameters', []):
+                if param.get('in') == 'path':
+                    fields.append(('path', (param['name'],)))
+            raw_operation = spec.get('paths', {}).get(op['path'], {}).get(op['method'].lower(), {})
+            if raw_operation.get('x-discovery-state') == 'observed-login':
+                from differential_checks import login_sql
+                from universal_runtime import isolated_session, anonymous_request
+                login_client = isolated_session(self.session)
+                try:
+                    login_request = anonymous_request(req, spec)
+                    def isolated_login_send(**candidate):
+                        login_client.cookies.clear()
+                        return login_client.request(**candidate)
+                    login_result = login_sql(isolated_login_send, login_request,
+                        before_send=lambda: self._throttle(urlsplit(url).netloc))
+                finally:
+                    login_client.close()
+                detail['login_sql'] = login_result
+                detail['probe_requests'] += login_result['requests']
+                detail['probe_responses'] += login_result['responses']
+                detail['probe_failures'] += login_result['failures']
+                if login_result['state'] == 'candidate':
+                    self._log('Possible SQL authentication bypass', url, 'High',
+                        extra={'vector':'sql-login', 'method':'POST','confidence':'medium',
+                               'status_code':login_result['status_code'],
+                               'evidence':login_result,
+                               'note':'Observed login tested in isolated session with invalid credentials; issued tokens were not used or exported'})
+            detail['fields_available'] = len(fields)
+            detail['field_limit'] = field_limit
+            detail['scope_limited'] = len(fields) > field_limit
+            if not fields:
+                if raw_operation.get('x-requires-request-data'):
+                    detail.update(state='untested', reason='Discovered runtime body requires --request-data-file')
+                    self._record_telemetry('SQL request input unavailable', url,
+                        extra={'method':op['method'],'reason':detail['reason']})
+                continue
+            try:
+                self._throttle(urlsplit(url).netloc)
+                baseline = self.session.request(**deepcopy(req))
+                detail['baseline_status'] = baseline.status_code
+                record = write_record(req, baseline, self.sql_run_marker, 'baseline')
+                if record:
+                    with self._options_cache_lock:
+                        self.sql_write_journal.append(record)
+            except requests.RequestException as exc:
+                detail.update(state='incomplete', reason='Baseline transport error')
+                self._record_telemetry('SQL baseline failed', url, extra={'error': str(exc)})
+                continue
+            baseline_db_error = self._has_sql_evidence_improved(baseline.text or '')
+            if baseline_db_error or baseline.status_code >= 500:
+                self._inspect_sql_error_response(baseline, url, baseline=True)
+            from response_evidence import baseline_problem
+            problem = baseline_problem(baseline.status_code)
+            if problem or baseline_db_error:
+                detail.update(state='untested', reason=('Baseline database error' if baseline_db_error else problem))
+                if 300 <= baseline.status_code < 400:
+                    detail['redirect_location'] = baseline.headers.get('Location', '')[:1000]
+                detail['next_action'] = {
+                    400: 'Supply valid operation input with --request-data-file',
+                    422: 'Supply schema-valid operation input with --request-data-file',
+                    401: 'Supply valid authentication',
+                    403: 'Check authentication, permissions and required operation input',
+                    404: 'Check route and existing object IDs with --ids-file',
+                    415: 'Check declared request media type and body',
+                    301: 'Set the authorized canonical API base URL and recheck the operation baseline',
+                    302: 'Check whether the redirect requires login or a different authorized API base URL',
+                    307: 'Set the authorized canonical API base URL and recheck the operation baseline',
+                    308: 'Set the authorized canonical API base URL and recheck the operation baseline',
+                }.get(baseline.status_code, 'Inspect saved baseline response body and resolve server errors before differential SQL testing')
+
+                self._record_telemetry('SQL baseline unsuitable', url,
+                    extra={'error': 'Baseline unsuitable or already contains database errors',
+                           'status_code': baseline.status_code,
+                           'response_body': (baseline.text or '')[:20000],
+                           'response_content_type': baseline.headers.get('Content-Type', ''),
+                           'method': req['method']})
+                continue
+            detail.update(state='completed', reason='SQL error probes, quote-pair differential and applicable GET boolean controls')
+
+            def build_probe(location, chain, value):
+                probe = deepcopy(req)
+                if location == 'path':
+                    probe['url'] = normalize_endpoint(op['path'], self.base_url,
+                        dict(values, **{chain[0]: value}))
+                elif location == 'files':
+                    file = list(probe['files'][chain[0]])
+                    file[chain[1]] = value
+                    probe['files'][chain[0]] = tuple(file)
+                else:
+                    container = probe[location]
+                    for key in chain[:-1]:
+                        container = container[key]
+                    container[chain[-1]] = value
+                return probe
+
+            def send_probe(probe, payload):
+                self._throttle(urlsplit(url).netloc)
+                detail['probe_requests'] += 1
+                try:
+                    response = self.session.request(**probe)
+                except requests.RequestException as exc:
+                    detail['probe_failures'] += 1
+                    detail.update(state='incomplete', reason='SQL probe transport error')
+                    self._record_telemetry('SQL probe failed', url, payload=payload,
+                        extra={'error': str(exc), 'method': op['method']})
+                    return None
+                detail['probe_responses'] += 1
+                record = write_record(probe, response, self.sql_run_marker, 'sql_probe')
+                if record:
+                    with self._options_cache_lock:
+                        self.sql_write_journal.append(record)
+                return response
+
+            def original_value(location, chain):
+                if location == 'path':
+                    value = values.get(chain[0])
+                elif location == 'files':
+                    return ''
+                else:
+                    value = req.get(location)
+                    try:
+                        for key in chain:
+                            value = value[key]
+                    except (KeyError, IndexError, TypeError):
+                        return ''
+                if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+                    return ''
+                return str(value)
+
+            for location, chain in fields[:field_limit]:
+                field_name = location + ':' + '.'.join(map(str, chain))
+                detail['fields_tested'].append(field_name)
+                base_value = original_value(location, chain)
+                marked = location in ('json', 'data') and str(chain[-1]).lower() in ('name', 'title', 'description')
+                quote_payload = quote_response = quote_url = None
+                error_logged = False
+                for payload in (base_value + "'", "' OR '1'='1'--"):
+                    if stop_requested.is_set():
+                        return
+                    if marked and 'apiscan_' not in payload:
+                        payload = 'apiscan_' + self.sql_run_marker + payload
+                    probe = build_probe(location, chain, payload)
+                    response = send_probe(probe, payload)
+                    if response is None:
+                        continue
+                    if quote_payload is None:
+                        quote_payload, quote_response, quote_url = payload, response, probe['url']
+                    if response.status_code >= 500:
+                        self._record_telemetry('SQL probe server error response', probe['url'],
+                            payload=payload, response=response,
+                            extra={'execution_status': 'response_received',
+                                   'response_body': (response.text or '')[:20000],
+                                   'method': req['method']})
+                        if not self._has_sql_evidence_improved(response.text or ''):
+                            self._inspect_sql_error_response(response, probe['url'], baseline=False)
+                    if self._has_sql_evidence_improved(response.text or ''):
+                        error_logged = True
+                        self._log('Possible SQL injection', probe['url'], 'High',
+                            payload=payload, response=response,
+                            extra={'vector': 'sql-error', 'method': op['method'],
+                                   'tested_field': field_name,
+                                   'baseline_status': baseline.status_code,
+                                   'confidence': 'medium',
+                                   'note': 'Database error absent from baseline; exploitability requires review'})
+
+                # Silent 500 on a quote: confirm with escaped quote, inert control and repeat.
+                if (error_logged or quote_response is None or quote_response.status_code < 500
+                        or not quote_payload.endswith("'")):
+                    continue
+                prefix = quote_payload[:-1]
+                statuses = {}
+                for label, value in (('escaped', prefix + "''"), ('control', prefix + 'apiscan'),
+                                     ('repeat', quote_payload)):
+                    if stop_requested.is_set():
+                        return
+                    response = send_probe(build_probe(location, chain, value), value)
+                    if response is None:
+                        break
+                    statuses[label] = response.status_code
+                if (len(statuses) == 3 and statuses['repeat'] >= 500
+                        and statuses['escaped'] == baseline.status_code
+                        and statuses['control'] == baseline.status_code):
+                    self._log('Possible SQL injection (quote-pair differential)', quote_url, 'High',
+                        payload=quote_payload, response=quote_response,
+                        extra={'vector': 'sql-quote-pair', 'method': op['method'],
+                               'tested_field': field_name,
+                               'baseline_status': baseline.status_code,
+                               'statuses': dict(quote=quote_response.status_code, **statuses),
+                               'confidence': 'medium',
+                               'note': 'Unbalanced quote gives a repeatable server error; escaped quote and inert control match the baseline. No database error disclosed; review required'})
+
+            # Boolean comparison is deliberately limited to read-only query fields.
+            from differential_checks import boolean_sql
+            detail['boolean'] = []
+            if req['method'].upper() == 'GET':
+                query_fields = [chain[0] for location, chain in fields
+                                if location == 'params' and len(chain) == 1]
+                for field in query_fields[:(2 if self.quick_mode else 4)]:
+                    if stop_requested.is_set():
+                        return
+                    result = boolean_sql(self.session.request, req, baseline, field,
+                        before_send=lambda: self._throttle(urlsplit(url).netloc))
+                    detail['boolean'].append(result)
+                    detail['probe_requests'] += result['requests']
+                    detail['probe_responses'] += result['responses']
+                    detail['probe_failures'] += result['failures']
+                    if result['state'] in ('incomplete', 'inconclusive'):
+                        detail.update(state='incomplete', reason=result['reason'])
+                        self._record_telemetry('Boolean SQL comparison incomplete', url,
+                            extra={'method':'GET','tested_field':str(field),'reason':result['reason']})
+                    if result['state'] == 'candidate':
+                        self._log('Possible boolean SQL injection', url, 'High',
+                            extra={'vector':'sql-boolean', 'method':'GET',
+                                   'status_code':result['status_code'],
+                                   'tested_field':'params:'+str(field),
+                                   'confidence':'medium', 'evidence':result,
+                                   'note':'Repeated structured-response differential; review query semantics'})
+
+            login_detail = detail.get('login_sql', {})
+            if login_detail.get('state') in ('incomplete', 'inconclusive'):
+                detail.update(state='incomplete', reason=login_detail['reason'])
+                self._record_telemetry('SQL login comparison incomplete', url,
+                    extra={'method':'POST','reason':login_detail['reason']})
+
     def _run_injection_tests_parallel(self, endpoint, test_type: str) -> None:
+        if test_type == 'sql':
+            return self._test_schema_sql(endpoint)
         if stop_requested.is_set():
             return
         payloads = list(self.INJECTION_PAYLOADS[test_type])
@@ -3624,7 +3960,7 @@ class SafeConsumptionAuditor:
         for p in payloads:
             if stop_requested.is_set():
                 return
-            method_preference = preferred_method if preferred_method and preferred_method != 'AUTO' else ('POST' if '/posts' in base_endpoint else 'auto')
+            method_preference = preferred_method if preferred_method and preferred_method.upper() != 'AUTO' else 'auto'
             test_url = f'{base_endpoint}?input={urlparse.quote(p)}'
             test_urls.append((test_url, method_preference, p))
             test_urls.append((base_endpoint.replace('%7BpostId%7D', urlparse.quote_plus(p)), 'GET', p))
@@ -3648,8 +3984,14 @@ class SafeConsumptionAuditor:
                     return
                 try:
                     future.result()
-                except Exception:
-                    pass
+                except concurrent.futures.CancelledError:
+                    continue
+                except __import__('probe_policy').ProbeSkipped:
+                    self._execution_state.skipped = True
+                    for pending in futures:
+                        pending.cancel()
+                except Exception as exc:
+                    self._record_telemetry('Injection worker failed', base_endpoint, extra={'error': str(exc)})
 
 
     #================ _test_injection description ##########
@@ -3676,12 +4018,14 @@ class SafeConsumptionAuditor:
         domain = parsed.netloc or parsed.hostname or ''
         base = test_url.split('?', 1)[0]
 
+        nosql_baseline = nosql_control = None
+
         if self.quick_mode and not self.deep_scan and attack_type in {'sql', 'path'}:
             try:
                 self._throttle(domain)
                 r = self.session.get(test_url, timeout=(1, self.timeout), allow_redirects=False)
-                if self._is_injection_successful(r, attack_type, payload=p):
-                    self._log(f'Possible {attack_type.upper()} injection', test_url, 'Critical', payload=p, response=r)
+                if self._is_injection_successful(r, attack_type, payload=p, baseline_response=nosql_baseline, control_response=nosql_control):
+                    self._log('NoSQL error triggered by probe; exploitability unverified' if attack_type == 'nosql' else f'Possible {attack_type.upper()} injection', test_url, 'Medium' if attack_type == 'nosql' else 'Critical', payload=p, response=r)
             except Exception as req_err:
                 self._log(
                     'Quick injection probe failed',
@@ -3691,10 +4035,10 @@ class SafeConsumptionAuditor:
                 )
             return
 
-        param_candidates = [
+        param_candidates = self._param_candidates(base, [
             'q', 'query', 'search', 'id', 'user', 'username', 'email', 'name',
             'term', 's', 'page', 'limit', 'offset', 'code', 'token', 'redirect', 'next', 'return', 'ref'
-        ]
+        ])
 
         allowed = set()
         try:
@@ -3715,11 +4059,30 @@ class SafeConsumptionAuditor:
         except Exception:
             allowed = set()
 
+        declared_operations = self.session.matching(base) if callable(getattr(self.session, 'matching', None)) else []
+        if declared_operations:
+            allowed = {op['method'].upper() for op in declared_operations}
+            method = 'GET' if 'GET' in allowed else method
+
         if method == 'auto' and allowed:
             for cand in ('POST', 'PUT', 'PATCH', 'GET'):
                 if cand in allowed:
                     method = cand
                     break
+
+        nosql_baseline = nosql_control = None
+        if attack_type == 'nosql':
+            try:
+                self._throttle(domain)
+                nosql_baseline = self.session.get(base, timeout=(3, self.timeout), allow_redirects=False)
+                self._throttle(domain)
+                nosql_control = self.session.get(base+'?input=apiscan_inert_control', timeout=(3, self.timeout), allow_redirects=False)
+                if not (200 <= nosql_baseline.status_code < 300 and 200 <= nosql_control.status_code < 300):
+                    self._record_telemetry('NoSQL baseline unsuitable', base, extra={'baseline_status':nosql_baseline.status_code,'control_status':nosql_control.status_code})
+                    return
+            except Exception as exc:
+                self._record_telemetry('NoSQL control failed', base, extra={'error':str(exc)})
+                return
 
         tried_any = False
         try:
@@ -3750,10 +4113,7 @@ class SafeConsumptionAuditor:
                                 waf_detected = False
                                 waf_name = "Unknown"
 
-                                if 'openresty' in server_header:
-                                    waf_detected = True
-                                    waf_name = "OpenResty (nginx-based WAF)"
-                                elif 'cloudflare' in server_header or 'cloudflare' in body_low:
+                                if 'cloudflare' in server_header or 'cloudflare' in body_low:
                                     waf_detected = True
                                     waf_name = "Cloudflare WAF"
                                 elif 'akamai' in server_header or 'akamai' in body_low:
@@ -3794,8 +4154,8 @@ class SafeConsumptionAuditor:
                                     )
 
 
-                            if self._is_injection_successful(r, attack_type, payload=p):
-                                self._log(f'Possible {attack_type.upper()} injection', attack_url, 'Critical', payload=p, response=r)
+                            if self._is_injection_successful(r, attack_type, payload=p, baseline_response=nosql_baseline, control_response=nosql_control):
+                                self._log('NoSQL error triggered by probe; exploitability unverified' if attack_type == 'nosql' else f'Possible {attack_type.upper()} injection', attack_url, 'Medium' if attack_type == 'nosql' else 'Critical', payload=p, response=r)
                                 return
                         except Exception as req_err:
                             self._log('Request failed during injection test', attack_url, 'Info',
@@ -3831,8 +4191,8 @@ class SafeConsumptionAuditor:
                                 )
 
 
-                        if self._is_injection_successful(r, attack_type, payload=p):
-                            self._log(f'Possible {attack_type.upper()} injection', attack_url, 'Critical', payload=p, response=r)
+                        if self._is_injection_successful(r, attack_type, payload=p, baseline_response=nosql_baseline, control_response=nosql_control):
+                            self._log('NoSQL error triggered by probe; exploitability unverified' if attack_type == 'nosql' else f'Possible {attack_type.upper()} injection', attack_url, 'Medium' if attack_type == 'nosql' else 'Critical', payload=p, response=r)
                             return
                     except Exception as req_err:
                         self._log('Request failed during injection test', attack_url, 'Info',
@@ -3840,6 +4200,11 @@ class SafeConsumptionAuditor:
 
             post_allowed = ('POST' in allowed) or (method in ('auto', 'POST')) or (not allowed)
             if allowed and 'POST' not in allowed and method not in ('POST', 'PUT', 'PATCH'):
+                post_allowed = False
+
+            if declared_operations:
+                # Generic injection uses query probes. Schema-aware SQL handles
+                # declared write bodies separately; do not fabricate form bodies.
                 post_allowed = False
 
             if post_allowed:
@@ -3872,8 +4237,8 @@ class SafeConsumptionAuditor:
                             )
 
 
-                    if self._is_injection_successful(r, attack_type, payload=p):
-                        self._log(f'Possible {attack_type.upper()} injection', base + ' (form)', 'Critical', payload=p, response=r)
+                    if self._is_injection_successful(r, attack_type, payload=p, baseline_response=nosql_baseline, control_response=nosql_control):
+                        self._log('NoSQL error triggered by probe; exploitability unverified' if attack_type == 'nosql' else f'Possible {attack_type.upper()} injection', base + ' (form)', 'Medium' if attack_type == 'nosql' else 'Critical', payload=p, response=r)
                         return
                 except Exception as req_err:
                     self._log('POST injection test failed', base, 'Info',
@@ -3905,8 +4270,8 @@ class SafeConsumptionAuditor:
                             )
 
 
-                    if self._is_injection_successful(r, attack_type, payload=p):
-                        self._log(f'Possible {attack_type.upper()} injection', attack_url, 'Critical', payload=p, response=r)
+                    if self._is_injection_successful(r, attack_type, payload=p, baseline_response=nosql_baseline, control_response=nosql_control):
+                        self._log('NoSQL error triggered by probe; exploitability unverified' if attack_type == 'nosql' else f'Possible {attack_type.upper()} injection', attack_url, 'Medium' if attack_type == 'nosql' else 'Critical', payload=p, response=r)
                         return
                 except Exception as req_err:
                     self._log('Template injection test failed', attack_url, 'Info',
@@ -3918,8 +4283,33 @@ class SafeConsumptionAuditor:
             self._log('Injection test failed', test_url, 'Info', extra={'error': str(exc), 'type': attack_type})
 
 
+    def _nosql_error_signatures(self, response):
+        if response is None:
+            return set()
+        text = response.text or ''
+        try:
+            data = response.json()
+            if not isinstance(data, dict):
+                return set()
+            error = data.get('error') or data.get('errors')
+            if not error and response.status_code >= 400:
+                error = data.get('message')
+            if not error:
+                return set()  # Normal JSON records, including educational hints.
+            text = json.dumps(error)
+        except (ValueError, TypeError):
+            if response.status_code < 400:
+                return set()
+        patterns = (
+            r'\b(?:MongoServerError|MongoError|BSONError|BSONTypeError|MongoParseError)\b',
+            r'\bpymongo\.errors\.[A-Za-z]+',
+            r'\bunrecognized pipeline stage(?: name)?\b',
+            r'\bunknown (?:top level )?operator\s*:\s*\$',
+        )
+        return {pattern for pattern in patterns if re.search(pattern, text, re.I)}
+
     #================ _is_injection_successful description ##########
-    def _is_injection_successful(self, response: requests.Response, attack_type: str, *, baseline_latency: float = 0.5, payload: str = '') -> bool:
+    def _is_injection_successful(self, response: requests.Response, attack_type: str, *, baseline_latency: float = 0.5, payload: str = '', baseline_response=None, control_response=None) -> bool:
         if response is None:
             return False
 
@@ -3951,8 +4341,11 @@ class SafeConsumptionAuditor:
             return False
 
         if attack_type == 'nosql':
-            if any(p in low for p in self.NOSQL_NEGATIVE_PATTERNS):
+            if baseline_response is None or control_response is None:
                 return False
+            evidence = self._nosql_error_signatures(response)
+            return bool(evidence - self._nosql_error_signatures(baseline_response)
+                        - self._nosql_error_signatures(control_response))
 
         if attack_type == 'sql':
             if self._has_sql_evidence_improved(text):
@@ -3964,19 +4357,15 @@ class SafeConsumptionAuditor:
             return False
 
         if status >= 500:
-            if attack_type == 'nosql':
-                return any((k in low for k in self.NOSQL_ERROR_KEYWORDS)) or self._has_engine_marker(low, 'nosql')
             if attack_type in {'ssti', 'ldap', 'xxe'}:
                 return self._has_engine_marker(low, attack_type)
             return False
 
-        if attack_type == 'nosql':
-            specific = any((re.search(p, low) for p in ('mongo.*error', 'mongodb.*error', 'bson.*error')))
-            keywords = any((k in low for k in self.NOSQL_ERROR_KEYWORDS))
-            return specific or keywords or self._has_engine_marker(low, 'nosql')
-
         if attack_type == 'xss':
             if not payload or payload.lower() not in low:
+                return False
+            ctype = (response.headers.get('Content-Type') or '').lower()
+            if ctype and not any(t in ctype for t in ('html', 'xml')):
                 return False
             return any((s in text for s in (f'="{payload}"', f'>{payload}<', f"'{payload}'", f'`{payload}`'))) or self._is_payload_reflected(text, payload)
 
@@ -4154,6 +4543,12 @@ class SafeConsumptionAuditor:
 
     #================ _is_endpoint_reachable description ##########
     def _is_endpoint_reachable(self, endpoint: str) -> bool:
+        if hasattr(self.session,'matching'):
+            operations=self.session.matching(endpoint)
+            if operations and not any(op['method']=='GET' for op in operations):
+                self._record_telemetry('Read-only reachability deferred',endpoint,
+                    extra={'execution_status':'not_applicable','note':'Declared non-GET operation retained for method-specific tests; no preliminary write sent.'})
+                return True
         try:
             domain = urlparse.urlparse(endpoint).netloc or ""
             self._throttle(domain)
@@ -4169,6 +4564,9 @@ class SafeConsumptionAuditor:
 
     #================ _should_skip_heavy_endpoint description ##########
     def _should_skip_heavy_endpoint(self, endpoint: str) -> bool:
+        if hasattr(self.session,'matching'):
+            operations=self.session.matching(endpoint)
+            if operations and not any(op['method']=='GET' for op in operations): return False
         try:
             if self._has_auth_configured():
                 return False
@@ -4176,7 +4574,7 @@ class SafeConsumptionAuditor:
             self._throttle(domain)
             resp = self.session.get(endpoint, timeout=(2, 4), allow_redirects=False)
             if resp.status_code in (401, 403):
-                # No auth configured — 401/403 is expected, suppress finding.
+                # No auth configured â€” 401/403 is expected, suppress finding.
                 return True
         except Exception as e:
             self._record_telemetry(
@@ -4239,8 +4637,9 @@ class SafeConsumptionAuditor:
 
             if is_waf_detection:
 
-                if issue.get('severity') in ['Info', 'Low']:
-                    issue['severity'] = 'Low'
+                issue['severity'] = 'Info'
+                issue['risk_score'] = 0.0
+                issue['evidence_status'] = 'observation' 
                 cleaned.append(issue)
                 continue
 
@@ -4541,10 +4940,10 @@ class SafeConsumptionAuditor:
         t = (text or '').lower()
         if any(term in t for term in ['waf detected', 'input filtering', 'openresty', 'mod_security']):
             return 'WAF/Filtering'
-        if 'sql injection' in t or 'sqli' in t:
-            return 'SQLi'
         if 'nosql' in t:
             return 'NoSQLi'
+        if 'sql injection' in t or 'sqli' in t:
+            return 'SQLi'
         if 'directory traversal' in t:
             return 'Directory Traversal'
         if 'crlf' in t:
@@ -4610,8 +5009,8 @@ class SafeConsumptionAuditor:
     #================ endpoints_from_swagger description ##########
     @staticmethod
 
-    def endpoints_from_swagger(swagger_path: str):
-        pairs = SafeConsumptionAuditor.endpoints_from_swagger_with_methods(swagger_path)
+    def endpoints_from_swagger(swagger_path: str, base_url: Optional[str] = None):
+        pairs = SafeConsumptionAuditor.endpoints_from_swagger_with_methods(swagger_path, base_url=base_url)
         urls = []
         seen = set()
         for url, _m in pairs:
@@ -4624,7 +5023,7 @@ class SafeConsumptionAuditor:
     #================ endpoints_from_swagger_with_methods description ##########
     @staticmethod
 
-    def endpoints_from_swagger_with_methods(swagger_path: str):
+    def endpoints_from_swagger_with_methods(swagger_path: str, base_url: Optional[str] = None):
         from pathlib import Path
         import json
 
@@ -4640,15 +5039,19 @@ class SafeConsumptionAuditor:
                 import yaml as _yaml
                 spec = _yaml.safe_load(raw) or {}
 
-        servers = []
-        for srv in (spec.get("servers") or []):
-            u = (srv.get("url") or "").strip()
-            if not u:
-                continue
-
-            if u.endswith("/"):
-                u = u[:-1]
-            servers.append(u)
+        # CLI --url selects the target deployment. Spec server origins may
+        # describe another environment (e.g. localhost versus 127.0.0.1).
+        # Keep the original spec-only behavior for callers without an override.
+        if base_url is not None:
+            from urllib.parse import urlsplit
+            parsed = urlsplit(base_url)
+            if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+                raise ValueError('API10 target must be an HTTP(S) base URL without credentials, query or fragment')
+            servers = [base_url.rstrip('/')]
+        else:
+            servers = [str(server.get('url') or '').rstrip('/')
+                       for server in (spec.get('servers') or [])
+                       if isinstance(server, dict) and server.get('url')]
 
         paths = spec.get("paths") or {}
         out = []

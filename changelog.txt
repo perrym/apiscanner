@@ -1,5 +1,5 @@
 # APISCAN - CHANGELOG
-Version:5.0.2 release 07-07-2026
+Version:5.5.0 release 03-11-2026
 Author: Perry Mertens pamsniffer@gmail.com
 
 27-09-2026 — false-positive reduction

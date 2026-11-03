@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2026  #
-# version 5.0 24-06-2026                               #
+# version 5.5 24-06-2026                               #
 ########################################################
                    
 from __future__ import annotations
@@ -14,6 +14,7 @@ import ssl
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 from urllib.parse import urlparse, urljoin
+from scanner_quality import normalize_endpoint, path_values
 import requests
 from tqdm import tqdm
 from report_utils import ReportGenerator
@@ -59,6 +60,7 @@ class AuthAuditor:
         self.show_progress = show_progress
         self.timeout = timeout
         self.auth_issues: List[Dict[str, Any]] = []
+        self.diagnostics = []
         self._swagger_get_eps: List[Dict[str, Any]] = []
 
     @property
@@ -77,6 +79,14 @@ class AuthAuditor:
 
     #================funtion _log_issue _log_issue =============
     def _log_issue(self, endpoint: str, description: str, severity: str, request_data: Optional[Dict[str, Any]]=None, response_obj: Optional[requests.Response]=None, extra: Optional[Dict[str, Any]]=None) -> None:
+        if description.startswith(('Auth test error:', 'Auth sub-test error:', 'Crypto test failed:')):
+            if not hasattr(self,'diagnostics'):
+                self.diagnostics = []
+            self.diagnostics.append(dict(audit='API2',url=endpoint,error=description,details=extra))
+            return
+        if 'without detected WAF' in description or 'Rapid Reset' in description:
+            description = 'Observation: '+description+'; patch level and exploitability unverified'
+            severity = 'Info'
         status_code = getattr(response_obj, 'status_code', 0)
         url = getattr(response_obj, 'url', None) or endpoint
         method = (getattr(getattr(response_obj, 'request', None), 'method', None) or (request_data or {}).get('method', 'GET')).upper()
@@ -92,6 +102,10 @@ class AuthAuditor:
         entry['request_cookies'] = getattr(self.session.cookies, 'get_dict', lambda: {})()
         if response_obj is not None:
             entry['response_cookies'] = getattr(response_obj.cookies, 'get_dict', lambda: {})()
+        if severity == 'Info' and (description.startswith('Observation:') or
+                                   (extra and "Shor" in str(extra.get('attack', '')))):
+            entry['evidence_status'] = 'observation'
+            entry['confidence'] = 'low'
         self.auth_issues.append(entry)
 
     #================funtion _endpoints_from_spec _endpoints_from_spec =============
@@ -100,7 +114,10 @@ class AuthAuditor:
         try:
             sec = OASSecurityConfig()
             for op in oas_iter_ops(self.spec or {}):
-                req = oas_build_request(self.spec, self.base_url, op, sec)
+                try:
+                    req = oas_build_request(self.spec, self.base_url, op, sec)
+                except ValueError:
+                    continue
                 url = req['url']
                 method = (req['method'] or 'GET').upper()
                 path = op.get('path') or url
@@ -130,12 +147,17 @@ class AuthAuditor:
 
     #================funtion test_authentication_mechanisms test_authentication_mechanisms =============
     def test_authentication_mechanisms(self, swagger_endpoints: Optional[List[Dict[str, Any]]]=None) -> List[Dict[str, Any]]:
+        self.diagnostics = []
         if swagger_endpoints:
             endpoints = []
             for ep in swagger_endpoints:
                 path = ep.get('path', '/')
                 method = ep.get('method', 'GET').upper()
-                url = urljoin(self.base_url, path.lstrip('/'))
+                try:
+                    url = normalize_endpoint(path, self.base_url, path_values(self.spec,getattr(self,'path_parameter_values',{})))
+                except ValueError as exc:
+                    self.diagnostics.append(dict(audit='API2',url=path,error=str(exc)))
+                    continue
                 endpoints.append({'path': path, 'method': method, 'url': url, 'tags': []})
         else:
             endpoints = self._endpoints_from_spec()
@@ -168,116 +190,83 @@ class AuthAuditor:
                 self._log_issue(endpoint['url'], f'Auth sub-test error: {exc}', 'Medium')
 
     #================funtion _test_weak_credentials _test_weak_credentials =============
-    def _test_weak_credentials(self, endpoint: Dict[str, Any]) -> None:
-        weak = [('admin', 'admin'), ('user', 'password'), ('test', 'test123'), ('', '')]
-        for u, p in weak:
-            data = {'username': u, 'password': p}
-            try:
-                resp = self.session.post(endpoint['url'], json=data, timeout=self.timeout)
-            except requests.RequestException:
-                return  # endpoint unreachable — skip remaining credential attempts
-            if resp.status_code == 200:
-                self._log_issue(endpoint['url'], f'Weak creds accepted: {u}/{p}', 'High', data, resp)
+    def _auth_request(self, endpoint):
+        from openapi_universal import iter_operations, build_request
+        from urllib.parse import urlsplit
+        path = endpoint.get('path') or urlsplit(endpoint.get('url','')).path
+        op = next((op for op in iter_operations(self.spec)
+                   if op['path']==path and op['method']==endpoint.get('method','POST').upper()),None)
+        if not op:
+            return None
+        try:
+            return build_request(self.spec,self.base_url,op)
+        except ValueError as exc:
+            # Unresolved path parameter: skip instead of reporting a bogus auth error.
+            self.diagnostics.append(dict(audit='API2',url=path,error=str(exc)))
+            return None
 
-    #================funtion _test_token_security _test_token_security =============
-    def _test_token_security(self, endpoint: Dict[str, Any]) -> None:
-        try:
-            valid_resp = self.session.post(endpoint['url'], json={'username': 'test', 'password': 'validpass'}, timeout=self.timeout)
-        except requests.RequestException:
-            return
-        if valid_resp.status_code != 200:
-            return
-        body = {}
-        try:
-            body = valid_resp.json()
-        except Exception:
-            pass
-        token = body.get('access_token') or body.get('token') or body.get('jwt')
-        if not token:
-            return
-        try:
-            long_resp = self.session.post(endpoint['url'], json={'username': 'test', 'password': 'validpass', 'expires_in': 999999}, timeout=self.timeout)
-            if long_resp.status_code == 200:
-                self._log_issue(endpoint['url'], 'Tokens can be issued with very long lifetimes', 'Medium', {'expires_in': 999999}, long_resp)
-        except requests.RequestException:
-            pass
-        logout_url = endpoint['url'].replace('login', 'logout')
-        try:
-            revoke_resp = self.session.post(logout_url, headers={'Authorization': f'Bearer {token}'}, timeout=self.timeout)
-            if revoke_resp.status_code >= 400:
-                self._log_issue(endpoint['url'], 'Tokens appear non-revocable', 'Medium', response_obj=revoke_resp)
-        except requests.RequestException:
-            pass
+    def _test_weak_credentials(self, endpoint):
+        from copy import deepcopy
+        from universal_runtime import isolated_session, anonymous_request
+        req = self._auth_request(endpoint)
+        if not req or req['method'] != 'POST': return
+        key = 'json' if isinstance(req.get('json'),dict) else 'data'
+        body = req.get(key)
+        if not isinstance(body,dict): return
+        user = next((k for k in body if k.lower() in ('username','email','login')),None)
+        password = next((k for k in body if k.lower() in ('password','passwd')),None)
+        if not user or not password: return
+        with isolated_session(self.session) as client:
+            for name,value in [('admin','admin'),('user','password'),('test','test123')]:
+                attempt = anonymous_request(deepcopy(req),self.spec)
+                attempt[key][user] = name+'@example.com' if user.lower()=='email' else name
+                attempt[key][password] = value
+                resp = client.request(**attempt,timeout=self.timeout,allow_redirects=False)
+                if not 200 <= resp.status_code < 300: continue
+                try: data = resp.json()
+                except ValueError: continue
+                if isinstance(data,dict) and any(isinstance(data.get(k),str) and data[k] for k in ('access_token','token','jwt')):
+                    self._log_issue(endpoint['url'],'Candidate: token issued for weak credentials; protected resource access requires verification','Medium',response_obj=resp)
+
+    def _test_token_security(self, endpoint):
+        # Expiry / revocation require an issued token and declared lifecycle policy.
+        # Do not infer either from an accepted expires_in field or a guessed logout URL.
+        return
 
     #================funtion _test_rate_limiting _test_rate_limiting =============
-    def _test_rate_limiting(self, endpoint: Dict[str, Any]) -> None:
-        # Skip rate-limit test when scanning without authentication —
-        # we can't determine if rate limiting exists when every request returns 401.
-        has_auth = bool(
-            getattr(self.session, "auth", None)
-            or any(h.lower() in ("authorization", "x-api-key", "x-auth-token")
-                   for h in (getattr(self.session, "headers", {}) or {}).keys())
-        )
-        if not has_auth:
-            return
-
-        method = endpoint.get('method', 'POST').upper()
-        processed = False
-        last_resp: Optional[requests.Response] = None
-        for i in range(5):  # 5 requests is enough to trigger rate limiting
-            try:
-                last_resp = self.session.request(method, endpoint['url'], json={'username': f'att{i}', 'password': 'bad'}, timeout=self.timeout)
-            except requests.RequestException:
-                return  # endpoint unreachable — can't test rate limiting
-            if last_resp.status_code == 429:
-                return
-            if last_resp.status_code in (404, 405, 501):
-                self._log_issue(endpoint['url'], f'Method {method} not allowed - RL test skipped', 'Info', response_obj=last_resp)
-                return
-            if 200 <= last_resp.status_code < 300:
-                processed = True
-        if processed:
-            self._log_issue(endpoint['url'], 'No rate-limiting on auth endpoint', 'Medium', response_obj=last_resp)
+    def _test_rate_limiting(self, endpoint):
+        from copy import deepcopy
+        from universal_runtime import isolated_session, anonymous_request
+        req = self._auth_request(endpoint)
+        if not req or req['method']!='POST': return
+        key = 'json' if isinstance(req.get('json'),dict) else 'data'
+        body = req.get(key)
+        if not isinstance(body,dict): return
+        password = next((k for k in body if k.lower() in ('password','passwd')),None)
+        if not password: return
+        req = anonymous_request(deepcopy(req),self.spec)
+        req[key][password] = 'apiscan-invalid-password'
+        with isolated_session(self.session) as client:
+            for _ in range(5):
+                resp = client.request(**req,timeout=self.timeout,allow_redirects=False)
+                if resp.status_code==429: return
+                if resp.status_code in (400,404,405,415,422,501): return
+            self._log_issue(endpoint['url'],'Observation: no HTTP 429 during five schema-based login attempts; rate-limit policy and abuse impact unverified','Info',response_obj=resp)
 
     #================funtion _test_jwt_issues _test_jwt_issues =============
-    def _test_jwt_issues(self, endpoint: Dict[str, Any]) -> None:
-
-        def _b64json(part: str) -> Dict[str, Any]:
-            try:
-                pad = '=' * (-len(part) % 4)
-                return json.loads(base64.urlsafe_b64decode(part + pad))
-            except Exception:
-                return {}
+    def _test_jwt_issues(self, endpoint):
+        # Inspect the configured token; never invent a protected route.
+        token = str(getattr(self.session,'headers',{}).get('Authorization',''))
+        if not token.lower().startswith('bearer '): return
+        token = token.split(' ',1)[1]
+        if token.count('.')!=2: return
         try:
-            resp = self.session.post(endpoint['url'], json={'username': 'test', 'password': 'validpass'}, timeout=self.timeout)
-        except requests.RequestException:
-            return
-        if resp.status_code != 200:
-            return
-        try:
-            token = resp.json().get('access_token') or resp.json().get('token')
-        except Exception:
-            token = None
-        if not token or token.count('.') != 2:
-            return
-        header = _b64json(token.split('.')[0])
-        alg = (header.get('alg') or '').lower()
-        if alg == 'none':
-            self._log_issue(endpoint['url'], "JWT uses 'alg:none' - no signature required!", 'Critical', response_obj=resp)
-        if len(token) > 10:
-            tampered = token[:-5] + 'abcde'
-            try:
-                check = self.session.get(urljoin(self.base_url, 'api/protected'), headers={'Authorization': f'Bearer {tampered}'}, timeout=self.timeout)
-                if check.status_code == 200:
-                    self._log_issue(endpoint['url'], 'JWT signature not validated - tampered token accepted', 'Critical', response_obj=check)
-            except requests.RequestException:
-                pass
-        try:
-            payload = _b64json(token.split('.')[1])
-            if not payload.get('exp'):
-                self._log_issue(endpoint['url'], 'JWT missing expiration claim (exp)', 'Medium', response_obj=resp)
-        except Exception:
-            pass
+            parts = [json.loads(base64.urlsafe_b64decode(part+'='*(-len(part)%4))) for part in token.split('.')[:2]]
+        except (ValueError,TypeError): return
+        if str(parts[0].get('alg','')).lower()=='none':
+            self._log_issue(endpoint['url'],'Observation: configured JWT declares alg:none; server acceptance unverified','Info')
+        if 'exp' not in parts[1]:
+            self._log_issue(endpoint['url'],'Observation: configured JWT has no exp claim; token lifecycle policy unverified','Info')
 
     #================funtion _test_secure_transport _test_secure_transport =============
     def _test_secure_transport(self) -> None:
@@ -303,13 +292,13 @@ class AuthAuditor:
             return  # no TLS tests for plaintext HTTP target
         http_url = 'http://' + self.base_url.split('://', 1)[1]
         try:
-            resp = self.session.get(http_url, timeout=5, allow_redirects=False)
-            if resp.status_code < 400 and resp.status_code not in (301, 302, 307, 308):
+            resp = self.session.get(http_url, timeout=5, allow_redirects=True)
+            if not resp.history and resp.status_code < 400 and resp.status_code not in (301, 302, 307, 308):
                 self._log_issue(http_url, 'HTTP endpoint reachable without HTTPS redirect', 'High', response_obj=resp)
-            elif resp.status_code in (301, 302, 307, 308):
-                location = resp.headers.get('Location', '')
-                if not location.startswith('https://'):
-                    self._log_issue(http_url, f'HTTP redirects to non-HTTPS location: {location}', 'High', response_obj=resp)
+            elif resp.history:
+                from urllib.parse import urlsplit
+                if urlsplit(resp.url).scheme.lower() != 'https':
+                    self._log_issue(http_url, f'HTTP redirect chain ends without HTTPS: {resp.url}', 'High', response_obj=resp)
         except requests.RequestException:
             pass
         self._test_tls_versions_improved()
@@ -419,7 +408,7 @@ class AuthAuditor:
         has_waf = False
         # Probe root URL for headers (works for both HTTP and HTTPS)
         try:
-            resp = self.session.get(self.base_url, timeout=self.timeout, allow_redirects=False)
+            resp = self.session.get(self.base_url, timeout=self.timeout, allow_redirects=True)
             hdrs_lower = {k.lower(): v for k, v in resp.headers.items()}
             rl_keys = ('x-ratelimit-limit', 'ratelimit-limit', 'x-rate-limit', 'retry-after', 'x-ratelimit-remaining')
             has_rl = any(h in hdrs_lower for h in rl_keys)
@@ -429,7 +418,7 @@ class AuthAuditor:
             has_waf = (any(m in hdrs_lower for m in waf_header_markers) or
                        any(cdn in server for cdn in ('cloudflare', 'akamai', 'fastly', 'varnish', 'sucuri')))
             # HSTS missing on HTTPS targets
-            if self.base_url.startswith('https://') and 'strict-transport-security' not in hdrs_lower:
+            if resp.url.startswith('https://') and 'strict-transport-security' not in hdrs_lower:
                 self._log_issue(
                     self.base_url,
                     'Missing Strict-Transport-Security (HSTS) header. Clients may be downgraded to HTTP.',
@@ -551,7 +540,7 @@ class AuthAuditor:
                     f'https://{host}:{port}',
                     f'Cipher suite uses static RSA key exchange (no forward secrecy, quantum-vulnerable): {cname}. '
                     'Shor\'s algorithm can derive the session key from a recorded session.',
-                    'Critical',
+                    'Info',
                     extra={'cipher': cname, 'attack': "Shor's algorithm", 'recommendation': 'Use TLS 1.3 with X25519Kyber768 or ML-KEM hybrid key exchange'},
                 )
             elif any(kex in cname for kex in ('ECDHE', 'DHE')):
@@ -560,7 +549,7 @@ class AuthAuditor:
                     f'https://{host}:{port}',
                     f'Key exchange {cname} provides forward secrecy but is broken by Shor\'s algorithm. '
                     'A harvest-now-decrypt-later attack allows future decryption once a cryptographically relevant quantum computer exists.',
-                    'Medium',
+                    'Info',
                     extra={'cipher': cname, 'attack': "Shor's algorithm (harvest-now-decrypt-later)", 'recommendation': 'Deploy post-quantum hybrid key exchange: X25519Kyber768 (NIST ML-KEM / FIPS 203)'},
                 )
 
@@ -576,11 +565,11 @@ class AuthAuditor:
 
             if isinstance(pub, _rsa.RSAPublicKey):
                 bits = pub.key_size
-                sev = 'Critical' if bits < 2048 else 'High' if bits < 4096 else 'Medium'
+                sev = 'High' if bits < 2048 else 'Info'
                 self._log_issue(
                     f'https://{host}:{port}',
-                    f'Certificate uses RSA-{bits} signature key. RSA is fully broken by Shor\'s algorithm; '
-                    f'key size {bits} bits offers no additional protection against a quantum adversary.',
+                    (f'Weak RSA certificate key: {bits} bits.' if bits < 2048 else
+                     f'Observation: post-quantum readiness; RSA-{bits} certificate public key. No current compromise demonstrated.'),
                     sev,
                     extra={'key_algorithm': 'RSA', 'key_size': bits, 'sig_oid': sig_alg,
                            'attack': "Shor's algorithm",
@@ -592,7 +581,7 @@ class AuthAuditor:
                     f'https://{host}:{port}',
                     f'Certificate uses ECDSA ({curve}). Elliptic-curve discrete-log is broken by Shor\'s algorithm; '
                     'a harvest-now-decrypt-later attack applies to long-lived certificates.',
-                    'Medium',
+                    'Info',
                     extra={'key_algorithm': 'ECDSA', 'curve': curve, 'sig_oid': sig_alg,
                            'attack': "Shor's algorithm",
                            'recommendation': 'Migrate to ML-DSA (CRYSTALS-Dilithium, FIPS 204) or SLH-DSA (SPHINCS+, FIPS 205)'},
@@ -601,7 +590,7 @@ class AuthAuditor:
                 self._log_issue(
                     f'https://{host}:{port}',
                     'Certificate uses DSA public key. DSA is fully broken by Shor\'s algorithm.',
-                    'High',
+                    'Info',
                     extra={'key_algorithm': 'DSA', 'sig_oid': sig_alg,
                            'attack': "Shor's algorithm",
                            'recommendation': 'Migrate to ML-DSA (CRYSTALS-Dilithium, FIPS 204)'},
@@ -612,7 +601,7 @@ class AuthAuditor:
                 self._log_issue(
                     f'https://{host}:{port}',
                     f'Certificate uses {alg}. While resistant to classical attacks, {alg} is broken by Shor\'s algorithm on a sufficiently powerful quantum computer.',
-                    'Medium',
+                    'Info',
                     extra={'key_algorithm': alg, 'attack': "Shor's algorithm",
                            'recommendation': 'Migrate to ML-DSA (CRYSTALS-Dilithium, FIPS 204) or SLH-DSA (SPHINCS+, FIPS 205)'},
                 )
@@ -626,7 +615,7 @@ class AuthAuditor:
         token_rx = re.compile('(-----BEGIN (RSA|EC|DSA|PRIVATE) KEY-----|aws_secret_access_key|aws_access_key_id|azure_client_secret|google_api_key|private_token|private_key|access_token|refresh_token|auth_token|bearer|client_secret|api_key|apikey|secret_key|password)', re.I)
         it = tqdm(paths, desc='secret exposure paths', unit='path', leave=False) if self.show_progress else paths
         for path in it:
-            url = urljoin(self.base_url, path.lstrip('/'))
+            url = normalize_endpoint(path, self.base_url, path_values(self.spec))
             try:
                 head = self.session.head(url, allow_redirects=True, timeout=3)
                 if head.status_code != 200:
@@ -657,7 +646,11 @@ class AuthAuditor:
         get_eps = [ep for ep in endpoints if ep.get('method', '').upper() == 'GET']
         it = tqdm(get_eps, desc='password-hash GETs', unit='endpoint', leave=False) if self.show_progress else get_eps
         for ep in it:
-            url = urljoin(self.base_url, (ep.get('path') or '').lstrip('/'))
+            try:
+                url = normalize_endpoint(ep.get('path') or '/', self.base_url, path_values(self.spec,getattr(self,'path_parameter_values',{})))
+            except ValueError as exc:
+                self.diagnostics.append(dict(audit='API2',url=ep.get('path'),error=str(exc)))
+                continue
             try:
                 r = self.session.get(url, timeout=5)
                 if r.status_code != 200:
@@ -671,7 +664,7 @@ class AuthAuditor:
 
     #================funtion _filtered_issues _filtered_issues =============
     def _filtered_issues(self) -> List[Dict[str, Any]]:
-        return [i for i in self.auth_issues if i.get('status_code', 1) != 0 or i.get('severity') in ('High', 'Critical')]
+        return [i for i in self.auth_issues if i.get('status_code', 1) != 0 or i.get('severity') in ('High', 'Critical') or i.get('evidence_status') == 'observation']
 
     #================funtion generate_report generate_report =============
     def generate_report(self, fmt: str='markdown') -> str:

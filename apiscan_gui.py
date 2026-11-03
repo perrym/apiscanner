@@ -3,7 +3,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2026  #
-# version 5.0 07-07-2026                               #
+# version 5.5 24-06-2026                               #
 ########################################################
 
 
@@ -40,7 +40,7 @@ except ImportError:
 try:
     from version import __version__
 except ImportError:
-    __version__ = "5.0.0"
+    __version__ = "5.5.0"
 
 # Regex to strip ANSI escape sequences from colorama output
 _re_ansi = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\]8;.*?\x1b\\")
@@ -264,6 +264,7 @@ class APISCANApp:
         # All StringVar / BooleanVar
         self.url_var = StringVar()
         self.swagger_var = StringVar()
+        self.mcp_var = BooleanVar(value=False)
         self.crawl_var = BooleanVar(value=False)
         self.crawl_depth_var = StringVar(value="3")
         self.crawl_aggressive_var = BooleanVar(value=False)
@@ -300,6 +301,8 @@ class APISCANApp:
         self.form_login_token_path_var = StringVar()
         self.headers_file_var = StringVar()
         self.ids_file_var = StringVar()
+        self.request_data_file_var = StringVar()
+        self.authorization_cases_file_var = StringVar()
         self.api_vars: dict[str, BooleanVar] = {}
 
         # -- Advanced / extra CLI settings --
@@ -544,6 +547,8 @@ class APISCANApp:
         ttk.Label(url_frame, text="https://api.example.com",
                   style="Muted.TLabel").pack(side="left", padx=(6, 0))
         self.url_entry.configure(textvariable=self.url_var)
+        ttk.Checkbutton(url_frame,text='MCP HTTP (--mcp)',variable=self.mcp_var,
+                        style='Card.TCheckbutton').pack(side='left',padx=(8,0))
 
         sw_frame = ttk.Frame(inner, style="Card.TFrame")
         sw_frame.grid(row=1, column=0, sticky="ew", padx=14, pady=4)
@@ -617,6 +622,24 @@ class APISCANApp:
         ttk.Entry(add_files_frame, textvariable=self.ids_file_var, width=28).pack(side="left")
         ttk.Button(add_files_frame, text="...", width=3, style="Small.TButton",
                    command=lambda: self._browse_file("ids_file_var", "*.json")
+                   ).pack(side="left", padx=(2, 0))
+        request_files_frame = ttk.Frame(inner, style="Card.TFrame")
+        request_files_frame.grid(row=9, column=0, sticky="ew", padx=14, pady=(2, 4))
+        ttk.Label(request_files_frame, text="Request Data", style="Card.TLabel",
+                  width=16, anchor=E).pack(side="left", padx=(0, 8))
+        ttk.Entry(request_files_frame, textvariable=self.request_data_file_var, width=42).pack(side="left")
+        ttk.Button(request_files_frame, text="...", width=3, style="Small.TButton",
+                   command=lambda: self._browse_file("request_data_file_var", "*.json")
+                   ).pack(side="left", padx=(2, 0))
+
+
+        account_files_frame = ttk.Frame(inner, style="Card.TFrame")
+        account_files_frame.grid(row=10, column=0, sticky="ew", padx=14, pady=(2, 4))
+        ttk.Label(account_files_frame, text="API1 Accounts", style="Card.TLabel",
+                  width=16, anchor=E).pack(side="left", padx=(0, 8))
+        ttk.Entry(account_files_frame, textvariable=self.authorization_cases_file_var, width=42).pack(side="left")
+        ttk.Button(account_files_frame, text="...", width=3, style="Small.TButton",
+                   command=lambda: self._browse_file("authorization_cases_file_var", "*.json")
                    ).pack(side="left", padx=(2, 0))
 
     # =========================== TAB: AUTH ==================================
@@ -1681,10 +1704,10 @@ class APISCANApp:
         args = ["--url", self.url_var.get().strip()]
 
         swagger = self.swagger_var.get().strip()
-        if swagger:
+        if swagger and not self.mcp_var.get():
             args.extend(["--swagger", swagger])
 
-        if self.crawl_var.get():
+        if self.crawl_var.get() and not self.mcp_var.get():
             args.append("--crawl")
             try:
                 depth = int(self.crawl_depth_var.get())
@@ -1850,11 +1873,22 @@ class APISCANApp:
             if val:
                 args.extend([key, val])
 
+        if self.request_data_file_var.get().strip() and not self.mcp_var.get():
+            args.extend(["--request-data-file", self.request_data_file_var.get().strip()])
+
+        if self.authorization_cases_file_var.get().strip() and not self.mcp_var.get():
+            args.extend(["--authorization-cases-file", self.authorization_cases_file_var.get().strip()])
+
         for key, var in self.api_vars.items():
-            if var.get():
+            if var.get() and not self.mcp_var.get():
                 num = key.replace("api", "")
                 args.append(f"--api{num}")
 
+        if self.mcp_var.get():
+            args=[flag for flag in args if flag not in ('--plan-only','--plan-then-scan','--verify-plan','--api3-active','--chain-mode')]
+            if '--chain-depth' in args:
+                index=args.index('--chain-depth');del args[index:index+2]
+            args.append('--mcp')
         return args
 
     def _start_scan(self):
@@ -1863,7 +1897,7 @@ class APISCANApp:
             messagebox.showerror("Validation Error", "Target URL is required.")
             return
 
-        if not self.swagger_var.get().strip() and not self.crawl_var.get():
+        if not self.mcp_var.get() and not self.swagger_var.get().strip() and not self.crawl_var.get():
             if not messagebox.askyesno(
                 "No Specification",
                 "No Swagger file specified and crawling is not enabled.\n"
@@ -1872,7 +1906,7 @@ class APISCANApp:
             ):
                 return
 
-        if not any(var.get() for var in self.api_vars.values()):
+        if not self.mcp_var.get() and not any(var.get() for var in self.api_vars.values()):
             messagebox.showwarning("No Scans", "No OWASP API scans selected. Nothing to scan.")
             return
 
@@ -1894,7 +1928,8 @@ class APISCANApp:
         self._log(f"  APISCAN v{__version__} - Security Scan Started", "header")
         self._log(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", "header")
         self._log("=" * 62, "header")
-        self._log(f"Command: {' '.join(cmd)}", "info")
+        from response_evidence import redact_cli_args
+        self._log(f"Command: {' '.join(redact_cli_args(cmd))}", "info")
         self._log("")
 
         self.scan_thread = threading.Thread(

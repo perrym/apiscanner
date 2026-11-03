@@ -106,7 +106,7 @@ except ImportError as e:
 try:
     import colorama
     colorama.just_fix_windows_console()
-    colorama.init(autoreset=True, strip=False, convert=True)
+    colorama.init(autoreset=True, strip=False)
 except Exception:
     pass
 
@@ -789,7 +789,7 @@ def _filter_auth_issues_min(issues):
         except Exception:
             continue
         if code in {0, 400, 404, 405}:
-            if it.get('severity') not in ('High', 'Critical'):
+            if it.get('severity') not in ('High', 'Critical') and it.get('evidence_status') != 'observation':
                 continue
         if 500 <= code < 600:
             continue
@@ -849,7 +849,11 @@ def check_api_reachable(url: str, session: requests.Session, retries: int=3, del
             if not resp.content:
                 styled_print('Empty response body from server', 'warn')
             if 200 <= code < 400 or code in (401, 403, 404, 405):
-                styled_print(f'Reachable  {Style.BRIGHT}{Fore.WHITE}{safe_url}{Style.RESET_ALL}  →  HTTP {code}', 'ok')
+                final_url = _redact_url(getattr(resp, 'url', url) or url)
+                redirect_note = f' (redirect naar {final_url})' if getattr(resp, 'history', []) else ''
+                styled_print(f'Webserver bereikbaar: {safe_url} → HTTP {code}{redirect_note}', 'ok')
+                if 'html' in resp.headers.get('Content-Type', '').lower():
+                    styled_print('De reactie is een HTML-pagina; API-bereikbaarheid is hiermee niet bevestigd.', 'warn')
                 return
             styled_print(f'Unexpected HTTP {code} from {safe_url}', 'warn')
         except requests.exceptions.RequestException as e:
@@ -1443,12 +1447,41 @@ def validate_crawled_swagger(swagger_path: str, args, output_dir: Path | None=No
 
         return False
 
+    # Compare protected candidates with a nonexistent sibling route. An auth
+    # middleware can return the same JSON 401 for every URL before routing.
+    import uuid
+    missing_name = '__apiscan_missing_' + uuid.uuid4().hex
+    missing_responses = {}
+
+    def _auth_signature(resp):
+        if resp is None or getattr(resp, 'status_code', 0) not in (401, 403):
+            return None
+        try:
+            body = json.dumps(resp.json(), sort_keys=True)
+        except Exception:
+            body = getattr(resp, 'text', '') or ''
+        return (resp.status_code, resp.headers.get('Content-Type', '').lower(), body)
+
+    parents = {p.rstrip('/').rsplit('/', 1)[0] for p in paths}
+    parents.update(p.rstrip('/') for p in paths if '{' not in p)
+    for parent in parents:
+        if parent in missing_responses:
+            continue
+        missing_url = urljoin(args.url.rstrip('/') + '/', (parent + '/' + missing_name).lstrip('/'))
+        try:
+            missing_responses[parent] = _auth_signature(session.get(missing_url, timeout=timeout, allow_redirects=False))
+        except Exception:
+            missing_responses[parent] = None
+
+    def _generic_auth(path, resp):
+        parent = path.rstrip('/').rsplit('/', 1)[0]
+        baseline = missing_responses.get(parent)
+        return baseline is not None and _auth_signature(resp) == baseline
+
     def _probe(path: str, path_item: dict[str, Any]) -> tuple[str, bool]:
         if not isinstance(path_item, dict):
             return path, False
 
-        if mode == 'strict' and _has_sample_response(path_item):
-            return path, True
 
         op_methods = []
         for key in path_item.keys():
@@ -1456,6 +1489,9 @@ def validate_crawled_swagger(swagger_path: str, args, output_dir: Path | None=No
                 op_methods.append(key.lower())
 
         safe_methods = [m for m in ('get', 'head', 'options') if m in op_methods]
+        if not safe_methods and any(isinstance(op,dict) and op.get('x-discovery-source')=='javascript-request' for op in path_item.values()):
+            # Keep explicit method inventory as unverified; no guessed GET or write during crawl validation.
+            return path, True
         if not safe_methods:
             # Write-only endpoint — probe with GET to see if the path exists at all
             probe_url2 = urljoin(args.url.rstrip('/') + '/', _re.sub(r'\{[^}]+\}', '1', path).lstrip('/'))
@@ -1463,12 +1499,16 @@ def validate_crawled_swagger(swagger_path: str, args, output_dir: Path | None=No
                 r = session.get(probe_url2, timeout=timeout, allow_redirects=False)
                 code = int(getattr(r, 'status_code', 0) or 0)
                 ct = str((getattr(r, 'headers', {}) or {}).get('Content-Type', '')).lower()
+                if 'html' in ct or (getattr(r, 'text', '') or '').lstrip().lower().startswith(('<!doctype html', '<html')):
+                    return path, False
                 if code == 200 and 'text/html' in ct and _homepage_body:
                     rb = getattr(r, 'text', '') or ''
                     if len(rb) == _homepage_len and rb == _homepage_body:
                         return path, False  # SPA fallback, not real
                 # 5xx "path not found" = endpoint doesn't exist
                 if _is_path_not_found_error(r):
+                    return path, False
+                if _generic_auth(path, r):
                     return path, False
                 if code in (401, 403, 405):
                     return path, True  # exists but GET not allowed
@@ -1480,6 +1520,7 @@ def validate_crawled_swagger(swagger_path: str, args, output_dir: Path | None=No
 
         probe_url = urljoin(args.url.rstrip('/') + '/', _re.sub(r'\{[^}]+\}', '1', path).lstrip('/'))
         for m in safe_methods:
+            resp = None
             try:
                 resp = session.request(m.upper(), probe_url, timeout=timeout, allow_redirects=False)
                 code = int(getattr(resp, 'status_code', 0) or 0)
@@ -1489,6 +1530,12 @@ def validate_crawled_swagger(swagger_path: str, args, output_dir: Path | None=No
                 code = 0
                 ct = ''
                 body_len = 0
+
+            if 'html' in ct or (getattr(resp, 'text', '') or '').lstrip().lower().startswith(('<!doctype html', '<html')):
+                return path, False
+
+            if _generic_auth(path, resp):
+                return path, False
 
             # 200 with HTML identical to homepage = SPA catch-all, not a real endpoint
             if code == 200 and 'text/html' in ct and _homepage_body:
@@ -1526,8 +1573,12 @@ def validate_crawled_swagger(swagger_path: str, args, output_dir: Path | None=No
                 dropped += 1
 
     if not kept:
-        print('[!] Crawl-validatie leverde 0 endpoints op; behoud originele crawl-output.')
-        return swagger_path
+        print('[!] Geen API-endpoints bevestigd; HTML, ongeldige routes en algemene loginreacties zijn geen routebewijs. Gebruik geldige API-authenticatie of een OpenAPI-bestand.')
+
+    js_unverified = sum(1 for item in kept.values() for op in item.values()
+                        if isinstance(op, dict) and op.get('x-discovery-state') == 'unverified')
+    if js_unverified:
+        print(f'[!] {js_unverified} JavaScript-schrijfoperaties opgenomen als onbevestigde inventaris; geldige requestdata en servervalidatie blijven nodig.')
 
     # ── BOLA enrichment: add {id} sibling for collection endpoints ──
     # Crawls often discover /api/orders but not /api/orders/{id} because
@@ -1576,7 +1627,9 @@ def validate_crawled_swagger(swagger_path: str, args, output_dir: Path | None=No
             id_op['summary'] = id_op.get('summary', '') + ' (auto-generated BOLA candidate)'
             id_item[method] = id_op
         if id_item:
-            _enriched[id_path] = id_item
+            # Generated object routes must pass the same existence check.
+            if _probe(id_path, id_item)[1]:
+                _enriched[id_path] = id_item
 
     spec['paths'] = _enriched
     ts = _dt.now().strftime('%Y%m%d_%H%M%S')
@@ -1647,6 +1700,10 @@ def merge_swagger_specs(primary_swagger: str, crawled_swagger: str, output_dir: 
 def main() -> None:
     parser = argparse.ArgumentParser(description=f'APISCAN {__version__} - API Security Scanner')
     parser.add_argument('--url', required=True, help='Base URL of the API to scan')
+    parser.add_argument('--mcp',action='store_true',help='Audit a Streamable HTTP MCP endpoint at --url; no Swagger required')
+    parser.add_argument('--mcp-version',choices=['2025-11-25','2025-06-18','2025-03-26'],default='2025-11-25',help='MCP protocol version to negotiate')
+    parser.add_argument('--mcp-max-pages',type=int,default=10,help='Maximum discovery pages per MCP list (1-100)')
+    parser.add_argument('--mcp-calls-file',help='JSON array of explicit {name, arguments} tool calls; tools are not called by default')
     parser.add_argument('--swagger', help='Path to Swagger/OpenAPI JSON file (optional with --crawl)')
     parser.add_argument(
         '--crawl',
@@ -1693,6 +1750,7 @@ def main() -> None:
         default='balanced',
         help='Validation strictness after crawl: balanced (default) or strict'
     )
+    parser.add_argument('--no-open', action='store_true', help='Do not automatically open the HTML review')
     parser.add_argument('--threads', type=int, default=16, help='Number of concurrent threads to use (default: 16)')
     parser.add_argument('--db-path', help='Optional SQLite DB file to cache findings')
     parser.add_argument('--plan-only', action='store_true', help='Build all requests and write apiscan-plan.csv, do not send')
@@ -1728,7 +1786,10 @@ def main() -> None:
     parser.add_argument('--export_vars', metavar='PATH', help='Export variables template YAML if .yml/.yaml else JSON')
     parser.add_argument('--proxy', help='Optional proxy URL, e.g. http://127.0.0.1:8080')
     parser.add_argument('--headers-file', help='Path to JSON file with header overrides')
+    parser.add_argument('--request-data-file', help='JSON mapping METHOD /OpenAPI/path to valid request data for all modules')
+    parser.add_argument('--api10-data-file', help='JSON mapping METHOD /OpenAPI/path to valid API10 request data and local files')
     parser.add_argument('--ids-file', help='JSON file mapping path parameter names to concrete values')
+    parser.add_argument('--authorization-cases-file', help='Private JSON file with two accounts, identity checks and known private GET objects for API1')
     parser.add_argument('--rewrite', action='append', default=[], help='Regex=>replacement rewrite applied to each URL (can be repeated)')
     parser.add_argument('--no-sanitize', action='store_true', help='Disable built-in URL normalization; only apply explicit --rewrite rules')
     parser.add_argument('--api3-active', action='store_true', dest='api3_active', help='Enable active mass-assignment write tests for API3 (sends modified JSON to write endpoints)')
@@ -1751,11 +1812,27 @@ def main() -> None:
             _a = '-' + _a[1:].lower()
         _argv.append(_a)
     args = parser.parse_args(_argv)
+    if args.mcp:
+        if args.swagger or args.crawl or args.api11 or any(getattr(args,f'api{i}') for i in range(1,11)):
+            parser.error('--mcp is a separate mode; omit --swagger, --crawl and --api flags')
+        if args.plan_only or args.plan_then_scan or args.verify_plan or args.request_data_file or args.api10_data_file:
+            parser.error('REST request planning flags are unavailable in --mcp mode')
+        if not 1 <= args.mcp_max_pages <= 100:
+            parser.error('--mcp-max-pages must be between 1 and 100')
+        try:
+            from mcp_audit import load_calls
+            load_calls(args.mcp_calls_file)
+        except (ValueError,OSError) as exc:
+            parser.error(str(exc))
+    elif args.mcp_calls_file:
+        parser.error('--mcp-calls-file requires --mcp')
     builtins.args = args
     # --- Hardened argument validation (OWASP A03/A05) ---
     try:
         if not isinstance(args.timeout, (int, float)) or args.timeout <= 0 or args.timeout > 600:
             parser.error('--timeout must be > 0 and <= 600 seconds')
+        if not 1 <= args.threads <= 256:
+            parser.error('--threads must be between 1 and 256')
         if getattr(args, 'crawl_depth', 3) < 1:
             parser.error('--crawl-depth must be >= 1')
         if getattr(args, 'crawl_validate_workers', 8) < 1:
@@ -1769,6 +1846,9 @@ def main() -> None:
             ('client-key',  'client_key',  _MAX_JSON_FILE_BYTES),
             ('headers-file', 'headers_file', _MAX_JSON_FILE_BYTES),
             ('ids-file',     'ids_file',     _MAX_JSON_FILE_BYTES),
+            ('authorization-cases-file','authorization_cases_file',262144),
+            ('request-data-file','request_data_file',262144),
+            ('api10-data-file','api10_data_file',262144),
         ):
             _val = getattr(args, _attr, None)
             if _val:
@@ -1779,7 +1859,7 @@ def main() -> None:
         # normalize_url enforces https-by-default and warns on http://.
         args.url = normalize_url(args.url)
     output_dir = create_output_directory(args.url)
-    if args.crawl:
+    if args.crawl and not args.mcp:
         if args.swagger:
             print('[*] Zowel --swagger als --crawl opgegeven; crawl wordt toegevoegd aan bestaande swagger.')
             crawled_swagger = auto_generate_swagger(args, output_dir=output_dir)
@@ -1789,7 +1869,7 @@ def main() -> None:
                 print(f'[!] Merge mislukt ({e}); ga verder met opgegeven --swagger.')
         else:
             args.swagger = auto_generate_swagger(args, output_dir=output_dir)
-    elif not args.swagger:
+    elif not args.swagger and not args.mcp:
         print('[-] Geef --swagger op of gebruik --crawl voor auto-discovery')
         sys.exit(1)
     clear_screen()
@@ -1808,7 +1888,11 @@ def main() -> None:
         logging.basicConfig(level=logging.DEBUG, format='[DEBUG] %(message)s')
     else:
         logging.basicConfig(level=logging.INFO, format='[INFO] %(message)s')
-    selected_apis = [11] if args.api11 else [i for i in range(1, 11) if getattr(args, f'api{i}')] or list(range(1, 11))
+    selected_apis = [] if args.mcp else [11] if args.api11 else [i for i in range(1, 11) if getattr(args, f'api{i}')] or list(range(1, 11))
+    styled_print('Selected modules: ' + ('MCP' if args.mcp else ', '.join(f'API{i}' for i in selected_apis)),'info')
+    unselected = [i for i in range(1,11) if i not in selected_apis]
+    if unselected:
+        styled_print('Not selected: ' + ', '.join(f'API{i}' for i in unselected),'info')
     global OUT_DIR
     OUT_DIR = output_dir
     if not getattr(args, 'db_path', None):
@@ -1828,7 +1912,7 @@ def main() -> None:
     root_logger.setLevel(logging.DEBUG)
     root_logger.addHandler(file_handler)
     logger = logging.getLogger('apiscan')
-    logger.propagate = False
+    logger.propagate = True
     db = None
     globals()['DB'] = None
     run_id = datetime.now().strftime('%Y%m%d-%H%M%S')
@@ -1879,9 +1963,29 @@ def main() -> None:
             print(Fore.MAGENTA + banner + Style.RESET_ALL)
         except Exception:
             print(banner)
+    if args.mcp:
+        try:
+            if args.headers_file:
+                with open(args.headers_file,encoding='utf-8') as handle:
+                    extra_headers=json.load(handle)
+                if not isinstance(extra_headers,dict) or not all(isinstance(k,str) and isinstance(v,str) for k,v in extra_headers.items()):
+                    raise ValueError('--headers-file must contain a JSON object of string headers')
+                sess.headers.update(extra_headers)
+            from mcp_audit import run_mcp_mode
+            ok=run_mcp_mode(args,sess,output_dir,db,run_id)
+        except Exception as exc:
+            styled_print('MCP scan could not finish: '+str(exc),'fail')
+            if args.debug:
+                logger.exception('MCP scan failure')
+            sys.exit(2)
+        finally:
+            sess.close()
+            if db is not None:
+                db.conn.close()
+        sys.exit(0 if ok else 2)
     _retry = (
-        Retry(total=3, read=0, connect=1, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504], allowed_methods=False)
-        if Retry else 3
+        Retry(total=1, read=0, connect=1, status=0, backoff_factor=0.5, status_forcelist=[], allowed_methods=['GET','HEAD','OPTIONS'], raise_on_status=False)
+        if Retry else 0
     )
     adapter = HTTPAdapter(pool_connections=args.threads * 4, pool_maxsize=args.threads * 4, max_retries=_retry)
     sess.mount('http://', adapter)
@@ -1901,6 +2005,16 @@ def main() -> None:
         logger.info(f'Loading Swagger from: {swagger_path}')
         styled_print(f'Loading validated Swagger file: {swagger_path}', 'info')
         spec = oas_load_spec(str(swagger_path), inject_base_url=args.url)
+        from universal_runtime import configure_spec
+        spec = configure_spec(spec, _ID_MAP, getattr(args, 'request_data_file', None))
+        from universal_runtime import attach_verified_login
+        attach_verified_login(spec, args)
+        from universal_runtime import write_operation_inputs
+        input_plan = write_operation_inputs(spec, args.url, output_dir)
+        if input_plan['needs_input']:
+            styled_print(f"{input_plan['needs_input']} operations need request context. Supply existing path values via --ids-file; see log/operation_inputs.json.", 'warn')
+        if _count_spec_operations(spec) == 0:
+            raise ValueError('Geen API-endpoints gevonden. Geef een API-basis-URL of een Swagger/OpenAPI-bestand op; een gewone website kan niet als API worden gescand.')
         _bola_workers = int(os.environ.get('APISCAN_BOLA_WORKERS', str(max(1, min(args.threads, MAX_THREADS)))))
         # Single-pass endpoint extraction — avoid creating BOLAAuditor just for discovery;
         # it will be created again (with caching) when the BOLA scan actually runs.
@@ -1920,7 +2034,8 @@ def main() -> None:
                 ai_sources.append(ep)
         ai_endpoints = [_build_ai_endpoint(ep) for ep in ai_sources]
         logger.debug(f'Swagger loaded - {len(endpoints)} endpoints')
-        styled_print(f'Swagger loaded - {len(endpoints)} endpoints found', 'ok')
+        route_count = len({ep.get('path') for ep in endpoints})
+        styled_print(f'Swagger geladen: {route_count} routes, {len(endpoints)} HTTP-operaties (volgens specificatie)', 'ok')
         if db is not None:
             from urllib.parse import urljoin as _uij
             try:
@@ -1965,291 +2080,354 @@ def main() -> None:
         except Exception as e:
             styled_print(f'FAIL exporting variables: {e}', 'fail')
             sys.exit(1)
+    from universal_runtime import ModuleCoverage
     vulnerability_summary = {}
     
     if 1 in selected_apis:
-        _bola_workers = int(os.environ.get('APISCAN_BOLA_WORKERS', str(max(1, min(args.threads, MAX_THREADS)))))
-        _scan_section(1, f'BOLA – Broken Object Level Authorization  (threads={_bola_workers})')
-        logger.info('Running API1 - BOLA')
-        bola = BOLAAuditor(session=sess, base_url=args.url, swagger_spec=spec, show_subbars=(_bola_workers == 1))
-        endpoints = bola.get_object_endpoints(spec) or []
-        bola_results = []
-        max_workers = _bola_workers
-        if max_workers == 1:
-            for ep in tqdm(endpoints, desc='BOLA endpoints', unit='endpoint'):
-                try:
-                    res = bola.test_endpoint(args.url, ep)
-                    if res:
-                        bola_results.extend(res)
-                except Exception as e:
-                    _scan_err(f"{ep.get('method')} {ep.get('path')}", e)
-        else:
-            with ThreadPoolExecutor(max_workers=max_workers) as ex:
-                futures = {ex.submit(bola.test_endpoint, args.url, ep): ep for ep in endpoints}
-                for fut in tqdm(as_completed(futures), total=len(futures), desc='BOLA endpoints', unit='endpoint'):
-                    ep = futures[fut]
+        with ModuleCoverage(sess, output_dir, 'API1'):
+            _bola_workers = int(os.environ.get('APISCAN_BOLA_WORKERS', str(max(1, min(args.threads, MAX_THREADS)))))
+            _scan_section(1, f'BOLA – Broken Object Level Authorization  (threads={_bola_workers})')
+            logger.info('Running API1 - BOLA')
+            bola = BOLAAuditor(session=sess, base_url=args.url, swagger_spec=spec, show_subbars=(_bola_workers == 1), timeout=args.timeout)
+            cases = None
+            if getattr(args, 'authorization_cases_file', None):
+                from differential_checks import load_authorization_cases
+                cases = load_authorization_cases(args.authorization_cases_file, args.url, spec)
+            bola_endpoints = bola.get_object_endpoints(spec) or []
+            bola_results = []
+            max_workers = _bola_workers
+            if max_workers == 1:
+                for ep in tqdm(bola_endpoints, desc='BOLA endpoints', unit='endpoint'):
                     try:
-                        res = fut.result()
+                        res = bola.test_endpoint(args.url, ep)
                         if res:
                             bola_results.extend(res)
                     except Exception as e:
                         _scan_err(f"{ep.get('method')} {ep.get('path')}", e)
-        bola.issues = [r.to_dict() for r in bola_results if getattr(r, 'status_code', 0) != 0 and getattr(r, 'test_case', '') != 'valid']
-        try:
-            bola.generate_report()
-        except Exception as e:
-            _scan_err('API1 report generation', e)
-        found = len(bola.issues)
-        vulnerability_summary['BOLA'] = found
-        msg = f'{Fore.GREEN}API1 complete - {found} vulnerabilities found{Style.RESET_ALL}' if found == 0 else f'{Fore.YELLOW}API1 complete - {found} vulnerabilities found{Style.RESET_ALL}' if found < 5 else f'{Fore.RED}API1 complete - {found} vulnerabilities found{Style.RESET_ALL}'
-        save_html_report(bola.issues, 'BOLA', args.url, output_dir)
-        if db is not None:
-            db.store_issues('BOLA', bola.issues, base_url=args.url)
-        styled_print(msg, 'done')
+            else:
+                with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                    futures = {ex.submit(bola.test_endpoint, args.url, ep): ep for ep in bola_endpoints}
+                    for fut in tqdm(as_completed(futures), total=len(futures), desc='BOLA endpoints', unit='endpoint'):
+                        ep = futures[fut]
+                        try:
+                            res = fut.result()
+                            if res:
+                                bola_results.extend(res)
+                        except Exception as e:
+                            _scan_err(f"{ep.get('method')} {ep.get('path')}", e)
+            bola.issues = [r.to_dict() for r in bola_results if getattr(r, 'status_code', 0) != 0 and getattr(r, 'test_case', '') != 'valid']
+            if cases is not None:
+                from differential_checks import compare_accounts
+                comparison = compare_accounts(sess, cases, args.url, args.timeout)
+                bola.issues.extend(comparison['findings'])
+                comparison_path = Path(output_dir) / 'log' / 'api1_account_comparison.json'
+                comparison_path.parent.mkdir(parents=True, exist_ok=True)
+                comparison_path.write_text(json.dumps(comparison, indent=2), encoding='utf-8')
+                styled_print('API1 account comparison: '+comparison['state']+'; see log/api1_account_comparison.json',
+                             'info' if comparison['state'] == 'completed' else 'warn')
 
-        # ── Chain-mode: escalation after BOLA ──────────────────────
-        if getattr(args, 'chain_mode', False) and bola_results:
-            chain_depth = min(max(1, int(getattr(args, 'chain_depth', 1) or 1)), 3)
-            all_chain_issues: list = []
-            source_results = bola_results  # start with BOLA results
+            try:
+                bola.generate_report()
+            except Exception as e:
+                _scan_err('API1 report generation', e)
+            found = len(bola.issues)
+            vulnerability_summary['BOLA'] = found
+            observations = sum(str(issue.get('severity','')).lower() == 'info' for issue in bola.issues)
+            msg = f'API1 complete - {found} findings ({observations} informational observations; {found-observations} findings requiring review)'
+            save_html_report(bola.issues, 'BOLA', args.url, output_dir)
+            if db is not None:
+                db.store_issues('BOLA', bola.issues, base_url=args.url)
+            styled_print(msg, 'done')
 
-            for depth in range(1, chain_depth + 1):
-                label = f'Chain L{depth} – Escalation of BOLA leaks' if chain_depth > 1 else 'Chain – Escalation of BOLA leaks'
-                _scan_section(0, label)
-                logger.info('Running Chain Auditor depth %d/%d (post-BOLA escalation)', depth, chain_depth)
+            # ── Chain-mode: escalation after BOLA ──────────────────────
+            if getattr(args, 'chain_mode', False) and bola_results:
+                chain_depth = min(max(1, int(getattr(args, 'chain_depth', 1) or 1)), 3)
+                all_chain_issues: list = []
+                source_results = bola_results  # start with BOLA results
 
-                try:
-                    chain = ChainAuditor(
-                        session=sess,
-                        base_url=args.url,
-                        swagger_spec=spec,
-                        bola_results=source_results,
-                        timeout=args.timeout,
-                        max_workers=min(args.threads, 4),
-                        show_progress=True,
-                    )
-                    chain.findings = chain.run()
-                    chain_issues = chain.get_issues()
-                    all_chain_issues.extend(chain_issues)
+                for depth in range(1, chain_depth + 1):
+                    label = f'Chain L{depth} – Escalation of BOLA leaks' if chain_depth > 1 else 'Chain – Escalation of BOLA leaks'
+                    _scan_section(0, label)
+                    logger.info('Running Chain Auditor depth %d/%d (post-BOLA escalation)', depth, chain_depth)
 
-                    depth_found = len(chain_issues)
-                    if depth_found == 0:
-                        logger.info('Chain depth %d: no escalations found, stopping recursion.', depth)
+                    try:
+                        chain = ChainAuditor(
+                            session=sess,
+                            base_url=args.url,
+                            swagger_spec=spec,
+                            bola_results=source_results,
+                            timeout=args.timeout,
+                            max_workers=min(args.threads, 4),
+                            show_progress=True,
+                        )
+                        chain.findings = chain.run()
+                        chain_issues = chain.get_issues()
+                        all_chain_issues.extend(chain_issues)
+
+                        depth_found = len(chain_issues)
+                        if depth_found == 0:
+                            logger.info('Chain depth %d: no escalations found, stopping recursion.', depth)
+                            break
+
+                        # Feed chain results back as source for next depth
+                        source_results = chain_issues
+                    except Exception as e:
+                        _scan_err('Chain auditor', e)
+                        logger.exception('Chain auditor exception at depth %d', depth)
                         break
 
-                    # Feed chain results back as source for next depth
-                    source_results = chain_issues
-                except Exception as e:
-                    _scan_err('Chain auditor', e)
-                    logger.exception('Chain auditor exception at depth %d', depth)
-                    break
-
-            chain_found = len(all_chain_issues)
-            vulnerability_summary['Chain-Escalation'] = chain_found
-            if all_chain_issues:
-                save_html_report(all_chain_issues, 'Chain-Escalation', args.url, output_dir)
-                if db is not None:
-                    db.store_issues('Chain-Escalation', all_chain_issues, base_url=args.url)
-            cmsg = (f'{Fore.GREEN}Chain complete - {chain_found} escalations found{Style.RESET_ALL}'
-                    if chain_found == 0
-                    else f'{Fore.RED}Chain complete - {chain_found} escalations found{Style.RESET_ALL}')
-            styled_print(cmsg, 'done')
+                chain_found = len(all_chain_issues)
+                vulnerability_summary['Chain-Escalation'] = chain_found
+                if all_chain_issues:
+                    save_html_report(all_chain_issues, 'Chain-Escalation', args.url, output_dir)
+                    if db is not None:
+                        db.store_issues('Chain-Escalation', all_chain_issues, base_url=args.url)
+                cmsg = (f'{Fore.GREEN}Chain complete - {chain_found} escalations found{Style.RESET_ALL}'
+                        if chain_found == 0
+                        else f'{Fore.RED}Chain complete - {chain_found} escalations found{Style.RESET_ALL}')
+                styled_print(cmsg, 'done')
     
     if 2 in selected_apis:
-        _scan_section(2, 'Broken Authentication')
-        logger.info('Running API2 - Broken Authentication')
-        norm_eps = []
-        for ep in endpoints:
-            try:
-                path = ep['path']
-                method = ep['method'].upper()
-                norm_eps.append({'path': path, 'method': method})
-            except KeyError:
-                continue
-        aa = AuthAuditor(session=sess, base_url=args.url, swagger_spec=spec, show_progress=True)
-        auth_issues = aa.test_authentication_mechanisms(norm_eps)
-        auth_issues = _filter_auth_issues_min(auth_issues)
-        for issue in auth_issues:
-            desc = issue.get('description', 'Unknown')
-            ep = issue.get('endpoint', issue.get('url', ''))
-            sev = issue.get('severity', 'Info')
-            _scan_issue(sev, desc, ep)
-        vulnerability_summary['Authentication'] = len(auth_issues)
-        save_html_report(auth_issues, 'BrokenAuth', args.url, output_dir)
-        if db is not None:
-            db.store_issues('Authentication', auth_issues, base_url=args.url)
-        styled_print(f'API2 complete - {len(auth_issues)} issues', 'done')
+        with ModuleCoverage(sess, output_dir, 'API2'):
+            _scan_section(2, 'Broken Authentication')
+            logger.info('Running API2 - Broken Authentication')
+            norm_eps = []
+            for ep in endpoints:
+                try:
+                    path = ep['path']
+                    method = ep['method'].upper()
+                    norm_eps.append({'path': path, 'method': method})
+                except KeyError:
+                    continue
+            aa = AuthAuditor(session=sess, base_url=args.url, swagger_spec=spec, show_progress=True, timeout=args.timeout)
+            aa.path_parameter_values = _ID_MAP
+            auth_issues = aa.test_authentication_mechanisms(norm_eps)
+            if aa.diagnostics:
+                (output_dir/'log'/'telemetry_api2.json').write_text(json.dumps(aa.diagnostics,indent=2,default=str),encoding='utf-8')
+                styled_print(f'API2 execution diagnostics: {len(aa.diagnostics)}; see telemetry_api2.json','warn')
+            auth_issues = _filter_auth_issues_min(auth_issues)
+            for issue in auth_issues:
+                desc = issue.get('description', 'Unknown')
+                ep = issue.get('endpoint', issue.get('url', ''))
+                sev = issue.get('severity', 'Info')
+                _scan_issue(sev, desc, ep)
+            vulnerability_summary['Authentication'] = len(auth_issues)
+            save_html_report(auth_issues, 'BrokenAuth', args.url, output_dir)
+            if db is not None:
+                db.store_issues('Authentication', auth_issues, base_url=args.url)
+            styled_print(f'API2 complete - {len(auth_issues)} issues', 'done')
     
     if 3 in selected_apis:
-        _scan_section(3, 'Object Property Level Authorization')
-        logger.info('Running API3 - Property-level Authorization')
-        pa = ObjectPropertyAuditor(
-            base_url=args.url,
-            session=sess,
-            show_progress=True,
-            timeout=5.0,
-            active_mode=getattr(args, 'api3_active', False),
-            active_ok=getattr(args, 'api3_active', False),
-        )
-        prop_issues = pa.test_object_properties(endpoints)
-        for issue in prop_issues:
-            _scan_issue(issue.get('severity', 'info'), issue.get('description', 'Unknown'), issue.get('endpoint', 'Unknown'))
-        vulnerability_summary['Property-Level Auth'] = len(prop_issues)
-        save_html_report(prop_issues, 'Property', args.url, output_dir)
-        if db is not None:
-            db.store_issues('Property', prop_issues, base_url=args.url)
-        styled_print(f'API3 complete - {len(prop_issues)} issues', 'done')
+        with ModuleCoverage(sess, output_dir, 'API3'):
+            _scan_section(3, 'Object Property Level Authorization')
+            logger.info('Running API3 - Property-level Authorization')
+            pa = ObjectPropertyAuditor(
+                base_url=args.url,
+                session=sess,
+                show_progress=True,
+                timeout=args.timeout,
+                swagger_spec=spec,
+                active_mode=getattr(args, 'api3_active', False),
+                active_ok=getattr(args, 'api3_active', False),
+            )
+            pa.path_parameter_values = _ID_MAP
+            prop_issues = pa.test_object_properties(endpoints)
+            from scanner_quality import write_execution_diagnostics
+            write_execution_diagnostics(output_dir,'API3',pa.coverage,pa.diagnostics)
+            for issue in prop_issues:
+                _scan_issue(issue.get('severity', 'info'), issue.get('description', 'Unknown'), issue.get('endpoint', 'Unknown'))
+            vulnerability_summary['Property-Level Auth'] = len(prop_issues)
+            save_html_report(prop_issues, 'Property', args.url, output_dir)
+            if db is not None:
+                db.store_issues('Property', prop_issues, base_url=args.url)
+            styled_print(f"API3 {pa.coverage['state']} - {len(prop_issues)} issues", 'done')
     
     if 4 in selected_apis:
-        _scan_section(4, 'Unrestricted Resource Consumption')
-        logger.info('Running API4 - Resource Consumption')
-        rc = ResourceAuditor(session=sess, base_url=args.url, swagger_spec=spec, show_progress=True)
-        res_issues = rc.test_resource_consumption()
-        vulnerability_summary['Resource Consumption'] = len(res_issues)
-        save_html_report(res_issues, 'Resource', args.url, output_dir)
-        if db is not None:
-            db.store_issues('Resource', res_issues, base_url=args.url)
-        styled_print(f'API4 complete - {len(res_issues)} issues', 'done')
+        with ModuleCoverage(sess, output_dir, 'API4'):
+            _scan_section(4, 'Unrestricted Resource Consumption')
+            logger.info('Running API4 - Resource Consumption')
+            rc = ResourceAuditor(session=sess, base_url=args.url, swagger_spec=spec, show_progress=True, timeout=args.timeout)
+            res_issues = rc.test_resource_consumption()
+            from scanner_quality import write_execution_diagnostics
+            write_execution_diagnostics(output_dir,'API4',rc.coverage,rc.diagnostics)
+            vulnerability_summary['Resource Consumption'] = len(res_issues)
+            save_html_report(res_issues, 'Resource', args.url, output_dir)
+            if db is not None:
+                db.store_issues('Resource', res_issues, base_url=args.url)
+            styled_print(f"API4 {rc.coverage['state']} - {len(res_issues)} issues; execution diagnostics: {len(rc.diagnostics)}", 'warn' if rc.coverage['state']=='incomplete' else 'done')
     
     if 5 in selected_apis:
-        _scan_section(5, 'Function Level Authorization')
-        logger.info('Running API5 - Function-level Authorization')
-        za = AuthorizationAuditor(session=sess, base_url=args.url, spec=spec, flow=getattr(args, 'flow', 'none'), logger=logger)
-        authz_issues = za.test_authorization(show_progress=True)
-        for issue in authz_issues:
-            _scan_issue(issue.get('severity', 'info'), issue.get('description', 'Unknown'), issue.get('endpoint', 'Unknown'))
-        vulnerability_summary['Admin Access'] = len(authz_issues)
-        save_html_report(authz_issues, 'AdminAccess', args.url, output_dir)
-        if db is not None:
-            db.store_issues('AdminAccess', authz_issues, base_url=args.url)
-        styled_print(f'API5 complete - {len(authz_issues)} issues', 'done')
+        with ModuleCoverage(sess, output_dir, 'API5'):
+            _scan_section(5, 'Function Level Authorization')
+            logger.info('Running API5 - Function-level Authorization')
+            za = AuthorizationAuditor(session=sess, base_url=args.url, spec=spec, flow=getattr(args, 'flow', 'none'), logger=logger, timeout=args.timeout)
+            za.path_parameter_values = _ID_MAP
+            authz_issues = za.test_authorization(show_progress=True)
+            if getattr(za,'diagnostics',[]):
+                (output_dir/'log'/'telemetry_api5.json').write_text(json.dumps(za.diagnostics,indent=2,default=str),encoding='utf-8')
+            for issue in authz_issues:
+                _scan_issue(issue.get('severity', 'info'), issue.get('description', 'Unknown'), issue.get('endpoint', 'Unknown'))
+            vulnerability_summary['Admin Access'] = len(authz_issues)
+            save_html_report(authz_issues, 'AdminAccess', args.url, output_dir)
+            if db is not None:
+                db.store_issues('AdminAccess', authz_issues, base_url=args.url)
+            styled_print(f'API5 complete - {len(authz_issues)} issues', 'done')
     
     if 6 in selected_apis:
-        _scan_section(6, 'Unrestricted Access to Sensitive Business Flows')
-        logger.info('Running API6 - Sensitive Business Flows')
-        bf = BusinessFlowAuditor(session=sess, base_url=args.url, swagger_spec=spec, flow=getattr(args, 'flow', 'none'))
-        business_eps = []
-        for ep in [e for e in endpoints if e['method'] in {'POST', 'PUT', 'PATCH'}]:
-            raw_op = ep.get('raw') or {}
-            body = {}
-            rb = raw_op.get('requestBody') or {}
-            content = rb.get('content', {})
-            if 'application/json' in content:
-                ex = content['application/json'].get('example')
-                if isinstance(ex, dict):
-                    body = ex
-            business_eps.append({
-                'name': (ep.get('operationId') or f"{ep['method']} {ep['path']}").replace(' ', '_'),
-                'url': urljoin(args.url.rstrip('/') + '/', ep['path'].lstrip('/')),
-                'path': ep['path'],
-                'method': ep['method'],
-                'body': body,
-            })
-        biz_issues = bf.test_business_flows(business_eps)
-        vulnerability_summary['Business Flows'] = len(biz_issues)
-        save_html_report(biz_issues, 'BusinessFlows', args.url, output_dir)
-        if db is not None:
-            db.store_issues('BusinessFlows', biz_issues, base_url=args.url)
-        styled_print(f'API6 complete - {len(biz_issues)} issues', 'done')
+        with ModuleCoverage(sess, output_dir, 'API6'):
+            _scan_section(6, 'Unrestricted Access to Sensitive Business Flows')
+            logger.info('Running API6 - Sensitive Business Flows')
+            bf = BusinessFlowAuditor(session=sess, base_url=args.url, swagger_spec=spec, flow=getattr(args, 'flow', 'none'), timeout=args.timeout)
+            business_eps = []
+            for ep in [e for e in endpoints if e['method'] in {'POST', 'PUT', 'PATCH'}]:
+                raw_op = ep.get('raw') or {}
+                body = None
+                rb = raw_op.get('requestBody') or {}
+                content = rb.get('content', {})
+                if 'application/json' in content:
+                    ex = content['application/json'].get('example')
+                    if isinstance(ex, dict):
+                        body = ex
+                business_eps.append({
+                    'name': (ep.get('operationId') or f"{ep['method']} {ep['path']}").replace(' ', '_'),
+                    'url': urljoin(args.url.rstrip('/') + '/', ep['path'].lstrip('/')),
+                    'path': ep['path'],
+                    'method': ep['method'],
+                    'body': body,
+                })
+            bf.path_parameter_values = _ID_MAP
+            biz_issues = bf.test_business_flows(business_eps)
+            if getattr(bf,'diagnostics',[]):
+                (output_dir/'log'/'telemetry_api6.json').write_text(json.dumps(bf.diagnostics,indent=2,default=str),encoding='utf-8')
+            vulnerability_summary['Business Flows'] = len(biz_issues)
+            save_html_report(biz_issues, 'BusinessFlows', args.url, output_dir)
+            if db is not None:
+                db.store_issues('BusinessFlows', biz_issues, base_url=args.url)
+            styled_print(f'API6 complete - {len(biz_issues)} issues', 'done')
     
     if 7 in selected_apis:
-        # SSRF scan is extremely slow (~600K requests) and yields almost nothing
-        # without authentication tokens.  Auto-skip to save ~40 minutes.
-        has_auth = bool(
-            (getattr(args, 'token', None) or '').lower() not in ('', 'none')
-            or getattr(args, 'apikey', None)
-            or getattr(args, 'auth', None) not in (None, 'none')
-        )
-        if not has_auth:
-            styled_print('API7 SSRF skipped – no authentication configured (use --token for SSRF scans)', 'warn')
-            vulnerability_summary['SSRF'] = 0
-        else:
+        # SSRF can be exposed by public as well as authenticated endpoints.
+        # The auditor already bounds parameters, payloads and encodings per endpoint.
+        with ModuleCoverage(sess, output_dir, 'API7'):
+            _ssrf_authenticated = bool(getattr(args, 'flow', 'none') != 'none'
+                                       or getattr(args, 'token', None) or getattr(args, 'apikey', None))
+            styled_print('API7 SSRF: testing with configured authentication' if _ssrf_authenticated
+                         else 'API7 SSRF: testing public endpoints without authentication', 'info')
             _scan_section(7, 'Server Side Request Forgery')
             logger.info('Running API7 - SSRF')
             ss_eps = SSRFAuditor.endpoints_from_swagger(args.swagger, default_base=args.url)
             if ss_eps:
-                ss = SSRFAuditor(session=sess, base_url=args.url, swagger_spec=spec)
+                ss = SSRFAuditor(session=sess, base_url=args.url, swagger_spec=spec, timeout=args.timeout)
+                from urllib.parse import urlsplit
+                from copy import deepcopy
+                ss.CONFIG = deepcopy(ss.CONFIG)
+                ss.CONFIG.test_localhost = urlsplit(args.url).hostname in ('localhost', '127.0.0.1', '::1')
+                for endpoint in ss_eps:
+                    endpoint['base'] = args.url.rstrip('/')
+                    endpoint['base_list'] = [args.url.rstrip('/')]
                 ssrf_issues = ss.test_endpoints(ss_eps)
+                ss.save_diagnostics(output_dir / "log")
                 vulnerability_summary['SSRF'] = len(ssrf_issues)
                 save_html_report(ssrf_issues, 'SSRF', args.url, output_dir)
                 if db is not None:
                     db.store_issues('SSRF', ssrf_issues, base_url=args.url)
-                styled_print(f'API7 complete - {len(ssrf_issues)} issues', 'done')
+                styled_print(f"API7 {ss.coverage['state']} - {len(ssrf_issues)} issues", 'done')
             else:
                 styled_print('No SSRF endpoints found', 'warn')
                 vulnerability_summary['SSRF'] = 0
-    
+
     if 8 in selected_apis:
-        _scan_section(8, 'Security Misconfiguration')
-        logger.info('Running API8 - Security Misconfiguration')
-        misconf_eps = MisconfigurationAuditor.endpoints_from_swagger(args.swagger)
-        if misconf_eps:
-            mc = MisconfigurationAuditor(base_url=args.url, session=sess, show_progress=True, debug=args.debug)
-            misconf_issues = mc.test_endpoints(misconf_eps)
-            vulnerability_summary['Misconfiguration'] = len(misconf_issues)
-            save_html_report(misconf_issues, 'Misconfig', args.url, output_dir)
-            if db is not None:
-                db.store_issues('Misconfiguration', misconf_issues, base_url=args.url)
-            styled_print(f'API8 complete - {len(misconf_issues)} issues', 'done')
-        else:
-            styled_print('No misconfiguration endpoints found', 'warn')
-            vulnerability_summary['Misconfiguration'] = 0
+        with ModuleCoverage(sess, output_dir, 'API8'):
+            _scan_section(8, 'Security Misconfiguration')
+            logger.info('Running API8 - Security Misconfiguration')
+            misconf_eps = MisconfigurationAuditor.endpoints_from_swagger(args.swagger)
+            if misconf_eps:
+                mc = MisconfigurationAuditor(base_url=args.url, session=sess, show_progress=True, debug=args.debug, swagger_spec=spec, timeout=args.timeout)
+                mc.path_parameter_values = _ID_MAP
+                misconf_issues = mc.test_endpoints(misconf_eps)
+                from scanner_quality import write_execution_diagnostics
+                write_execution_diagnostics(output_dir,'API8',mc.coverage,mc.diagnostics)
+                vulnerability_summary['Misconfiguration'] = len(misconf_issues)
+                save_html_report(misconf_issues, 'Misconfig', args.url, output_dir)
+                if db is not None:
+                    db.store_issues('Misconfiguration', misconf_issues, base_url=args.url)
+                styled_print(f"API8 {mc.coverage['state']} - {len(misconf_issues)} issues", 'done')
+            else:
+                styled_print('No misconfiguration endpoints found', 'warn')
+                vulnerability_summary['Misconfiguration'] = 0
     
     if 9 in selected_apis:
-        _scan_section(9, 'Improper Inventory Management')
-        logger.info('Running API9 - Improper Inventory Management')
-        inv_eps = InventoryAuditor.endpoints_from_swagger(args.swagger) or []
-        if not inv_eps and spec:
-            inv_eps = InventoryAuditor.endpoints_from_universal(spec) or []
-        inv = InventoryAuditor(session=sess, base_url=args.url, swagger_spec=spec)
-        inv_issues = inv.test_inventory(inv_eps if inv_eps else None)
-        vulnerability_summary['Inventory'] = len(inv_issues)
-        save_html_report(inv_issues, 'Inventory', args.url, output_dir)
-        if db is not None:
-            db.store_issues('Inventory', inv_issues, base_url=args.url)
-        styled_print(f'API9 complete - {len(inv_issues)} issues', 'done')
+        with ModuleCoverage(sess, output_dir, 'API9'):
+            _scan_section(9, 'Improper Inventory Management')
+            logger.info('Running API9 - Improper Inventory Management')
+            inv_eps = InventoryAuditor.endpoints_from_swagger(args.swagger) or []
+            if not inv_eps and spec:
+                inv_eps = InventoryAuditor.endpoints_from_universal(spec) or []
+            inv = InventoryAuditor(session=sess, base_url=args.url, swagger_spec=spec, timeout=args.timeout)
+            inv_issues = inv.test_inventory(inv_eps if inv_eps else None)
+            vulnerability_summary['Inventory'] = len(inv_issues)
+            save_html_report(inv_issues, 'Inventory', args.url, output_dir)
+            if db is not None:
+                db.store_issues('Inventory', inv_issues, base_url=args.url)
+            styled_print(f'API9 complete - {len(inv_issues)} issues', 'done')
    
     if 10 in selected_apis:
-        _scan_section(10, 'Unsafe Consumption of APIs')
-        logger.info('Running API10 - Safe Consumption')
-        safe_eps = SafeConsumptionAuditor.endpoints_from_swagger(args.swagger)
-        if db is not None:
-            from urllib.parse import urljoin as _uij
-            try:
-                for _se in safe_eps:
-                    try:
-                        _m = (_se.get('method') or _se.get('http_method') or 'GET').upper()
-                        _p = _se.get('path') or _se.get('url') or ''
-                        if not _p:
-                            continue
-                        _u = _p if _p.startswith('http') else _uij(args.url.rstrip('/') + '/', _p.lstrip('/'))
-                        db.record_endpoint(_m, _u, run_id=run_id)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-        sc = SafeConsumptionAuditor(base_url=args.url, session=sess)
-        if not safe_eps:
-            styled_print('No API10 endpoints found', 'warn')
-            vulnerability_summary['Unsafe Consumption'] = 0
-        else:
-            raw_issues = sc.test_endpoints(safe_eps)
-            sc._dump_raw_issues(output_dir / 'log')
-            # Use public helper if available (prevents AttributeError when implementation changes)
-            try:
-                if hasattr(sc, 'filter_issues') and callable(getattr(sc, 'filter_issues')):
-                    sc.issues = sc.filter_issues() or sc.issues
-                elif hasattr(sc, '_filter_issues') and callable(getattr(sc, '_filter_issues')):
-                    sc.issues = sc._filter_issues() or sc.issues
-            except Exception:
-                pass
-            sc._dedupe_issues()
-            safe_issues = sc.issues
-            vulnerability_summary['Unsafe Consumption'] = len(safe_issues)
-            save_html_report(safe_issues, 'UnsafeConsumption', args.url, output_dir)
+        with ModuleCoverage(sess, output_dir, 'API10'):
+            _scan_section(10, 'Unsafe Consumption of APIs')
+            logger.info('Running API10 - Safe Consumption')
+            safe_eps = SafeConsumptionAuditor.endpoints_from_swagger(args.swagger, base_url=args.url)
             if db is not None:
-                db.store_issues('UnsafeConsumption', safe_issues, base_url=args.url)
-            styled_print(f'API10 complete - {len(safe_issues)} issues', 'done')
+                from urllib.parse import urljoin as _uij
+                try:
+                    for _se in safe_eps:
+                        try:
+                            _m = 'GET' if isinstance(_se, str) else (_se.get('method') or _se.get('http_method') or 'GET').upper()
+                            _p = _se if isinstance(_se, str) else (_se.get('path') or _se.get('url') or '')
+                            if not _p:
+                                continue
+                            _u = _p if _p.startswith('http') else _uij(args.url.rstrip('/') + '/', _p.lstrip('/'))
+                            db.record_endpoint(_m, _u, run_id=run_id)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            sc = SafeConsumptionAuditor(base_url=args.url, session=sess, timeout=args.timeout)
+            sc.max_workers = min(sc.max_workers, args.threads)
+            from scanner_quality import path_values
+            _safe_ids = {}
+            if getattr(args, 'ids_file', None):
+                with open(args.ids_file, encoding='utf-8') as _ids_handle:
+                    _safe_ids = json.load(_ids_handle)
+                if not isinstance(_safe_ids, dict):
+                    raise ValueError('--ids-file must contain a JSON object')
+            sc.path_parameter_values = path_values(spec, _safe_ids)
+            sc.swagger_spec = spec
+            if getattr(args, 'api10_data_file', None):
+                from api10_support import load_request_data
+                sc.sql_request_data = load_request_data(args.api10_data_file)
+
+            if not safe_eps:
+                styled_print('No API10 endpoints found', 'warn')
+                vulnerability_summary['Unsafe Consumption'] = 0
+            else:
+                raw_issues = sc.test_endpoints(safe_eps)
+                sc._dump_raw_issues(output_dir / 'log')
+                # Use public helper if available (prevents AttributeError when implementation changes)
+                try:
+                    if hasattr(sc, 'filter_issues') and callable(getattr(sc, 'filter_issues')):
+                        sc.issues = sc.filter_issues() or sc.issues
+                    elif hasattr(sc, '_filter_issues') and callable(getattr(sc, '_filter_issues')):
+                        sc.issues = sc._filter_issues() or sc.issues
+                except Exception:
+                    pass
+                sc._dedupe_issues()
+                safe_issues = sc.issues
+                vulnerability_summary['Unsafe Consumption'] = len(safe_issues)
+                save_html_report(safe_issues, 'UnsafeConsumption', args.url, output_dir)
+                if db is not None:
+                    db.store_issues('UnsafeConsumption', safe_issues, base_url=args.url)
+                _safe_state = sc.coverage.get('state', 'unknown')
+                styled_print(f'API10 {_safe_state} - {len(safe_issues)} issues', 'warn' if _safe_state != 'completed' else 'done')
     
     #========================= AI MODULE  =======================
          
@@ -2355,6 +2533,12 @@ def main() -> None:
     print('SCAN finished'.center(50))
     print('=' * 50)
 
+    from scanner_quality import write_module_manifest
+    manifest_path = write_module_manifest(output_dir,selected_apis,vulnerability_summary)
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    limited = [item['audit'] for item in manifest['modules'] if item['audit'] in {f'API{i}' for i in selected_apis} and item['state'] != 'completed']
+    if limited:
+        styled_print('Coverage limited or unverified: ' + ', '.join(limited) + '. See log/scan_modules.json.', 'warn')
     from build_review import build_review
     review_out = output_dir / 'review.html'
     build_review(db_path=args.db_path, out_path=review_out, run_id=run_id)
@@ -2384,15 +2568,15 @@ def main() -> None:
             except Exception:
                 print(f"Could not auto open browser. Open manually: {uri}")
 
-    styled_print('Scan complete. All results and logs have been saved.', 'ok')
+    styled_print('Execution finished. Results and logs saved; completion does not establish full test coverage.', 'info')
     html_files = sorted((str(f) for f in output_dir.glob('api_*_report.html')))
     if not html_files:
         styled_print('No HTML reports to combine, skipping.', 'info')
     else:
         styled_print('Combining HTML reports', 'info')
         try:
-            generate_combined_html(output=str(output_dir / 'combined_report.html'), files=html_files)
-            styled_print('Combined HTML report saved.', 'ok')
+            generate_combined_html(output=str(output_dir / 'module_reports.html'), files=html_files)
+            styled_print('Module HTML reports saved -> module_reports.html; combined_report.html retains the review and coverage.', 'ok')
         except Exception as exc:
             styled_print(f'Combined HTML report failed: {exc}', 'fail')
     

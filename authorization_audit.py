@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2026  #
-# version 5.0 24-06-2026                               #
+# version 5.5 24-06-2026                               #
 ########################################################
 
 from __future__ import annotations
@@ -98,23 +98,8 @@ class AuthorizationAuditor:
     #================funtion _default_request_templates description =============
     def _default_request_templates(self) -> Dict[str, Any]:
 
-        return {
-            "login": {
-                "method": "POST",
-                "path": "/api/auth/login",
-                "headers": {"Content-Type": "application/json"},
-                "body": {"username": "{username}", "password": "{password}"},
-            },
-            "forget-password": {
-                "method": "POST",
-                "path": "/identity/api/auth/forget-password",
-                "headers": {"Content-Type": "application/json"},
-                "body": {"email": "test@example.com"},
-            },
-            "user_profile": {"method": "GET", "path": "/api/users/{userId}", "headers": {}},
-            "admin_config": {"method": "GET", "path": "/api/admin/config", "headers": {}},
-            "headers": {"Accept": "application/json", "User-Agent": "APISecurityScanner/2.1"},
-        }
+        return {'headers': {'Accept': 'application/json', 'User-Agent': 'APISecurityScanner/2.1'}}
+
 
     #================funtion add_role_token description =============
     def add_role_token(self, role: str, token: str) -> None:
@@ -166,17 +151,10 @@ class AuthorizationAuditor:
             "/config",
             "/api/settings",
             "/settings",
-            "/identity/api/auth/forget-password",
-            "/identity/api/auth/login",
-            "/workshop/api/shop/orders",
         ]
         discovered = []
         for p in common_paths:
             methods = ["GET"]
-            if "auth" in p or "login" in p or "forget-password" in p:
-                methods = ["POST"]
-            elif "orders" in p:
-                methods = ["GET", "POST", "PUT"]
             discovered.append(
                 {
                     "url": urljoin(self.base_url, p),
@@ -227,9 +205,8 @@ class AuthorizationAuditor:
 
     #================funtion _abs_url description =============
     def _abs_url(self, path_or_url: str) -> str:
-        if path_or_url.startswith(("http://", "https://")):
-            return path_or_url
-        return urljoin(self.base_url, path_or_url.lstrip("/"))
+        from scanner_quality import normalize_endpoint, path_values
+        return normalize_endpoint(path_or_url, self.base_url, path_values(getattr(self, 'swagger_data', {}),getattr(self,'path_parameter_values',{})))
 
 
     #================funtion _looks_like_auth_endpoint description =============
@@ -250,7 +227,12 @@ class AuthorizationAuditor:
             op = self._op_shape_index.get((method.upper(), shape))
         if not op:
             raise KeyError(f"Operation not found: {method} {path_template}")
-        return oas_build_request(self.swagger_data, self.base_url, op, None)
+        from universal_runtime import ScanSpec
+        spec = ScanSpec(self.swagger_data)
+        spec.request_data = getattr(self.swagger_data, 'request_data', {})
+        spec.path_parameter_values = {**getattr(self.swagger_data, 'path_parameter_values', {}),
+                                      **(getattr(self, 'path_parameter_values', {}) or {})}
+        return oas_build_request(spec, self.base_url, op, None)
 
 
     #================funtion _op_requires_auth description =============
@@ -369,8 +351,8 @@ class AuthorizationAuditor:
             return out
         if role != "anonymous":
             tok = self.roles.get(role, {}).get("token")
-            if tok and "Authorization" not in getattr(self.session, "headers", {}):
-                out["headers"].setdefault("Authorization", f"Bearer {tok}")
+            if tok:
+                out["headers"]["Authorization"] = f"Bearer {tok}"
         return out
 
 
@@ -388,9 +370,18 @@ class AuthorizationAuditor:
 
 
         try:
-            req = self._req_from_spec(method, path)
-        except KeyError:
-            req = {"method": method, "url": self._abs_url(path), "headers": dict(self.request_templates.get("headers", {}))}
+            try:
+                req = self._req_from_spec(method, path)
+            except KeyError:
+                req = {"method": method, "url": self._abs_url(path), "headers": dict(self.request_templates.get("headers", {}))}
+        except ValueError as e:
+            # Unresolved path parameters: skip instead of probing a fabricated object ID.
+            skipped = self.__dict__.setdefault("_skipped_unresolved", set())
+            if (method, path) not in skipped:
+                skipped.add((method, path))
+                self.__dict__.setdefault('diagnostics', []).append(dict(audit='API5',url=path,error=str(e),execution_status='skipped'))
+                print(f"  [skip] {method} {path}: {e}")
+            return
 
 
         base_hdrs = self.request_templates.get("headers", {"User-Agent": "APISecurityScanner/2.1", "Accept": "application/json"})
@@ -401,38 +392,23 @@ class AuthorizationAuditor:
 
         json_data, form_data = self._prepare_request_data(ep, verb)
         if method != "GET":
-            if json_data is not None:
+            if json_data is not None and "json" not in req:
                 req["json"] = json_data
-            if form_data is not None:
+            if form_data is not None and "data" not in req:
                 req["data"] = form_data
 
         is_auth_ep = self._looks_like_auth_endpoint(path)
         rreq = self._request_for_role(req, role, suppress_auth=is_auth_ep)
 
-        if role == "anonymous":
-            rreq.get("headers", {}).pop("Authorization", None)
-            tmp = requests.Session()
-            tmp.verify = getattr(self.session, "verify", True)
-            tmp.trust_env = getattr(self.session, "trust_env", True)
-            tmp.proxies = getattr(self.session, "proxies", {})
-            ses = tmp
-        else:
-            if is_auth_ep and self.strip_auth_on_auth_endpoints and "Authorization" in getattr(self.session, "headers", {}):
-                tmp = requests.Session()
-                tmp.verify = getattr(self.session, "verify", True)
-                tmp.trust_env = getattr(self.session, "trust_env", True)
-                tmp.proxies = getattr(self.session, "proxies", {})
-                try:
-                    tmp.cookies.update(self.session.cookies.get_dict())
-                except Exception:
-                    pass
-                ses = tmp
-            else:
-                ses = self.session
+        from universal_runtime import isolated_session, anonymous_request
+        # A role must not inherit another identity's session cookies or authorization.
+        ses = isolated_session(self.session)
+        if role == 'anonymous' or is_auth_ep:
+            rreq = anonymous_request(rreq, self.swagger_data)
 
         try:
             r = ses.request(**rreq, timeout=self.timeout)
-            allowed = 200 <= r.status_code < 400
+            allowed = 200 <= r.status_code < 300
             if r.status_code in (400, 404):
                 return
 
@@ -448,7 +424,9 @@ class AuthorizationAuditor:
                 desc = "Unauthorized access" if allowed else "Access denied"
                 # HIGH only for actual unauthorized access (security breach)
                 # Access denied = security works → LOW
-                sev = "High" if allowed and should is False else "Low"
+                sev = "High" if allowed and should is False and exp is True else "Info"
+                if exp is None:
+                    desc = 'Observation: '+desc+'; access policy unavailable' 
                 eff_url = getattr(getattr(r, "request", None), "url", rreq.get("url"))
                 self._log_issue(
                     url=eff_url,
@@ -463,6 +441,9 @@ class AuthorizationAuditor:
             self._log_issue(url=rreq.get("url", ep["url"]), description=f"Connection error - {method} as {role}", severity="Low", details={"method": method, "role": role})
         except Exception as exc:
             self._log_issue(url=rreq.get("url", ep["url"]), description=f"Request error - {method} as {role}: {exc}", severity="Low", details={"method": method, "role": role})
+        finally:
+            ses.close()
+
 
 
     #================funtion _filtered_issues description =============
@@ -632,6 +613,7 @@ class AuthorizationAuditor:
             re.IGNORECASE,
         )
 
+        seen_guest_urls = set()
         for ep in (endpoints or [])[:15]:  # sample first 15 to stay fast
             method = (ep.get("method") or "GET").upper()
             if method != "GET":
@@ -640,7 +622,18 @@ class AuthorizationAuditor:
             if self._looks_like_auth_endpoint(path):
                 continue
 
-            url = self._abs_url(path)
+            try:
+                url = self._abs_url(path)
+            except ValueError as exc:
+                if not hasattr(self,'diagnostics'):
+                    self.diagnostics = []
+                self.diagnostics.append(dict(audit='API5',url=path,error=str(exc)))
+                continue
+            if url in seen_guest_urls:
+                continue
+            seen_guest_urls.add(url)
+            op = self._op_index.get((method, path)) or self._op_shape_index.get((method, self._canonical_path(path)))
+            requires_auth = self._op_requires_auth(op)
 
             # Anonymous request
             try:
@@ -677,7 +670,7 @@ class AuthorizationAuditor:
                 record_count = 1
 
             unique_fields = len(set(h.lower() for h in crm_hits))
-            sev = "Critical" if record_count >= 10 else "High" if record_count >= 3 else "Medium"
+            sev = "High" if requires_auth is True else "Info"
 
             self._log_issue(
                 url=url,
@@ -685,7 +678,7 @@ class AuthorizationAuditor:
                     f"Public endpoint returns {record_count} record(s) with "
                     f"{unique_fields} CRM/business field type(s) to anonymous users "
                     f"(e.g. {', '.join(sorted(set(crm_hits))[:5])}). "
-                    f"ShinyHunters Guest User / unauthenticated data exposure pattern."
+                    + ("Access contradicts the declared authentication requirement." if requires_auth is True else "Observation: data confidentiality and access policy are unverified; field names alone do not establish a leak.")
                 ),
                 severity=sev,
                 details={
@@ -694,7 +687,8 @@ class AuthorizationAuditor:
                     "vector": "guest-data-exposure",
                     "record_count": record_count,
                     "crm_fields": sorted(set(crm_hits)),
-                    "confidence": "high" if unique_fields >= 3 else "medium",
+                    "confidence": "medium" if requires_auth is True else "low",
+                    "expected_access": False if requires_auth is True else None,
                 },
                 response_obj=anon,
             )

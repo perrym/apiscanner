@@ -6,10 +6,14 @@
 #   Linux (Fedora/RHEL):   sudo dnf install python3-tkinter
 #   Linux (Arch):          sudo pacman -S tk
 #
-# All other modules are standard library (threading, subprocess, queue)
+# Pillow shows the logo and screenshots; the GUI still starts without it.
+# Everything else is standard library (threading, subprocess, queue)
 #
-# Install base requirements:
+# Install base requirements, then the GUI extras:
 #   pip install -r requirements.txt
+#   pip install -r requirements-gui.txt
 #
 # Then run:
 #   python apiscan_gui.py
+
+pillow>=10.0.0

@@ -1,5 +1,5 @@
 ---
-title: APISCAN v5.0.1 – Production-Ready OWASP API Security Scanner by Perry Mertens (AGPL-v3.0)
+title: APISCAN v5.5.0 – Production-Ready OWASP API Security Scanner by Perry Mertens (AGPL-v3.0)
 description: Free and open-source OWASP API Security Top 10 scanner with auto form-login, crawl validation, deep scanning, GUI, and rich HTML reporting.
 ---
 
@@ -12,9 +12,9 @@ APIscan is an API vulnerability scanner that proactively identifies security ris
 It uses your OpenAPI/Swagger specification to generate realistic attack payloads and detect issues such as Broken Object Level Authorization (BOLA), Broken Authentication, Excessive Data Exposure, and other critical API vulnerabilities.
 It understands **OpenAPI/Swagger**, supports **multiple authentication flows**, provides a **plan/verify workflow**, includes a **generic sanitizer/rewrites**, and writes **CSV/HTML** artifacts.
 
-This page is the documentation corresponding to the v5.0.0 GitHub Pages landing (`index.html`).
+This page is the documentation corresponding to the v5.5.0 GitHub Pages landing (`index.html`).
 
-![APISCAN v5.0.1](./APISCAN-mainmenu%20v5.0.0.jpg)
+![APISCAN v5.5.0](./APISCAN-mainmenu%20v5.0.0.jpg)
 
 ---
 
@@ -28,7 +28,7 @@ Use APISCAN only on systems and APIs for which you have explicit authorization.
 
 ---
 
-## What's new in v5.0.1
+## What's new in v5.5.0
 
 v5.0.0 is the first production-ready release — tested on Juice Shop and crAPI.
 
@@ -170,7 +170,7 @@ python apiscan.py --url http://127.0.0.1:8888 \
   --login-password "Password123"
 
 # Juice Shop
-python apiscan.py --url http://192.168.168.132:3000 \
+python apiscan.py --url http://192.1.1.12:3000 \
   --crawl --flow form \
   --login-username aa@aa.de \
   --login-password "Banaan@+565"

@@ -2,10 +2,11 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2026  #
-# version 5.0 24-06-2026                               #
+# version 5.5 24-06-2026                               #
 ########################################################
 from __future__ import annotations
 
+from copy import deepcopy
 import base64
 import html
 import json
@@ -153,7 +154,7 @@ class SSRFAuditor:
         concurrency: int = CONFIG.max_concurrency,
         rps: int = CONFIG.rps_limit,
         timeout: int = CONFIG.timeout,
-        verify_tls: bool = CONFIG.verify_tls,
+        verify_tls: Optional[bool] = None,
         show_progress: bool = True,
         swagger_spec: Optional[Dict[str, Any]] = None,
         flow: Optional[str] = None,
@@ -171,9 +172,16 @@ class SSRFAuditor:
         self.base_urls = self._expand_base_urls(str(base_url))
         # Keep a primary base_url for reporting/backward compatibility
         self.base_url = self.base_urls[0].rstrip("/")
+        # Scope local-target permission to this auditor, including direct/GUI callers.
+        self.CONFIG = deepcopy(type(self).CONFIG)
+        self.CONFIG.test_localhost = (urlparse(self.base_url).hostname or '').lower() in {
+            'localhost', '127.0.0.1', '::1'
+        }
+
 
         self.sess = session
-        self.sess.verify = verify_tls
+        if verify_tls is not None:
+            self.sess.verify = verify_tls
         self.concurrency = max(1, min(int(concurrency), self.CONFIG.max_concurrency))
         self.rps = max(1, int(rps))
         self.timeout = int(timeout)
@@ -227,7 +235,7 @@ class SSRFAuditor:
             return []
 
         servers = spec.get("servers") or []
-        base = (servers[0].get("url") if servers and isinstance(servers[0], dict) else "") or default_base
+        base = default_base or (servers[0].get("url") if servers and isinstance(servers[0], dict) else "")
         paths = spec.get("paths") or {}
 
         out: List[Endpoint] = []
@@ -300,7 +308,10 @@ class SSRFAuditor:
 
     #================funtion _encode_payload encode SSRF payload using chosen scheme ##########
     def _encode_payload(self, payload: str, encoding_type: str = "default") -> str:
-        if encoding_type == "double_url":
+        if encoding_type == "default":
+            # requests encodes query parameters; JSON/header URLs must stay usable.
+            return payload
+        elif encoding_type == "double_url":
             return quote_plus(quote_plus(payload))
         elif encoding_type == "utf8":
             return quote_plus(payload.encode("utf-8"))
@@ -329,20 +340,15 @@ class SSRFAuditor:
             merged.update(hdrs)
         return merged
 
-    def _baseline_latency(self, url: str, method: str) -> float:
+    def _baseline_latency(self, url: str, method: str, ep: Endpoint) -> float:
         samples = max(1, int(getattr(self.CONFIG, "baseline_samples", 1)))
         vals: List[float] = []
         for _ in range(samples):
             started = time.perf_counter()
             try:
-                self.sess.request(
-                    method=method,
-                    url=url,
-                    timeout=self.timeout,
-                    allow_redirects=self.CONFIG.allow_redirects,
-                    verify=self.sess.verify,
-                    headers=self._merge_headers({}),
-                )
+                response = self._request(ep, method, url)
+                if response.status_code >= 400:
+                    continue
             except Exception:
                 continue
             vals.append(time.perf_counter() - started)
@@ -353,15 +359,94 @@ class SSRFAuditor:
 
     def test_endpoints(self, endpoints: List[Endpoint]) -> List[Issue]:
         self._issues.clear()
+        self._tested_payloads.clear()
+        self.diagnostics = []
+        self.coverage = dict(audit="API7", input_endpoints=len(endpoints), started=0,
+                             completed=0, failed=0, skipped=0, not_applicable=0,
+                             rejected_payloads=0, scope_limited=True,
+                             note="Only declared URL-like query/header/JSON fields; configured probe limits apply.")
         with ThreadPoolExecutor(max_workers=self.concurrency) as ex:
-            futures = {ex.submit(self._scan_endpoint, ep): ep for ep in endpoints}
+            futures = {ex.submit(self._scan_endpoint, deepcopy(ep)): ep for ep in endpoints}
+            iterator = as_completed(futures)
             if self.show_progress:
-                for _ in tqdm(as_completed(futures), total=len(futures), desc="SSRF scans", unit="endpoint"):
-                    pass
-            else:
-                for _ in as_completed(futures):
-                    pass
+                iterator = tqdm(iterator, total=len(futures), desc="SSRF scans", unit="endpoint")
+            for future in iterator:
+                try:
+                    future.result()
+                except Exception as exc:
+                    with self._lock:
+                        self.coverage["skipped"] += 1
+                        self.diagnostics.append(dict(audit="API7", endpoint=futures[future], error=str(exc)))
+        self.coverage["state"] = "incomplete" if self.coverage["failed"] or self.coverage["skipped"] else ("completed" if self.coverage["started"] else "not_applicable")
+        self._tw("API7 coverage: " + json.dumps(self.coverage), "done")
         return self._issues
+
+    def _schema_request(self, ep, base):
+        from openapi_universal import iter_operations, build_request
+        op = next((op for op in iter_operations(self.spec)
+                   if op.get("path") == ep.get("path") and op.get("method", "").upper() == ep.get("method", "GET").upper()), None)
+        if op is None:
+            raise ValueError("Operation missing from OpenAPI specification")
+        ep["_request"] = build_request(self.spec, base, op, None)
+        def url_like(name, value=None, schema=None):
+            return (any(word in name.lower() for word in ('url','uri','callback','webhook','endpoint','destination','redirect'))
+                    or (schema or {}).get('format') in ('uri','url','uri-reference')
+                    or isinstance(value,str) and value.lower().startswith(('http://','https://')))
+        ep['_inputs'] = {}
+        ep['_json_paths'] = {}
+        for param in op.get('parameters',[]):
+            loc = param.get('in'); name = param.get('name','')
+            values = ep['_request'].get('params' if loc == 'query' else 'headers',{})
+            if loc in ('query','header') and url_like(name, values.get(name), param.get('schema')):
+                ep['_inputs'][name] = loc
+        def walk(value, path=()):
+            if len(path)>8: return
+            if isinstance(value,dict):
+                for key,child in value.items(): walk(child,path+(key,))
+            elif isinstance(value,list):
+                for index,child in enumerate(value[:16]): walk(child,path+(index,))
+            elif path and url_like(str(path[-1]),value):
+                label = path[0] if len(path)==1 else 'json:/'+'/'.join(map(str,path))
+                ep['_inputs'][label] = 'json'
+                ep['_json_paths'][label] = path
+        walk(ep['_request'].get('json'))
+        if isinstance(ep['_request'].get('data'),dict):
+            ep['_inputs'].update({key:'data' for key,value in ep['_request']['data'].items() if url_like(key,value)})
+
+    def _request(self, ep, method, url, json_body=None, data=None, headers=None, param=None, payload=None):
+        req = deepcopy(ep.get("_request", {}))
+        req.update(method=method, url=url, timeout=self.timeout,
+                   allow_redirects=self.CONFIG.allow_redirects, verify=self.sess.verify)
+        req["headers"] = self._merge_headers(dict(req.get("headers", {}), **(headers or {})))
+        if json_body is not None:
+            req.pop("data", None)
+            req["json"] = json_body
+        if param and ep.get("_inputs", {}).get(param) == "query":
+            req.setdefault("params", {})[param] = payload
+        with self._lock:
+            self.coverage["started"] += 1
+        try:
+            response = self.sess.request(**req)
+        except Exception as exc:
+            with self._lock:
+                self.coverage["failed"] += 1
+                self.diagnostics.append(dict(audit="API7", endpoint=url, error=str(exc)))
+            raise
+        with self._lock:
+            if response.status_code == 415 or (param is None and response.status_code >= 400):
+                self.coverage["failed"] += 1
+                self.diagnostics.append(dict(audit="API7", endpoint=url, status=response.status_code, error="Request rejected"))
+            else:
+                self.coverage["completed"] += 1
+                if response.status_code >= 400:
+                    self.coverage["rejected_payloads"] += 1
+        return response
+
+    def save_diagnostics(self, directory):
+        directory = Path(directory)
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "coverage_api7.json").write_text(json.dumps(self.coverage, indent=2), encoding="utf-8")
+        (directory / "telemetry_api7.json").write_text(json.dumps(self.diagnostics, indent=2), encoding="utf-8")
 
     #================funtion _scan_endpoint enumerate params and dispatch probes ##########
     def _scan_endpoint(self, ep: Endpoint) -> None:
@@ -374,12 +459,16 @@ class SSRFAuditor:
         elif ep.get("base"):
             ep_bases = self._expand_base_urls(str(ep.get("base")))
 
-        bases = ep_bases or self.base_urls
+        # The explicitly selected target controls request scope, not Swagger servers.
+        bases = self.base_urls
         if not bases:
             return
 
         for base in bases:
-            url_base = _abs_url(base, path)
+            from scanner_quality import normalize_endpoint, path_values
+            url_base = normalize_endpoint(path, base, path_values(self.spec, getattr(self, "path_parameter_values", {})))
+            self._schema_request(ep, base)
+
             self._scan_single_base(ep, url_base, method)
 
     #================funtion _scan_single_base scan endpoint for a single base URL ##########
@@ -387,18 +476,27 @@ class SSRFAuditor:
         host = (urlparse(url_base).hostname or "").lower()
 
         if not self.CONFIG.test_localhost and host in {"127.0.0.1", "localhost", "::1"}:
+            with self._lock:
+                self.coverage['skipped'] += 1
+                self.diagnostics.append(dict(audit='API7', endpoint=url_base,
+                    error='Local target disabled by scanner configuration'))
             self._tw(f"Localhost target — skipping {method} {url_base}", "skip")
             return
 
         if self.show_progress:
             self._tw(f"{method} {url_base}", "run")
 
-        ep["_baseline"] = self._baseline_latency(url_base, method)
 
-        swagger_params = {p.get("name") for p in ep.get("parameters") or [] if p.get("in") in {"query", "header", "path"}}
-        common_params = {"url", "endpoint", "host", "server", "target", "lang", "language", "locale", "v", "version", "api"}
-        all_params = sorted([x for x in (swagger_params | common_params) if x and not self._should_exclude_param(x)])
-
+        all_params = sorted(ep.get("_inputs", {}))
+        if not all_params:
+            with self._lock:
+                self.coverage["not_applicable"] += 1
+            return
+        ep["_baseline"] = self._baseline_latency(url_base, method, ep)
+        if ep["_baseline"] <= 0:
+            with self._lock:
+                self.coverage["skipped"] += 1
+            return
         p_iter = tqdm(all_params, desc="params", unit="param", leave=False) if self.show_progress else all_params
         # Limit SSRF probes to avoid combinatorial explosion:
         # 397 endpoints × 11 params × 30 payloads × 5 encodings = 655K+ requests.
@@ -454,42 +552,22 @@ class SSRFAuditor:
             self._tw(f"Base URL is localhost; skipping param={param}", "skip")
             return
 
-        qs_url = f"{base_url}?{param}={payload}"
-        self._probe(ep, qs_url, method, payload=payload, param=param, encoding=encoding)
-
-        if method in {"POST", "PUT", "PATCH"}:
-            self._probe(
-                ep,
-                base_url,
-                method,
-                json_body={param: payload},
-                payload=payload,
-                param=param,
-                encoding=encoding,
-            )
-            self._probe(
-                ep,
-                base_url,
-                method,
-                data={param: payload},
-                payload=payload,
-                param=param,
-                encoding=encoding,
-            )
-
-        self._probe(
-            ep,
-            base_url,
-            method,
-            headers={param: payload},
-            payload=payload,
-            param=param,
-            encoding=encoding,
-        )
-
-        if f"{{{param}}}" in base_url:
-            path_url = base_url.replace(f"{{{param}}}", payload)
-            self._probe(ep, path_url, method, payload=payload, param=param, encoding=encoding)
+        location = ep.get("_inputs", {}).get(param)
+        if location == "json":
+            body = deepcopy(ep["_request"].get("json", {}))
+            path = ep.get('_json_paths',{}).get(param,(param,))
+            node = body
+            for key in path[:-1]: node = node[key]
+            node[path[-1]] = payload
+            self._probe(ep, base_url, method, json_body=body, payload=payload, param=param, encoding=encoding)
+        elif location == 'data':
+            data = deepcopy(ep['_request'].get('data',{}))
+            data[param] = payload
+            self._probe(ep, base_url, method, data=data, payload=payload, param=param, encoding=encoding)
+        elif location == "query":
+            self._probe(ep, base_url, method, payload=payload, param=param, encoding=encoding)
+        elif location == "header":
+            self._probe(ep, base_url, method, headers={param: payload}, payload=payload, param=param, encoding=encoding)
 
     #================funtion _probe perform single HTTP request and analyze response ##########
     def _probe(
@@ -507,16 +585,9 @@ class SSRFAuditor:
     ) -> None:
         started = time.perf_counter()
         try:
-            resp = self.sess.request(
-                method=method,
-                url=url,
-                json=json_body,
-                data=data,
-                headers=self._merge_headers(headers or {}),
-                timeout=self.timeout,
-                allow_redirects=self.CONFIG.allow_redirects,
-                verify=self.sess.verify,
-            )
+            resp = self._request(ep, method, url, json_body, data, headers, param, payload)
+            if resp.status_code >= 400:
+                return
             latency = time.perf_counter() - started
         except requests.exceptions.SSLError as e:
             logger.warning(f"SSL error for {url}: {e}")
@@ -571,6 +642,8 @@ class SSRFAuditor:
             "127.0.0.1",
             "[::1]",
         )
+        if payload.lower() in body_low:
+            return
         if any(ind in body_low for ind in indicators) or any(h in hdr_low for h in header_indicators):
             self._record_issue(
                 ep=ep,
@@ -626,8 +699,9 @@ class SSRFAuditor:
             "encoding": encoding or "default",
             "status_code": status,
             "latency": round(latency, 2),
-            "description": note,
-            "severity": "High" if "Reflected" in note else "Medium",
+            "description": 'Observation: '+note+'; server-side fetch not independently verified',
+            "severity": 'Info' if 'latency' in note.lower() else 'Low',
+            "evidence_status": 'observation',
             "confidence": confidence,
             "timestamp": datetime.utcnow().isoformat(),
             "request_headers": request_headers or [],

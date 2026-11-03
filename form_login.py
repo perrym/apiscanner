@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2026  #
-# version 5.0 24-06-2026                               #
+# version 5.5 24-06-2026                               #
 ########################################################
 
 
@@ -322,6 +322,10 @@ def auto_form_login(args) -> str:
             logger.warning("Token extraction from direct response failed: %s", e)
 
         if token or token == "":
+            if 200 <= resp2.status_code < 300 and not is_html_response:
+                # Runtime context only: keep the request that actually authenticated.
+                from copy import deepcopy
+                args._apiscan_login_request = {"url": login_url, "json": deepcopy(body)}
             return token
 
         # If no token in direct response, follow the redirect and try again.

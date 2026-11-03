@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2026  #
-# version 5.0 24-06-2026                               #
+# version 5.5 24-06-2026                               #
 ########################################################
   
                                                       
@@ -111,6 +111,7 @@ class BusinessFlowAuditor:
         self._issues: List[Issue] = []
         self._lock = threading.Lock()
         self._tested_coupons: Set[str] = set()
+        self._aggregated: Dict[str, List[Tuple[Flow, requests.Response]]] = {}
 
         self._op_index: Dict[Tuple[str, str], Any] = {}
         self._op_shape_index: Dict[Tuple[str, str], Any] = {}
@@ -158,10 +159,8 @@ class BusinessFlowAuditor:
                                                                             
     #================funtion _abs_url description =============
     def _abs_url(self, path_or_url: str) -> str:
-        s = path_or_url or ""
-        if s.startswith(("http://", "https://")):
-            return s
-        return urljoin(self.base_url, s.lstrip("/"))
+        from scanner_quality import normalize_endpoint, path_values
+        return normalize_endpoint(path_or_url, self.base_url, path_values(getattr(self, 'spec', {}),getattr(self,'path_parameter_values',{})))
 
                                                                           
     #================funtion _nonce description =============
@@ -266,17 +265,8 @@ class BusinessFlowAuditor:
     def _get_smart_body(self, original_body: Optional[dict]) -> dict:
         if original_body:
             return dict(original_body)
-        return {
-            "email": f"user{self._nonce()}@example.com",
-            "amount": 100,
-            "quantity": 1,
-            "product_id": "prod_" + self._nonce(),
-            "user_id": "user_" + self._nonce(),
-            "card_number": "4242424242424242",
-            "name": "Test User",
-            "description": "Security test transaction",
-            "coupon": "TEST" + self._nonce(4).upper(),
-        }
+        # A universal scanner must not invent commerce-specific fields.
+        return {}
 
                                                                                
     #================funtion _extract_id description =============
@@ -357,30 +347,35 @@ class BusinessFlowAuditor:
         override_method: Optional[str] = None,
         anonymous: bool = False,
     ) -> Optional[requests.Response]:
-        req = self._build_request(flow, override_method=override_method, body=body)
+        try:
+            req = self._build_request(flow, override_method=override_method, body=body)
+        except ValueError as exc:
+            diagnostics = self.__dict__.setdefault('diagnostics', [])
+            record = dict(audit='API6',url=flow.get('path') or flow.get('url'),error=str(exc),execution_status='skipped')
+            if record not in diagnostics:
+                diagnostics.append(record)
+            return None
         url = req.get("url") or self._abs_url(flow.get("url", "/"))
 
         if anonymous:
-            req_headers = dict(req.get("headers") or {})
-            req_headers.pop("Authorization", None)
-            req["headers"] = req_headers
-
-            tmp = requests.Session()
-            tmp.verify = getattr(self.session, "verify", True)
-            tmp.trust_env = getattr(self.session, "trust_env", True)
-            tmp.proxies = getattr(self.session, "proxies", {})
-            ses = tmp
+            from universal_runtime import isolated_session, anonymous_request
+            req = anonymous_request(req, self.spec)
+            ses = isolated_session(self.session)
         else:
             ses = self.session
 
         try:
             return ses.request(timeout=self.timeout, **req)
-        except Exception:
+        except Exception as exc:
+            self.__dict__.setdefault('diagnostics', []).append(dict(audit='API6',url=url,error=str(exc),execution_status='failed'))
             return None
 
                                                                         
+        finally:
+            if anonymous: ses.close()
+
     #================funtion _log description =============
-    def _log(self, flow: Flow, desc: str, sev: str, req: Optional[dict] = None, resp: Optional[requests.Response] = None, details: Optional[dict] = None) -> None:
+    def _log(self, flow: Flow, desc: str, sev: str, req: Optional[dict] = None, resp: Optional[requests.Response] = None, details: Optional[dict] = None, evidenced: bool = False) -> None:
         if resp is None:
             return
         sc = int(getattr(resp, "status_code", 0) or 0)
@@ -390,6 +385,10 @@ class BusinessFlowAuditor:
         eff_url = getattr(getattr(resp, "request", None), "url", None) or self._abs_url(flow.get("url", "/"))
         endpoint_path = urlparse(eff_url).path or "/"
 
+        # Accepted requests / echoed input do not establish a violated business invariant.
+        if not evidenced and (str(sev).lower() in ('high','critical') or 'missing idempotency' in desc.lower()):
+            desc = 'Observation: '+desc+'; business invariant and unauthorized state change unverified'
+            sev = 'Info'
         entry: Issue = {
             "url": eff_url,
             "endpoint": endpoint_path,
@@ -515,7 +514,80 @@ class BusinessFlowAuditor:
         for fl in flows:
             self._run_tests_for_flow(fl)
 
+        self._flush_aggregates()
         return self._filtered_issues()
+
+    def _aggregate(self, kind: str, flow: Flow, resp: requests.Response) -> None:
+        with self._lock:
+            self._aggregated.setdefault(kind, []).append((flow, resp))
+
+    def _flush_aggregates(self) -> None:
+        texts = {
+            "sequential": f"{self.sequential_rate_limit_requests} sequential requests processed",
+            "parallel": f"{self.concurrency} parallel requests processed",
+        }
+        for kind, hits in self._aggregated.items():
+            flow, resp = hits[0]
+            paths = sorted({h[0].get("path") or "/" for h in hits})
+            shown = ", ".join(paths[:10]) + (f" (+{len(paths) - 10} more)" if len(paths) > 10 else "")
+            self._log(flow, f"Observation: {texts[kind]} on {len(paths)} endpoint(s): {shown}; "
+                      "rate-limit policy and abuse impact unverified", "Info", resp=resp, details={"endpoints": paths})
+        self._aggregated = {}
+
+    def _declares_auth(self, flow: Flow) -> bool:
+        op = self._op_for_flow(flow.get("method") or "POST", flow.get("path") or "/")
+        if not op:
+            return False
+        security = op.get("security")
+        if security is None:
+            security = (self.spec or {}).get("security") or []
+        if not isinstance(security, list) or not security:
+            return False
+        # An empty requirement object means authentication is optional.
+        return all(isinstance(req, dict) and req for req in security)
+
+    @staticmethod
+    def _json_walk(resp: Optional[requests.Response]):
+        try:
+            stack = [resp.json()]
+        except Exception:
+            return
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    yield str(key), value
+                    if isinstance(value, (dict, list)):
+                        stack.append(value)
+            elif isinstance(node, list):
+                stack.extend(node[:50])
+
+    def _response_has_value(self, resp: requests.Response, keys: Set[str], value: Any) -> bool:
+        wanted = {str(k).lower() for k in keys}
+        for key, found in self._json_walk(resp):
+            if key.lower() in wanted and not isinstance(found, bool):
+                try:
+                    if float(found) == float(value):
+                        return True
+                except (TypeError, ValueError):
+                    continue
+        return False
+
+    def _reflected_privileged(self, resp: Optional[requests.Response], owner_id: str) -> List[str]:
+        if resp is None:
+            return []
+        fields = set()
+        if owner_id in (resp.text or ""):
+            fields.add("owner_id")
+        for key, value in self._json_walk(resp):
+            low = key.lower()
+            if low == "role" and str(value).lower() == "admin":
+                fields.add("role")
+            elif low == "isadmin" and value is True:
+                fields.add("isAdmin")
+            elif low == "permissions" and value == ["*"]:
+                fields.add("permissions")
+        return sorted(fields)
 
                                                                                        
     #================funtion _run_tests_for_flow description =============
@@ -546,7 +618,11 @@ class BusinessFlowAuditor:
 
         r = self._send(flow, anonymous=True)
         if r is not None and self._is_processed(r):
-            self._log(flow, "Authentication bypass possible (anonymous request processed)", "High", resp=r)
+            if self._declares_auth(flow):
+                self._log(flow, "Anonymous request processed on an operation that declares authentication",
+                          "Medium", resp=r, evidenced=True)
+            else:
+                self._log(flow, "Authentication bypass possible (anonymous request processed)", "High", resp=r)
 
                                                                                        
     #================funtion _test_replay_attack description =============
@@ -592,7 +668,7 @@ class BusinessFlowAuditor:
         id1 = self._extract_id(r1)
         id2 = self._extract_id(r2)
         if id1 and id2 and id1 != id2:
-            self._log(flow, "Duplicate submission accepted (missing idempotency)", "Medium", resp=r2, details={"id1": id1, "id2": id2})
+            self._log(flow, "Observation: identical submissions created distinct objects; idempotency policy and business impact unverified", "Info", resp=r2, details={"id1": id1, "id2": id2})
 
                                                                                             
     #================funtion _test_price_manipulation description =============
@@ -609,9 +685,16 @@ class BusinessFlowAuditor:
                 manipulated[k] = value
 
             r = self._send(flow, body=manipulated)
-            if r is not None and self._is_processed(r):
-                sev = "Critical" if value <= 0 else "High"
-                self._log(flow, f"Price manipulation accepted (value={value})", sev, resp=r, details={"payload": manipulated})
+            if r is None or not self._is_processed(r):
+                continue
+            if value <= 0:
+                echoed = self._response_has_value(r, keys & self.PRICE_KEYS, value)
+                note = "manipulated value returned in response" if echoed else "server-side effect unverified"
+                self._log(flow, f"Price manipulation accepted (value={value}); {note}",
+                          "Medium" if echoed else "Low", resp=r, details={"payload": manipulated}, evidenced=True)
+            else:
+                self._log(flow, f"Observation: unusual price value accepted (value={value}); business impact unverified",
+                          "Info", resp=r, details={"payload": manipulated})
 
                                                                                            
     #================funtion _test_coupon_bruteforce description =============
@@ -646,6 +729,12 @@ class BusinessFlowAuditor:
             for suffix in range(1, 6):
                 weak_coupons.append(base + str(suffix))
 
+        control_code = "APISCAN" + self._nonce(10).upper()
+        control = dict(payload)
+        control[coupon_key] = control_code
+        rc = self._send(flow, body=control)
+        control_rejected = rc is not None and not self._is_processed(rc)
+
         tested = 0
         for coupon in weak_coupons:
             if tested >= self.coupon_attempts:
@@ -658,8 +747,13 @@ class BusinessFlowAuditor:
 
             r = self._send(flow, body=attempt)
             if r is not None and self._is_processed(r):
-                self._log(flow, f"Coupon brute-force succeeded ({coupon_key}={coupon})", "High", resp=r, details={"payload": attempt})
-                return  # one success is enough — stop brute-forcing
+                if control_rejected:
+                    self._log(flow, f"Guessable coupon code accepted ({coupon_key}={coupon}); random control code rejected",
+                              "Medium", resp=r, details={"payload": attempt, "control_code": control_code}, evidenced=True)
+                else:
+                    self._log(flow, f"Observation: coupon code accepted ({coupon_key}={coupon}) but a random control code "
+                              "was not rejected; code validity unverified", "Info", resp=r, details={"payload": attempt})
+                return  # one success is enough
             tested += 1
 
                                                                                                
@@ -681,7 +775,7 @@ class BusinessFlowAuditor:
                 return
 
         if processed_seen >= self.sequential_rate_limit_requests and last is not None:
-            self._log(flow, f"No rate-limiting after {self.sequential_rate_limit_requests} rapid processed requests", "Medium", resp=last)
+            self._aggregate("sequential", flow, last)
 
                                                                                      
     #================funtion _test_concurrency description =============
@@ -697,7 +791,7 @@ class BusinessFlowAuditor:
 
         ok = [r for r in responses if (r is not None and self._is_processed(r))]
         if len(ok) == self.concurrency:
-            self._log(flow, f"No throttling at {self.concurrency} parallel processed requests", "High", resp=ok[0])
+            self._aggregate("parallel", flow, ok[0])
 
                                                                                          
     #================funtion _test_method_override description =============
@@ -706,21 +800,25 @@ class BusinessFlowAuditor:
         for verb in ("PUT", "DELETE", "PATCH"):
             if verb == own_method:
                 continue  # Skipping native method - not an override
+            path = flow.get('path') or urlparse(flow.get('url', '')).path or '/'
+            if self._op_for_flow(verb, path) is not None:
+                continue
             r = self._send(flow, override_method=verb)
             if r is not None and self._is_processed(r):
-                self._log(flow, f"Method override to {verb} processed", "Medium", resp=r)
+                self._log(flow, f"Observation: alternate HTTP method {verb} accepted; authorization impact unverified", "Info", resp=r)
 
                                                                                          
     #================funtion _test_field_pollution description =============
     def _test_field_pollution(self, flow: Flow) -> None:
         payload = self._get_smart_body(flow.get("body"))
+        owner_id = "user_" + self._nonce()
         extra = {
             "role": "admin",
             "isAdmin": True,
             "permissions": ["*"],
             "price": -1,
             "discount": 999999,
-            "owner_id": "user_" + self._nonce(),
+            "owner_id": owner_id,
         }
         attempt = dict(payload)
         attempt.update(extra)
@@ -728,6 +826,17 @@ class BusinessFlowAuditor:
         if r is None:
             return
         if self._is_processed(r):
+            reflected = self._reflected_privileged(r, owner_id)
+            if set(reflected) - {"owner_id"}:
+                # Values already present without injection are not caused by the request.
+                base = self._send(flow, body=payload)
+                already = set(self._reflected_privileged(base, owner_id)) if base is not None and self._is_processed(base) else None
+                reflected = [f for f in reflected if f == "owner_id" or (already is not None and f not in already)]
+            if reflected:
+                self._log(flow, "Mass assignment: injected privileged field values returned in response ("
+                          + ", ".join(reflected) + ")", "Medium", resp=r,
+                          details={"payload": attempt, "reflected": reflected}, evidenced=True)
+                return
             body = (r.text or "")[:4096]
             if any(k in body for k in ("isAdmin", "permissions", "owner_id", "role")):
                 self._log(flow, "Field pollution / mass-assignment suspicion (extra privileged fields accepted)", "High", resp=r, details={"payload": attempt})

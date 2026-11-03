@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2026  #
-# version 5.0 24-06-2026                               #
+# version 5.5 24-06-2026                               #
 ########################################################
 
 from __future__ import annotations
@@ -275,6 +275,15 @@ class InventoryAuditor:
         if documented_paths is None and self.spec:
             documented_paths = self.endpoints_from_universal(self.spec)
 
+        # Compare probes with an unknown route to detect JSON/SPA catch-all responses.
+        import uuid
+        self._soft404 = None
+        try:
+            control = self.session.get(urljoin(self.base_url+'/', 'apiscan-missing-'+uuid.uuid4().hex), timeout=self.timeout, allow_redirects=False)
+            if control.status_code == 200:
+                self._soft404 = (control.headers.get('Content-Type',''), control.content)
+        except requests.RequestException:
+            pass
         doc_set: set[str] = {_normalize_path(p) for p in (documented_paths or [])}
 
         paths_to_check: List[str] = []
@@ -347,6 +356,8 @@ class InventoryAuditor:
                 return
 
 
+        if getattr(self, '_soft404', None) == (resp.headers.get('Content-Type',''), resp.content):
+            return
         self._check_security_headers(resp, url)
 
         if not self._is_api_response(resp):
@@ -457,7 +468,8 @@ class InventoryAuditor:
     def _severity_for(self, issue: str, endpoint: str, description: str, response: Optional[requests.Response]) -> str:
         text = " ".join((issue or "", endpoint or "", description or "")).lower()
         if "missing security headers" in text:
-            return "High"
+            content_type = (response.headers.get('Content-Type', '') if response is not None else '').lower()
+            return "Low" if 'text/html' in content_type else "Info"
         if any(marker in text for marker in ("secret", "private key", ".env", ".git/config", "heapdump", "shutdown")):
             return "High"
         if any(marker in text for marker in ("stack trace", "database connection", "internal ip", "actuator/env", "actuator/beans", "actuator/configprops")):

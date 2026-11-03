@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2026  #
-# version 5.0 24-06-2026                               #
+# version 5.5 24-06-2026                               #
 ########################################################
 
 from __future__ import annotations
@@ -238,7 +238,7 @@ def _map_status(s: str | None) -> str:
 
 #================funtion _db_items_for_template _db_items_for_template =============
 def _db_items_for_template(db_path: Path, run_id: str | None = None) -> list[dict]:
-    with sqlite3.connect(str(db_path)) as c:
+    with sqlite3.connect(Path(db_path).resolve().as_uri() + '?mode=ro', uri=True) as c:
         c.row_factory = sqlite3.Row
         q = (
             "SELECT id, run_id, risk_key, title, description, category, "
@@ -327,7 +327,7 @@ def _db_items_for_template(db_path: Path, run_id: str | None = None) -> list[dic
 
 #================funtion _db_endpoints _db_endpoints =============
 def _db_endpoints(db_path: Path, run_id: str | None=None) -> list[dict]:
-    with sqlite3.connect(str(db_path)) as c:
+    with sqlite3.connect(Path(db_path).resolve().as_uri() + '?mode=ro', uri=True) as c:
         c.row_factory = sqlite3.Row
         q = 'SELECT method, url, max_severity, last_status, last_ms, count_ok, count_fail, first_seen, last_seen FROM endpoint'
         params: tuple = ()
@@ -652,6 +652,10 @@ def _canon_cat(rk_or_cat: str) -> str:
 
 #================funtion _reclassify _reclassify =============
 def _reclassify(it: dict) -> str:
+    from scanner_quality import evidence_severity
+    override = evidence_severity(it)
+    if override:
+        return override
     cat = _canon_cat(it.get('risk_key') or it.get('category') or '')
 
     raw_sev = (it.get('severity') or 'info').strip().lower()
@@ -665,7 +669,7 @@ def _reclassify(it: dict) -> str:
         sev = base_sev
     else:
         relax_min = cat in ('Misconfig', 'Inventory', 'Resource', 'Secure Transport', 'DNS', 'Timeout')
-        sev = raw_sev if relax_min else _max_sev(raw_sev, base_sev)
+        sev = raw_sev
 
     st = _status_int(it)
     bod = _txt_body(it)
@@ -797,12 +801,17 @@ def build_review(db_path: Path, out_path: Path, template: Path | None=None, run_
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     items = _db_items_for_template(db_path, run_id=run_id)
+    from scanner_quality import export_scan
+    export_path = export_scan(items, out_path.parent, run_id=run_id)
+    print(f'[build_review] All audit findings exported: {export_path}')
     endpoints = _db_endpoints(db_path, run_id=run_id)
 
     def _is_unknown_status(val):
         return val in (None, '', 0, '0')
     filtered_items = []
     for it in items:
+        if (it.get('title') or '') == 'Request smuggling test borderline/timeout':
+            continue
         status_unknown = _is_unknown_status(it.get('response', {}).get('status'))
         category = (it.get('category') or '').lower()
         if 'ai-owasp' in category or 'ai' in category:
@@ -817,7 +826,7 @@ def build_review(db_path: Path, out_path: Path, template: Path | None=None, run_
         if st == 404 and not signals:
             continue
         sev = (it.get('severity') or '').lower()
-        if not status_unknown or _has_http0_allowlist_kind(it) or signals or sev in ('critical', 'high'):
+        if not status_unknown or _has_http0_allowlist_kind(it) or signals or sev in ('critical', 'high') or 'post-quantum readiness' in (it.get('description') or '').lower():
             filtered_items.append(it)
     items = filtered_items
     ALLOWED_SEVERITIES = {'critical', 'high', 'medium', 'low', 'info'}
@@ -832,6 +841,7 @@ def build_review(db_path: Path, out_path: Path, template: Path | None=None, run_
     tpl = _load_template(template)
     html_out = _inject_two_payloads(tpl, items, endpoints)
     html_out = _postprocess_review_html_for_info(html_out)
+    # Execution details remain available in all_audit_findings.json and log JSON files.
     out_path.write_text(html_out, encoding='utf-8')
     try:
         combined_path = out_path.parent / 'combined_report.html'

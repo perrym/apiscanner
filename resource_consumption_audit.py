@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2026  #
-# version 5.0 24-06-2026                               #
+# version 5.5 24-06-2026                               #
 ########################################################
 from __future__ import annotations
 import re
@@ -85,10 +85,10 @@ class ResourceConsumptionAuditor:
         self.logger = logger or logging.getLogger(__name__)
         self.spec: Dict[str, Any] = swagger_spec or {}
         self.show_progress = show_progress
-        self.thresholds: Dict[str, Any] = {'response_time': 2.0, 'response_time_ms': 2000, 'response_size': 1000000, 'payload_kb_warn': 512, 'payload_kb_high': 2048, 'records_warn': 1000, 'records_high': 10000, 'rate_limit': 120.0, 'batch_sizes': [10, 50, 100], 'concurrent_workers': 8, 'concurrent_requests': 100, 'ignore_nonstress_5xx': True, 'nonstress_5xx_max_size': 131072, 'nonstress_5xx_max_time': 2.0, 'skip_upload_like_endpoints_without_body': True}
+        self.thresholds: Dict[str, Any] = {'response_time': 2.0, 'response_time_ms': 2000, 'response_size': 1000000, 'payload_kb_warn': 512, 'payload_kb_high': 2048, 'records_warn': 1000, 'records_high': 10000, 'rate_limit': 120.0, 'batch_sizes': [10, 50, 100], 'concurrent_workers': 4, 'concurrent_requests': 20, 'rate_probe_requests': 20, 'rate_probe_seconds': 5, 'rate_probe_interval': 0.1, 'ignore_nonstress_5xx': True, 'nonstress_5xx_max_size': 131072, 'nonstress_5xx_max_time': 2.0, 'skip_upload_like_endpoints_without_body': True}
         if thresholds:
             self.thresholds.update(thresholds)
-        self.retry = Retry(total=2, backoff_factor=0.4, status_forcelist=[429, 500, 502, 503, 504])
+        self.retry = Retry(total=1, connect=1, read=0, status=0, backoff_factor=0.4, status_forcelist=[], allowed_methods=['GET','HEAD','OPTIONS'], raise_on_status=False)
         self._install_retry_adapter()
         self.issues: List[Dict[str, Any]] = []
 
@@ -130,10 +130,14 @@ class ResourceConsumptionAuditor:
             return
         data = data or {}
         status_code = int(data.get('status_code', 0))
-        if 500 <= status_code < 600:
-            severity = 'Critical'
-        elif status_code == 0 and severity == 'Medium':
-            severity = 'High'
+        if issue_type in ('Concurrent Request Failures', 'Concurrent Request Timeouts'):
+            description = 'Observation: ' + description + '; baseline availability and abuse impact unverified'
+            severity = 'Info'
+        elif status_code == 0:
+            severity = 'Info' 
+        if str(severity).lower() in ('high','critical'):
+            description = 'Observation: '+description+'; configured limit and sustained availability impact unverified'
+            severity = 'Info'
         entry = {'endpoint': endpoint_url, 'method': data.get('method') if data else None, 'type': issue_type, 'description': description, 'severity': severity, 'status_code': status_code, 'timestamp': datetime.utcnow().isoformat(), 'request_headers': _headers_to_list(self.session.headers), 'response_headers': _headers_to_list(data.get('headers') or {}), 'response_body': data.get('body'), 'request_body': data.get('request_body'), 'request_cookies': getattr(self.session.cookies, 'get_dict', lambda: {})(), 'response_cookies': data.get('resp_cookies', {}), 'data': data, 'metrics': {'response_size': data.get('size'), 'response_time': data.get('time'), 'rpm': data.get('rpm'), 'batch_size': data.get('batch_size')} if data else None}
         self.issues.append(entry)
         self.logger.info('ISSUE: %s - %s at %s', severity, issue_type, endpoint_url)
@@ -144,15 +148,33 @@ class ResourceConsumptionAuditor:
         try:
             sec = OASSecurityConfig()
             for op in oas_iter_ops(self.spec or {}):
-                req = oas_build_request(self.spec, self.base_url, op, sec)
+                try:
+                    req = oas_build_request(self.spec, self.base_url, op, sec)
+                except ValueError:
+                    continue
                 headers = {k: v for k, v in (req.get('headers') or {}).items() if k.lower() != 'authorization'}
-                endpoints.append({'method': (req['method'] or 'GET').upper(), 'url': req['url'], 'headers': headers, 'json': req.get('json'), 'data': req.get('data'), 'parameters': {}})
+                endpoints.append({'method': (req['method'] or 'GET').upper(), 'url': req['url'], 'headers': headers, 'json': req.get('json'), 'data': req.get('data'), 'params': req.get('params'), 'cookies': req.get('cookies'), 'files': req.get('files'), 'parameters': {}})
         except Exception as e:
             self.logger.debug('Universal builder failed: %s', e)
         return endpoints
 
     #================funtion test_resource_consumption test_resource_consumption =============
     def test_resource_consumption(self, endpoints: Optional[List[Dict[str, Any]]]=None) -> List[Dict[str, Any]]:
+        from probe_policy import ProbePolicySession
+        original = self.session
+        policy = ProbePolicySession(original, self.spec, self.base_url)
+        self.session = policy
+        self.diagnostics = []
+        try:
+            return self._test_resource_consumption(endpoints)
+        finally:
+            self.session = original
+            self.diagnostics.extend(policy.diagnostics('API4'))
+            self.coverage = {'audit':'API4','state':'incomplete' if self.diagnostics else 'completed_unmeasured',
+                             'scope_limited':True,'probe_policy':policy.summary(),
+                             'note':'Only operations with successful baselines are eligible for sampled load probes. Task completeness is not established.'}
+
+    def _test_resource_consumption(self, endpoints: Optional[List[Dict[str, Any]]]=None) -> List[Dict[str, Any]]:
         if endpoints is None or len(endpoints) == 0:
             if self.spec:
                 endpoints = self._endpoints_from_spec()
@@ -161,13 +183,14 @@ class ResourceConsumptionAuditor:
         it = tqdm(endpoints, desc='API4 resource endpoints', unit='endpoint') if self.show_progress else endpoints
         start_count = len(self.issues)
         skip_status = {401, 403, 404, 405}
+        eligible = []
         for ep in it:
             method = (ep.get('method') or 'GET').upper()
             url = self._build_url(ep.get('url') or ep.get('path', '/'))
             json_body = ep.get('json')
             data_body = ep.get('data')
             if self.thresholds.get('skip_upload_like_endpoints_without_body', True):
-                if method in ('POST', 'PUT', 'PATCH') and (json_body is None and data_body is None) and self._looks_like_upload_path(url):
+                if method in ('POST', 'PUT', 'PATCH') and (json_body is None and data_body is None and not ep.get('files')) and self._looks_like_upload_path(url):
                     if self.show_progress:
                         try:
                             it.write(f'   ~ Skipped (upload endpoint without body): {url}')
@@ -184,17 +207,19 @@ class ResourceConsumptionAuditor:
             t0 = time.time()
             try:
                 if method in ('POST', 'PUT', 'PATCH'):
-                    resp = self.session.request(method, url, headers=headers, json=json_body, data=data_body, timeout=self.timeout)
+                    resp = self.session.request(method, url, headers=headers, json=json_body, data=data_body, files=ep.get('files'), params=ep.get('params'), cookies=ep.get('cookies'), timeout=self.timeout)
                 else:
-                    resp = self.session.request(method, url, headers=headers, timeout=self.timeout)
+                    resp = self.session.request(method, url, headers=headers, params=ep.get('params'), cookies=ep.get('cookies'), timeout=self.timeout)
                 elapsed = time.time() - t0
                 size = len(resp.content or b'')
                 status = resp.status_code
                 body_text = self._slice_body(resp, 2000)
                 content_type = str(resp.headers.get('Content-Type', '')).lower()
                 nonstress = elapsed <= float(self.thresholds.get('nonstress_5xx_max_time', self.thresholds['response_time'])) and size <= int(self.thresholds.get('nonstress_5xx_max_size', 131072))
-                if status in skip_status:
+                if not 200 <= status < 300:
+                    self.diagnostics.append(dict(audit='API4',method=method,url=url,status=status,response_body=self._slice_body(resp,20000),response_content_type=content_type,error='Baseline unsuitable for load probes',execution_status='skipped'))
                     continue
+                eligible.append(ep)
                 if status in (501, 503):
                     severity = 'Medium'
                 elif size > float(self.thresholds['response_size']):
@@ -220,7 +245,7 @@ class ResourceConsumptionAuditor:
                     self._log_issue(url, 'Large Response Size', f'Body: {self._format_bytes(size)}', 'Critical', {'method': method, 'status_code': status, 'size': size, 'time': elapsed, 'headers': dict(resp.headers), 'body': body_text})
                     triggered = True
                 if elapsed > float(self.thresholds['response_time']):
-                    self._log_issue(url, 'Slow Response', f'{elapsed:.2f}s', 'High', {'method': method, 'status_code': status, 'time': elapsed, 'size': size, 'headers': dict(resp.headers), 'body': body_text})
+                    self._log_issue(url, 'Response Time Observation', f'Observation: single response took {elapsed:.2f}s; no resource exhaustion demonstrated', 'Info', {'method': method, 'status_code': status, 'time': elapsed, 'size': size, 'headers': dict(resp.headers), 'body': body_text})
                     triggered = True
                 if not triggered and status == 200:
                     try:
@@ -248,13 +273,14 @@ class ResourceConsumptionAuditor:
                     continue
             except requests.RequestException as exc:
                 elapsed = time.time() - t0
+                self.diagnostics.append(dict(audit='API4',method=method,url=url,error=type(exc).__name__,execution_status='failed'))
                 self._log_issue(url, 'Request Error', str(exc), 'Medium' if 'timeout' in str(exc).lower() else 'Low', {'method': method, 'status_code': 0, 'time': elapsed})
 
         # ── Advanced resource consumption tests on sampled endpoints ──
         # Run heavy tests only on a subset to avoid overloading the target.
-        if endpoints:
+        if eligible:
             # Payload size tests (query params) — sample first 3 GET endpoints
-            get_eps = [e for e in endpoints if (e.get('method') or 'GET').upper() == 'GET'][:3]
+            get_eps = [e for e in eligible if (e.get('method') or 'GET').upper() == 'GET'][:3]
             for ep in get_eps:
                 try:
                     self._test_large_payloads(ep)
@@ -262,13 +288,13 @@ class ResourceConsumptionAuditor:
                     pass
 
             # Batch / computational / rate-limit / concurrent tests — sample 1 endpoint each
-            write_eps = [e for e in endpoints if (e.get('method') or 'GET').upper() in ('POST', 'PUT', 'PATCH')]
+            write_eps = [e for e in eligible if (e.get('method') or 'GET').upper() in ('POST', 'PUT', 'PATCH')]
             for ep in write_eps[:1]:
                 try:
                     self._test_batch_operations(ep)
                 except Exception:
                     pass
-            for ep in endpoints[:1]:
+            for ep in [e for e in eligible if (e.get('method') or 'GET').upper()=='GET'][:1]:
                 try:
                     self._test_computational_complexity(ep)
                     self._test_rate_limiting(ep)
@@ -280,7 +306,7 @@ class ResourceConsumptionAuditor:
         # Detect endpoints vulnerable to bulk data theft: large records + no
         # pagination + rapid repeatable queries.  Based on Mitiga/UNC6040 TTPs.
         try:
-            self._test_data_exfiltration_risk(endpoints)
+            self._test_data_exfiltration_risk(eligible)
         except Exception:
             pass
 
@@ -378,6 +404,7 @@ class ResourceConsumptionAuditor:
     #================funtion _test_large_payloads _test_large_payloads =============
     def _test_large_payloads(self, endpoint: Dict[str, Any]) -> None:
         method = (endpoint.get('method', 'GET') or 'GET').upper()
+        if 'limit' not in (endpoint.get('params') or {}): return
         test_cases = [('small', {'limit': 10}, 'Low'), ('medium', {'limit': 1000}, 'Low'), ('large', {'limit': 10000}, 'Medium'), ('huge', {'limit': 100000}, 'High'), ('massive', {'limit': 1000000}, 'High')]
         it = tqdm(test_cases, desc='Testing payload sizes', leave=False) if self.show_progress else test_cases
         for size_name, params, sev in it:
@@ -424,6 +451,8 @@ class ResourceConsumptionAuditor:
         it = tqdm(queries, desc='Testing complex queries', leave=False) if self.show_progress else queries
         for q in it:
             sev = q.pop('severity')
+            q = {key:value for key,value in q.items() if key in (endpoint.get('params') or {})}
+            if not q: continue
             try:
                 start = time.time()
                 resp = self.session.request((endpoint.get('method', 'GET') or 'GET').upper(), self._build_url(endpoint['url']), params=q, timeout=35)
@@ -450,14 +479,17 @@ class ResourceConsumptionAuditor:
         if self.show_progress:
             pbar = tqdm(total=30, desc='Rate limit test', unit='s')
         last_sec = 0
-        while time.time() - start_time < 30:
+        while time.time() - start_time < float(self.thresholds.get('rate_probe_seconds',5)) and request_count < int(self.thresholds.get('rate_probe_requests',20)):
             try:
                 last_resp = self.session.request((endpoint.get('method', 'GET') or 'GET').upper(), self._build_url(endpoint['url']), timeout=5)
                 request_count += 1
+                if last_resp.status_code in (400,401,403,404,405,415,422,429): break
                 if last_resp.status_code == 200:
                     successes += 1
             except requests.RequestException:
                 last_resp = None
+                break
+            time.sleep(float(self.thresholds.get('rate_probe_interval',0.1)))
             if self.show_progress:
                 sec = int(time.time() - start_time)
                 if sec > last_sec:
@@ -468,7 +500,7 @@ class ResourceConsumptionAuditor:
         elapsed = time.time() - start_time
         rpm = successes / elapsed * 60 if elapsed > 0 else 0.0
         if rpm > limit:
-            self._log_issue(endpoint['url'], 'Missing Rate Limiting', f'~{rpm:.1f} req/min (no throttling)', 'High', {'method': endpoint.get('method', 'GET'), 'sent': request_count, 'successes': successes, 'rpm': rpm, 'status_code': getattr(last_resp, 'status_code', 0) if last_resp else 0})
+            self._log_issue(endpoint['url'], 'Rate Limit Observation', f'Observation: ~{rpm:.1f} req/min accepted during this probe; configured limit and impact unknown', 'Info', {'method': endpoint.get('method', 'GET'), 'sent': request_count, 'successes': successes, 'rpm': rpm, 'status_code': getattr(last_resp, 'status_code', 0) if last_resp else 0})
 
     #================funtion _analyze_batch_response _analyze_batch_response =============
     def _analyze_batch_response(self, endpoint: Dict[str, Any], size: int, resp: requests.Response, rt: float) -> None:
@@ -490,28 +522,17 @@ class ResourceConsumptionAuditor:
         method = (endpoint.get('method', 'GET') or 'GET').upper()
         if method not in ('POST', 'PUT', 'PATCH'):
             return
-        base_payload = endpoint.get('json', {'items': [{'id': 1, 'name': 'Test User', 'email': 'test@example.com'}]})
-        items_template = base_payload.get('items')
-        if not items_template or not isinstance(items_template, list) or len(items_template) == 0:
-            return
-        patterns = [('duplicate_ids', lambda i: {'id': 1}, 'Medium'), ('null_values', lambda i: {'id': i, 'value': None}, 'Low'), ('sql_injection', lambda i: {'id': i, 'filter': f"' OR 1=1 -- {i}"}, 'Critical')]
-        sizes = self.thresholds.get('batch_sizes', [10, 50, 100])
-        for size in tqdm(sizes, desc='Testing batch sizes', leave=False) if self.show_progress else sizes:
-            try:
-                payload = {'items': []}
-                for i in range(size):
-                    item = dict(items_template[0])
-                    item.update({'id': i, 'email': f'user{i}@example.com'})
-                    payload['items'].append(item)
-                self._execute_batch_request(endpoint, size, method, payload, 'normal', 'Medium')
-            except Exception as exc:
-                self._log_issue(endpoint['url'], 'Batch Request Failure', str(exc), 'High', {'batch_size': size, 'status_code': 0})
-            for pattern_name, gen, sev in tqdm(patterns, desc='Testing malicious patterns', leave=False) if self.show_progress else patterns:
-                try:
-                    payload = {'items': [gen(i) for i in range(size)]}
-                    self._execute_batch_request(endpoint, size, method, payload, pattern_name, sev)
-                except Exception:
-                    continue
+        from copy import deepcopy
+        base_payload = endpoint.get('json')
+        if not isinstance(base_payload,dict): return
+        array_key = next((key for key,value in base_payload.items() if isinstance(value,list) and value),None)
+        if array_key is None: return
+        template = base_payload[array_key][0]
+        for size in self.thresholds.get('batch_sizes',[10,50,100]):
+            payload = deepcopy(base_payload)
+            payload[array_key] = [deepcopy(template) for _ in range(size)]
+            try: self._execute_batch_request(endpoint,size,method,payload,'schema-array','Info')
+            except requests.RequestException: return
 
     #================funtion _execute_batch_request _execute_batch_request =============
     def _execute_batch_request(self, endpoint: Dict[str, Any], size: int, method: str, payload: Dict[str, Any], pattern_name: str, severity: str) -> None:
@@ -554,7 +575,7 @@ class ResourceConsumptionAuditor:
         # Quick probe — skip endpoints that don't exist
         try:
             probe = self.session.request(method, url, timeout=5)
-            if probe.status_code in (401, 403, 404, 405, 0):
+            if not 200 <= probe.status_code < 300:
                 return  # endpoint doesn't exist or requires auth
         except Exception:
             return  # can't reach endpoint, skip
@@ -593,7 +614,7 @@ class ResourceConsumptionAuditor:
         # When ALL requests fail (errors+timeouts=total), we overloaded the server
         # ourselves — this is self-DoS, not a vulnerability. Downgrade to Info.
         if timeouts + errors >= total:
-            self._log_issue(endpoint['url'], 'Concurrent Request Timeouts', f'{timeouts}/{total} timed out, {errors} errors (self-induced)', 'Info', {'method': method, 'total_requests': total, 'timeouts': timeouts, 'errors': errors, 'successes': successes})
+            self._log_issue(endpoint['url'], 'Concurrent Request Timeouts', f'{timeouts}/{total} timed out, {errors} errors; cause unverified', 'Info', {'method': method, 'total_requests': total, 'timeouts': timeouts, 'errors': errors, 'successes': successes})
         elif timeouts > total * 0.5:
             self._log_issue(endpoint['url'], 'Concurrent Request Timeouts', f'{timeouts}/{total} timed out', 'High', {'method': method, 'total_requests': total, 'timeouts': timeouts, 'errors': errors, 'successes': successes})
         elif timeouts > total * 0.2:

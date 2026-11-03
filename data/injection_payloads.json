@@ -517,4 +517,8 @@
     "query { __typename }",
     "query { __schema { types { name kind } } }"
   ]
+,
+  "jwt_payloads": ["eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWUsImlhdCI6MTUxNjIzOTAyMn0", "eyJ0eXAiOiJKV1QiLCJhbGciOiJub25lIn0.eyJzdWIiOiIxMjM0NTY7ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWUsImlhdCI6MTUxNjIzOTAyMn0.", "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWUsImlhdCI6MTUxNjIzOTAyMn0"],
+  "jwt_weak_secrets": ["secret", "password", "changeme", "secretkey", "key", "123456", "1234567890", "jwtsecret", "supersecret", "test"],
+  "jwt_kid_payloads": ["../../../../etc/passwd", "../../../../dev/null", "key1' UNION SELECT 'secret'--"]
 }

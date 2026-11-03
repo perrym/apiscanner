@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.venv-test/
+.pytest_cache/
+
+# Scan output: can contain data from scanned targets
+audit_*/
+log/
+*.db
+
+# Local test suite and archives, kept out of the public repo
+tests/
+run_tests.ps1
+run_tests.sh
+pytest.ini
+*.zip

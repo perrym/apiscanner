@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2026  #
-# version 5.0 24-06-2026                               #
+# version 5.5 24-06-2026                               #
 ########################################################
 import argparse
 import json
@@ -17,6 +17,7 @@ from urllib.parse import urljoin, urlparse, parse_qs
 import requests
 import logging
 import threading
+from javascript_requests import extract_requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
 from requests.auth import HTTPBasicAuth
@@ -43,6 +44,7 @@ API_CT_HINTS = JSON_CT_HINTS + (
 class UltimateSwaggerGenerator:
     #================funtion __init__ initialize generator, session and swagger skeleton ##########
     def __init__(self, base_url: str, delay: float = 0.0, aggressive: bool = False, insecure: bool = False):
+        self.document_url = base_url
         self.base_url = base_url.rstrip('/')
         self.session = requests.Session()
         self.session.verify = not insecure
@@ -75,6 +77,9 @@ class UltimateSwaggerGenerator:
             }
         }
         self.visited: Set[str] = set()
+        self.max_pages = 500
+        self.max_header_checks = 100
+        self._pages_crawled = 0
         self.lock = threading.Lock()
         self.api_patterns = [
             r'(?i)/api/',
@@ -260,7 +265,7 @@ class UltimateSwaggerGenerator:
             retry_after = response.headers.get('Retry-After')
             if retry_after:
                 try:
-                    time.sleep(int(retry_after))
+                    time.sleep(min(int(retry_after), 30))
                 except Exception:
                     time.sleep(5)
             return True
@@ -281,8 +286,9 @@ class UltimateSwaggerGenerator:
     def _should_crawl(self, url: str) -> bool:
         if not self._same_host(url):
             return False
-        if url.startswith(('mailto:', 'tel:', 'javascript:')):
+        if url.startswith(('mailto:', 'tel:', 'javascript:')) or '/cdn-cgi/' in url:
             return False
+        url = url.split('#', 1)[0]
         skip_exts = ['.jpg', '.png', '.css', '.pdf', '.ico', '.svg']
                                                             
         if not self.aggressive:
@@ -296,13 +302,30 @@ class UltimateSwaggerGenerator:
     def _crawl_page(self, url: str, depth: int):
         if depth < 0:
             return
+        url = url.split('#', 1)[0]
         if not self._mark_visited(url):
             return
+        with self.lock:
+            if self._pages_crawled >= self.max_pages:
+                return
+            self._pages_crawled += 1
 
         try:
             print(f"[*] Crawling ({depth}): {url}")
             response = self._make_request('GET', url, timeout=10)
             content_type = response.headers.get('Content-Type', '')
+            # JavaScript resources must be parsed as code, including modulepreload chunks.
+            if 'javascript' in content_type.lower() or urlparse(url).path.lower().endswith(('.js', '.mjs')):
+                if response.status_code == 200:
+                    self._find_js_apis(response.text, url)
+                    self._find_websockets(response.text, url)
+                    self._find_graphql(response.text, url)
+                    if depth > 0:
+                        for match in re.finditer(r"(?:from\s*|import\s*\(\s*)[\"']([^\"']+\.m?js(?:\?[^\"']*)?)[\"']", response.text):
+                            child = urljoin(url, match.group(1))
+                            if self._should_crawl(child):
+                                self._crawl_page(child, depth - 1)
+                return
 
             if 'text/html' in content_type or (self.aggressive and 'text/' in content_type):
                 soup = BeautifulSoup(response.text, 'html.parser')
@@ -338,11 +361,7 @@ class UltimateSwaggerGenerator:
                         if not self._same_host(script_url):
                             continue
                         try:
-                            script_response = self._make_request('GET', script_url, timeout=5)
-                            if script_response.status_code == 200:
-                                self._find_js_apis(script_response.text, script_url)
-                                self._find_websockets(script_response.text, script_url)
-                                self._find_graphql(script_response.text, script_url)
+                            self._crawl_page(script_url, depth - 1)
                         except Exception as e:
                             print(f"[!] Error fetching JS: {script_url} - {str(e)}")
 
@@ -376,17 +395,33 @@ class UltimateSwaggerGenerator:
             ('X-Requested-With', 'XMLHttpRequest'),
             ('Content-Type', 'application/json')
         ]
-        print("[*] Aggressive: checking headers...")
+        # One probe per path shape: pages that differ only by query string or ID add no information.
+        seen_shapes = set()
+        urls = []
         for url in list(self.visited):
-            for header, value in headers_to_check:
-                try:
-                    headers = {header: value}
-                    resp = self._make_request('GET', url, headers=headers, timeout=5 )
-                    if resp.status_code == 200 and self._is_json_like(resp):
-                        print(f"[+] API found with header {header}: {value} - {url}")
-                        self._process_api_response(url, resp)
-                except Exception as e:
-                    print(f"[!] Header check error {url} {header}: {str(e)}")
+            shape = self._normalise_path(url)
+            if shape in seen_shapes:
+                continue
+            seen_shapes.add(shape)
+            urls.append(url)
+            if len(urls) >= self.max_header_checks:
+                break
+        print(f"[*] Aggressive: checking headers on {len(urls)} unique paths...")
+
+        def check(url, header, value):
+            try:
+                resp = self._make_request('GET', url.split('?', 1)[0], headers={header: value}, timeout=5)
+                if resp.status_code == 200 and self._is_json_like(resp):
+                    print(f"[+] API found with header {header}: {value} - {url}")
+                    self._process_api_response(url, resp)
+            except Exception as e:
+                print(f"[!] Header check error {url} {header}: {str(e)}")
+
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [executor.submit(check, url, h, v) for url in urls for h, v in headers_to_check]
+            for done, _ in enumerate(as_completed(futures), 1):
+                if done % 50 == 0:
+                    print(f"[*] Header checks: {done}/{len(futures)}")
 
     #================funtion _bruteforce_common_endpoints probe a list of common API endpoints ##########
     def _bruteforce_common_endpoints(self):
@@ -464,6 +499,11 @@ class UltimateSwaggerGenerator:
 
     #================funtion _looks_like_api decide if response smells like API ##########
     def _looks_like_api(self, response: requests.Response) -> bool:
+        # Website, login and WAF pages are not API evidence, even with API headers.
+        ct = response.headers.get("Content-Type", "").lower()
+        body = (getattr(response, "text", "") or "").lstrip()[:512].lower()
+        if 'html' in ct or body.startswith(('<!doctype html', '<html')):
+            return False
         if self._is_api_response(response) or self._is_json_like(response):
             return True
         headers = {k.lower(): v for k, v in response.headers.items()}
@@ -507,8 +547,7 @@ class UltimateSwaggerGenerator:
                                           
         methods.add("get")
                                 
-        if self.aggressive:
-            methods.update(["post", "put", "patch", "delete"])
+        # Aggressive crawling must not invent unsupported HTTP methods.
         return sorted(methods)
 
     #================funtion _process_possible_api inspect URL and add to swagger ##########
@@ -596,7 +635,7 @@ class UltimateSwaggerGenerator:
 
         # Query parameters
         query_params = []
-        for name, values in parse_qs(parsed.query).items():
+        for name, values in parse_qs(parsed.query, keep_blank_values=True).items():
             query_params.append({
                 "name": name,
                 "in": "query",
@@ -781,24 +820,86 @@ class UltimateSwaggerGenerator:
     #================funtion _find_js_apis extract API URLs from JS ##########
     def _find_js_apis(self, js_code: str, base_url: str):
                                                                     
-        patterns = [
-            (r'fetch\(["\'](.*?)["\']', 1),
-            (r'axios\.(get|post|put|delete|patch)\(["\'](.*?)["\']', 2),
-            (r'\.(get|post|put|delete|patch)\(["\'](.*?)["\']', 2),
-            (r'api(?:Url|Base|Endpoint)\s*[:=]\s*["\'](.*?)["\']', 1),
-            (r'new\s+XMLHttpRequest\(\)[^;]+\.open\(["\'](?:GET|POST|PUT|DELETE|PATCH)["\'],\s*["\']([^"\']+)["\']', 1),
-            (r'endpoint\s*[:=]\s*["\'](.*?)["\']', 1),
-            (r'url\s*[:=]\s*["\'](.*?)["\']', 1),
-        ]
-        for pat, group_idx in patterns:
-            for m in re.finditer(pat, js_code, re.DOTALL | re.IGNORECASE):
-                path = (m.group(group_idx) or "").strip()
-                if not path or '%s' in path or '{' in path or '}' in path:
-                    continue
-                api_url = urljoin(base_url, path)
-                if self._should_inspect(api_url):
-                    print(f"[+] JS API found: {api_url}")
-                    self._process_possible_api(api_url)
+        requests_found = extract_requests(js_code, include_unresolved=True)
+        write_urls = set()
+        read_urls = set()
+        for hint in requests_found:
+            if not hint['url']:
+                gaps = self.swagger.setdefault('x-discovery-gaps', [])
+                gap = {'script': urlparse(base_url).path, 'method': hint['method'], 'reason': hint['reason']}
+                if gap not in gaps and len(gaps) < 100:
+                    gaps.append(gap)
+                continue
+            # Browser HTTP calls resolve relative to the document, not the JS asset directory.
+            api_url = urljoin(self.document_url, hint['url'])
+            if not self._same_host(api_url):
+                continue
+            if hint['method'] in ('get','head','options'):
+                read_urls.add(api_url)
+                self._process_possible_api(api_url)
+                path = self._normalise_path(api_url)
+                op = self.swagger['paths'].get(path, {}).get(hint['method'])
+                if op is not None:
+                    self._merge_js_context(op, hint)
+                continue
+            write_urls.add(api_url)
+            path = self._normalise_path(api_url)
+            op = {'summary':'Static JavaScript request; server behavior unverified',
+                  'x-discovery-source':'javascript-request',
+                  'x-discovery-state':'unverified',
+                  'responses':{'default':{'description':'No write request sent during discovery'}}}
+            if hint.get('body_schema') and hint.get('content_type'):
+                op['requestBody']={'required':True,'content':{hint['content_type']:{
+                    'schema':hint['body_schema']}}}
+            if hint.get('requires_body') or not hint.get('body_schema'):
+                op['x-requires-request-data']=True
+            existing = self.swagger['paths'].setdefault(path,{}).setdefault(hint['method'],op)
+            if 'requestBody' in op:
+                existing.setdefault('requestBody',op['requestBody'])
+            self._merge_js_context(existing,hint)
+            print(f"[+] JS request inventoried: {hint['method'].upper()} {path} (unverified)")
+
+        # Static strings only: never execute JavaScript or guess dynamic object IDs.
+        # Generic API path literals also cover base-variable concatenation in bundles.
+        literals = re.finditer(r"([\"'`])([^\"'`\n\r]+)\1", js_code)
+        candidates = set()
+        for match in literals:
+            path = match.group(2).strip().replace(r'\/', '/')
+            if '${' in path or '{' in path or '}' in path or '%s' in path:
+                continue
+            if not path.startswith(('/', 'http://', 'https://')):
+                continue
+            api_url = urljoin(base_url, path)
+            direct_call = re.search(r'(?:fetch|\.(?:get|post|put|patch|delete))\s*\(\s*$', js_code[max(0, match.start()-80):match.start()])
+            if not (self._is_api_endpoint(api_url) or direct_call) or not self._should_inspect(api_url):
+                continue
+            # A trailing path slash before concatenation usually lacks an object ID.
+            tail = js_code[match.end():match.end()+30].lstrip()
+            if tail.startswith('+') and path.endswith('/') and '?' not in path:
+                continue
+            if api_url not in write_urls and api_url not in read_urls:
+                candidates.add(api_url)
+        for api_url in sorted(candidates):
+            print(f"[+] JS API candidate: {api_url}")
+            self._process_possible_api(api_url)
+
+    def _merge_js_context(self, operation, hint):
+        if hint.get('body_schema') and hint.get('content_type'):
+            content=operation.setdefault('requestBody',{'required':True,'content':{}})['content']
+            media=content.setdefault(hint['content_type'],{'schema':hint['body_schema']})
+            if media['schema'].get('type')=='object' and hint['body_schema'].get('type')=='object':
+                properties=media['schema'].setdefault('properties',{})
+                for name,schema in hint['body_schema'].get('properties',{}).items():
+                    properties.setdefault(name,schema)
+        parameters = operation.setdefault('parameters', [])
+        existing = {(p.get('in'),p.get('name')) for p in parameters}
+        for name, schema in hint.get('query_parameters', {}).items():
+            if ('query',name) not in existing:
+                parameters.append({'name':name,'in':'query','schema':schema})
+        if hint.get('header_names'):
+            # Keep names only. Static JS credentials are never turned into request defaults.
+            names=operation.setdefault('x-discovered-header-names', [])
+            names.extend(name for name in hint['header_names'] if name not in names)
 
     #================funtion _find_websockets extract websocket endpoints from code ##########
     def _find_websockets(self, text: str, base_url: str):
@@ -863,7 +964,8 @@ class UltimateSwaggerGenerator:
                         break
                 if any_jsonish:
                     break
-            if not any_jsonish:
+            js_write = any(isinstance(op,dict) and op.get('x-discovery-source')=='javascript-request' for op in ops.values())
+            if not any_jsonish and not js_write:
                 bad.append(path)
         for p in bad:
             del self.swagger["paths"][p]

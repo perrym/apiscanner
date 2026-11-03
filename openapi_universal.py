@@ -2,7 +2,7 @@
 # APISCAN - API Security Scanner                       #
 # Licensed under the AGPL-v3.0                         #
 # Author: Perry Mertens pamsniffer@gmail.com (C) 2026  #
-# version 5.0 24-06-2026                               #
+# version 5.5 24-06-2026                               #
 ########################################################
                                                     
 from __future__ import annotations
@@ -74,7 +74,7 @@ def _iter_path_items(spec: Dict[str, Any]) -> Iterable[Tuple[str, Dict[str, Any]
 def _merge_parameters(path_level: List[Dict[str, Any]], op_level: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     merged: List[Dict[str, Any]] = []
     seen = set()
-    for src in (path_level or []) + (op_level or []):
+    for src in (op_level or []) + (path_level or []):
         name = src.get("name")
         loc = src.get("in")
         key = (name, loc)
@@ -123,9 +123,11 @@ def iter_operations(spec: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
                 continue
             raw = op if isinstance(op, dict) else {}
             op_params = _coerce_list(raw.get("parameters"))
-            merged_params = _merge_parameters(path_params, op_params)
+            merged_params = _merge_parameters([_resolve_ref(spec, p['$ref']) if '$ref' in p else p for p in path_params], [_resolve_ref(spec, p['$ref']) if '$ref' in p else p for p in op_params])
             if "requestBody" in raw:
                 request_body = raw.get("requestBody")
+                if isinstance(request_body, dict) and "$ref" in request_body:
+                    request_body = _resolve_ref(spec, request_body["$ref"])
             else:
                 request_body = _swagger2_request_body_from_params(merged_params)
             yield {
@@ -148,6 +150,10 @@ def _example_for_type(t: str, fmt: str = "") -> Any:
     if t == "string":
         if fmt == "date-time":
             return datetime.now().isoformat()
+        if fmt in ("uri", "url", "uri-reference"):
+            return "https://example.invalid/resource"
+        if fmt == "uuid":
+            return "00000000-0000-4000-8000-000000000001"
         if fmt == "email":
             return "test@example.com"
         return "test"
@@ -165,62 +171,44 @@ def _example_for_type(t: str, fmt: str = "") -> Any:
 
 
 #================funtion _resolve_ref resolve a $ref pointer within the spec ##########
-def _resolve_ref(spec: Dict[str, Any], ref: str) -> Dict[str, Any]:
-    """Follow a JSON $ref like '#/components/schemas/Order' and return the target schema."""
-    if not ref or not ref.startswith("#/"):
-        return {}
-    parts = ref[2:].split("/")
-    node = spec
-    for part in parts:
-        part = part.replace("~1", "/").replace("~0", "~")
-        if isinstance(node, dict):
-            node = node.get(part)
-        else:
-            return {}
-        if node is None:
-            return {}
-    if isinstance(node, dict):
-        # Resolve chained $ref
-        if "$ref" in node:
-            return _resolve_ref(spec, node["$ref"])
-        return node
+def _resolve_ref(spec, ref):
+    seen = set()
+    while isinstance(ref, str) and ref.startswith('#/') and ref not in seen and len(seen) < 16:
+        seen.add(ref)
+        node = spec
+        for part in ref[2:].split('/'):
+            node = node.get(part.replace('~1', '/').replace('~0', '~')) if isinstance(node, dict) else None
+        if not isinstance(node, dict): return {}
+        if '$ref' not in node: return node
+        ref = node['$ref']
     return {}
 
 
-#================funtion _body_from_schema produce example body from JSON schema ##########
-def _body_from_schema(schema: Dict[str, Any], spec: Optional[Dict[str, Any]] = None) -> Any:
-    if not isinstance(schema, dict):
-        return {}
-    # Resolve $ref before anything else (with circular-ref guard via simple recursion depth)
-    if "$ref" in schema and spec:
-        resolved = _resolve_ref(spec, schema["$ref"])
-        if resolved:
-            return _body_from_schema(resolved, spec)
-    if "example" in schema:
-        return schema["example"]
-    t = schema.get("type")
-    if t == "object" or ("properties" in schema and not t):
+def _body_from_schema(schema, spec=None, _depth=0):
+    from copy import deepcopy
+    if not isinstance(schema, dict) or _depth >= 8: return {}
+    if '$ref' in schema:
+        schema = dict(_resolve_ref(spec or {}, schema['$ref']), **{k:v for k,v in schema.items() if k != '$ref'})
+    for key in ('example', 'default'):
+        if key in schema: return deepcopy(schema[key])
+    if schema.get('enum'): return deepcopy(schema['enum'][0])
+    if schema.get('allOf'):
         out = {}
-        props = schema.get("properties", {}) or {}
-        reqd = set(schema.get("required", []) or [])
-        for name, ps in props.items():
-            pt = ps.get("type", "string")
-            pf = ps.get("format", "")
-            if "example" in ps:
-                out[name] = ps["example"]
-            elif "enum" in ps and isinstance(ps["enum"], list) and ps["enum"]:
-                out[name] = ps["enum"][0]
-            else:
-                out[name] = _example_for_type(pt, pf)
-        for name in reqd:
-            out.setdefault(name, "test")
+        for item in schema['allOf']:
+            value = _body_from_schema(item, spec, _depth+1)
+            if isinstance(value, dict): out.update(value)
         return out
-    if t == "array":
-        item_schema = schema.get("items", {}) or {}
-        return [_body_from_schema(item_schema, spec)]
-    return _example_for_type(t or "string", schema.get("format", ""))
+    for key in ('oneOf', 'anyOf'):
+        if schema.get(key): return _body_from_schema(schema[key][0], spec, _depth+1)
+    t = schema.get('type')
+    if t == 'object' or 'properties' in schema:
+        return {name:_body_from_schema(prop, spec, _depth+1)
+                for name,prop in (schema.get('properties') or {}).items() if not prop.get('readOnly')}
+    if t == 'array': return [_body_from_schema(schema.get('items', {}), spec, _depth+1)]
+    if t in ('integer', 'number'):
+        return max(schema.get('minimum', 1), 1) if t == 'integer' else max(schema.get('minimum', 1.0), 1.0)
+    return _example_for_type(t or 'string', schema.get('format', ''))
 
-                                                                             
 #================funtion build_request construct HTTP request dict from operation ##########
 def build_request(spec: dict, base_url: str | None, op: dict, cfg: "SecurityConfig | None" = None) -> dict:
     base = (base_url or _infer_base_url_from_spec(spec) or "").strip().rstrip("/")
@@ -264,6 +252,13 @@ def build_request(spec: dict, base_url: str | None, op: dict, cfg: "SecurityConf
             continue
 
         val = _pick_example(p)
+        if loc == 'path' and name in getattr(spec, 'path_parameter_values', {}):
+            val = spec.path_parameter_values[name]
+        if loc == 'path' and name not in getattr(spec, 'path_parameter_values', {}) and 'example' not in p and not any(k in (p.get('schema') or p) for k in ('example','default','enum')) and (p.get('schema') or p).get('type','string') == 'string' and (p.get('schema') or p).get('format') != 'uuid':
+            raise ValueError('Unresolved path parameter: '+name+'; supply --ids-file')
+        if loc == 'path' and val is not None:
+            from urllib.parse import quote
+            val = quote(str(val), safe='')
 
                                                   
         if isinstance(val, bool):
@@ -305,7 +300,7 @@ def build_request(spec: dict, base_url: str | None, op: dict, cfg: "SecurityConf
                                                            
         if "application/json" in content:
             schema = content["application/json"].get("schema") or {}
-            json_body = _body_from_schema(schema, spec)
+            json_body = content["application/json"].get("example", _body_from_schema(schema, spec))
         elif "application/x-www-form-urlencoded" in content:
             schema = content["application/x-www-form-urlencoded"].get("schema") or {}
             form = _body_from_schema(schema, spec)
@@ -357,7 +352,13 @@ def build_request(spec: dict, base_url: str | None, op: dict, cfg: "SecurityConf
         except Exception:
             pass
 
-    return req
+    from copy import deepcopy
+    op = deepcopy(op)
+    for media in (op.get('requestBody') or {}).get('content', {}).values():
+        if isinstance(media, dict) and '$ref' in (media.get('schema') or {}):
+            media['schema'] = _resolve_ref(spec, media['schema']['$ref'])
+    from api10_support import prepare_sql_request
+    return prepare_sql_request(req, op, getattr(spec, 'request_data', {}), 'fixture')
 
 
                                                                               

@@ -88,7 +88,7 @@ Defaults:
 - `APISCAN_API10_QUICK_REDIRECT_MAX_TESTS=6`
 - `APISCAN_RATE_LIMIT=0`
 
-| Mode | Endpoints | Tests/endpoint | Totaal | Tijd |
+| Mode | Endpoints | Tests/endpoint | Total | Time |
 |---|---|---|---|---|
 | Quick (default) | 30 | ~15 | ~450 | ~3-5 min |
 | Deep scan | 15 | ~26 | ~390 | ~25-35 min |

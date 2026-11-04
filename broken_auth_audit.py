@@ -46,6 +46,55 @@ def _looks_like_html_page(text: str, content_type: str = "") -> bool:
     t = (text or "").lstrip().lower()
     return t.startswith(("<!doctype html", "<html", "<head", "<body"))
 
+
+_PW_KEY = re.compile(r'(password|passwd|pwd)', re.I)
+_WEAK_VALUE = re.compile(r'^\$(?:1|5|6|apr1|P|H|md5|sha1|sha256|sha512|sha2)\$|^(?:[a-f0-9]{32}|[a-f0-9]{40}|[a-f0-9]{64})$', re.I)
+_STRONG_VALUE = re.compile(r'^\$(?:2[aby]|argon2(?:id|i|d))\$', re.I)
+
+
+def _credential_value_kind(value) -> Optional[str]:
+    v = str(value).strip()
+    if len(v) < 4:
+        return None
+    if set(v) <= set('*\u2022#xX.-'):
+        return 'masked'
+    if _STRONG_VALUE.match(v):
+        return 'strong'
+    if _WEAK_VALUE.match(v):
+        return 'weak'
+    return None
+
+
+def classify_password_values(text: str) -> Dict[str, List[str]]:
+    """Classify values of password-named fields: weak, strong or masked. Other fields are ignored."""
+    found: Dict[str, set] = {}
+
+    def add(key, value):
+        kind = _credential_value_kind(value)
+        if kind:
+            found.setdefault(kind, set()).add(str(key))
+    try:
+        data = json.loads(text or '')
+    except ValueError:
+        data = None
+    if data is not None:
+        stack = [data]
+        while stack:
+            cur = stack.pop()
+            if isinstance(cur, dict):
+                for k, v in cur.items():
+                    if isinstance(v, (dict, list)):
+                        stack.append(v)
+                    elif isinstance(v, str) and _PW_KEY.search(str(k)):
+                        add(k, v)
+            elif isinstance(cur, list):
+                stack.extend(cur)
+    else:
+        for m in re.finditer(r'["\']?([A-Za-z_]*(?:password|passwd|pwd)[A-Za-z_]*)["\']?\s*[:=]\s*["\']?([^"\'\s,;}&<]+)', text or '', re.I):
+            add(m.group(1), m.group(2))
+    return {k: sorted(v) for k, v in found.items()}
+
+
 class AuthAuditor:
 
     #================funtion __init__ __init__ =============
@@ -636,13 +685,8 @@ class AuthAuditor:
     def _test_password_hash_strength(self, endpoints: List[Dict[str, Any]]) -> None:
         if not endpoints:
             return
-        # Detect weak hashing: MD5/SHA1/SHA256/SHA512 crypt prefixes, plain hex hashes,
-        # and unsalted legacy formats.  Bcrypt ($2a/$2b/$2y) and Argon2 are strong.
-        weak_re = re.compile(
-            r'^\$(?:1|5|6|apr1|P|H|md5|sha1|sha256|sha512|sha2)\$|'  # weak crypt prefixes
-            r'\b(?:[a-f0-9]{32}|[a-f0-9]{40}|[a-f0-9]{64})\b',       # plain MD5/SHA1/SHA256 hex
-            re.I,
-        )
+        # Only values of password-named fields are judged: weak crypt prefixes and plain
+        # MD5/SHA1/SHA256 hex are High, bcrypt/Argon2 are ignored, masked values are an observation.
         get_eps = [ep for ep in endpoints if ep.get('method', '').upper() == 'GET']
         it = tqdm(get_eps, desc='password-hash GETs', unit='endpoint', leave=False) if self.show_progress else get_eps
         for ep in it:
@@ -657,8 +701,13 @@ class AuthAuditor:
                     continue
                 if _looks_like_html_page(r.text or '', r.headers.get('Content-Type', '')):
                     continue
-                if weak_re.search(r.text or ''):
-                    self._log_issue(url, 'Potential password hash exposure or weak hash presence in response', 'High', response_obj=r)
+                kinds = classify_password_values(r.text or '')
+                if 'weak' in kinds:
+                    self._log_issue(url, 'Potential password hash exposure or weak hash presence in response (field: '
+                                    + ', '.join(kinds['weak'][:5]) + ')', 'High', response_obj=r)
+                elif 'masked' in kinds:
+                    self._log_issue(url, 'Observation: password field returned masked (' + ', '.join(kinds['masked'][:5])
+                                    + '); no hash value exposed in this response', 'Info', response_obj=r)
             except requests.RequestException:
                 continue
 

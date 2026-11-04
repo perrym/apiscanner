@@ -1,6 +1,7 @@
 """Shared request validation, evidence classification and scan coverage."""
 import json
 import re
+import severity_rules
 from collections import Counter
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit, quote
@@ -153,6 +154,7 @@ def export_scan(items, out_dir, run_id=None):
         item['reported_severity'] = item.get('severity')
         if override:
             item['severity'] = override
+        severity_rules.apply(item)
         findings.append(item)
     coverage = [json.loads(p.read_text(encoding='utf-8'))
                 for p in sorted((out_dir / 'log').glob('coverage_*.json'))]

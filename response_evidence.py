@@ -22,6 +22,17 @@ def baseline_problem(status):
     return 'Server error or unsuitable baseline'
 
 
+def baseline_hint(status, authenticated=False):
+    """(reason, next_action) for an unsuitable baseline. With authentication configured, a
+    401/403 usually means the request input was rejected (IDs, ownership, captcha), not that
+    credentials are missing."""
+    if authenticated and status in (401, 403):
+        return ('Rejected despite configured authentication',
+                'Authentication is configured; check operation input (IDs, ownership, captcha) '
+                'with --api10-data-file, or the permissions of the account')
+    return None, None
+
+
 def redact_cli_args(arguments):
     sensitive = {'--token','--apikey','--basic-auth','--ntlm','--client-secret',
                  '--client-cert-password','--cert-password','--login-password','--form-login-data','--header'}

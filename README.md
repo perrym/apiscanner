@@ -144,6 +144,25 @@ python apiscan.py --url https://api.example.com --swagger openapi.json --flow no
 python apiscan.py --url https://api.example.com --swagger openapi.json --flow client --client-id "<ID>" --client-secret "<SECRET>" --token-url "https://idp/token"
 ```
 
+### OAuth2 with Microsoft Entra ID
+Client credentials (service to service). Use a dedicated app registration with an app role on the API and admin consent.
+```
+python apiscan.py --url https://api.example.com --swagger openapi.json --flow client \
+  --client-id "<client-id>" --client-secret "$CLIENT_SECRET" \
+  --token-url "https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token" \
+  --scope "api://<api-app-id>/.default"
+```
+Authorization code (a user signs in through the browser). Register `http://localhost:8765/callback` as a redirect URI for the platform "Web"; the app needs a client secret.
+```
+python apiscan.py --url https://api.example.com --swagger openapi.json --flow auth \
+  --client-id "<client-id>" --client-secret "$CLIENT_SECRET" \
+  --auth-url "https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/authorize" \
+  --token-url "https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token" \
+  --redirect-uri "http://localhost:8765/callback" \
+  --scope "api://<api-app-id>/<scope-name>"
+```
+Limits: no PKCE (a public client or SPA registration cannot be used), no token refresh (an Entra token lasts about an hour, so split long scans), and no `audience` or `resource` parameter. If a flow does not fit, obtain a token elsewhere and use `--flow token --token "<ACCESS_TOKEN>"`. Keep the client secret in an environment variable, not in the command line.
+
 ### Proxy / Burp
 ```
 python apiscan.py --url https://api.example.com --swagger openapi.json --flow token --token "<TOKEN>" --proxy 127.0.0.1:8080 --insecure
@@ -166,6 +185,47 @@ python apiscan.py --url https://api.example.com --swagger openapi.json --plan-on
 ```
 --ids-file ids.json
 ```
+
+### Request data files
+Endpoints with a request body need valid input; without it they stay `untested`. `api10_sql_coverage.json` lists them. Put valid bodies in a JSON file and pass it with `--request-data-file` (all modules) or `--api10-data-file` (API10 only):
+```json
+{
+  "POST /api/users": {
+    "json": { "email": "audit-{{unique}}@example.com", "password": "TestPassword1!" }
+  },
+  "POST /api/basket/items": {
+    "json": { "basketId": "{{login.basket.id}}", "productId": 1, "quantity": 1 }
+  },
+  "PUT /api/products/{id}/reviews": {
+    "json": { "message": "audit test" }
+  }
+}
+```
+Keys are `METHOD /path`; parameter names in braces are interchangeable (`{id}` also matches a crawled `{e}`). A key for a route that is not in the specification stops the scan at startup. Allowed fields per entry: `json`, `data`, `params`, `headers`, `files`.
+
+Placeholders, expanded for every request:
+- `{{unique}}`, `{{uuid}}`, `{{timestamp}}`, `{{run_id}}`
+- `{{login.path.to.value}}` reads a value from the `--flow form` login response (kept in memory only)
+
+### Manual severity rules
+Change the severity of specific findings and record why. Use `--severity-file rules.json` (GUI: Severity Rules).
+```json
+[
+  {
+    "title_contains": "password hash",
+    "endpoint": "GET /api/Users",
+    "severity": "Info",
+    "reason": "password field is masked, no hash exposed"
+  }
+]
+```
+Rules are applied after the scan. Fields: `title_contains`, `category_contains`, `endpoint` (`METHOD /path`, `/path` or `*`; parameter names in braces are interchangeable), `severity` (Critical, High, Medium, Low, Info) and `reason` (required). All given fields must match; the first matching rule wins. The report shows the new severity with the reason, and `all_audit_findings.json` keeps the original in `reported_severity`. An invalid file stops the scan at startup.
+
+### Environment variables
+- `APISCAN_JWT_ENDPOINTS` (default 5): endpoints outside the deep/quick cap that still get the JWT alg=none check when a Bearer token is configured.
+
+### Crawler: dynamic routes
+With `--crawl`, a route such as `this.host + '/' + id + '/reviews'` is inventoried as `/rest/products/{id}/reviews` with a path parameter and is never requested with the literal template. Integer IDs use `1`, other parameters use the example `1`; provide real values with `--ids-file`. Set `APISCAN_CRAWL_DYNAMIC=0` to disable this.
 
 ### Sanitizer and rewrites
 ```

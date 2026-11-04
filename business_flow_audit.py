@@ -808,6 +808,33 @@ class BusinessFlowAuditor:
                 self._log(flow, f"Observation: alternate HTTP method {verb} accepted; authorization impact unverified", "Info", resp=r)
 
                                                                                          
+    #================funtion _is_uniqueness_conflict description =============
+    @staticmethod
+    def _is_uniqueness_conflict(resp: Optional[requests.Response]) -> bool:
+        if resp is None:
+            return False
+        if resp.status_code == 409:
+            return True
+        if resp.status_code not in (400, 422):
+            return False
+        low = (resp.text or "")[:2048].lower()
+        return any(word in low for word in ("must be unique", "already exist", "already in use",
+                                            "already taken", "already registered", "duplicate"))
+
+    #================funtion _with_unique_identifiers description =============
+    def _with_unique_identifiers(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        nonce = self._nonce()
+        result = dict(payload)
+        for key, value in payload.items():
+            if not isinstance(value, str) or not value:
+                continue
+            if "@" in value and key.lower() in ("email", "mail", "e-mail", "emailaddress", "username", "login"):
+                local, _, domain = value.partition("@")
+                result[key] = f"{local}+{nonce}@{domain}"
+            elif key.lower() in ("username", "login", "handle", "name") and "@" not in value:
+                result[key] = f"{value}-{nonce}"
+        return result
+
     #================funtion _test_field_pollution description =============
     def _test_field_pollution(self, flow: Flow) -> None:
         payload = self._get_smart_body(flow.get("body"))
@@ -825,11 +852,19 @@ class BusinessFlowAuditor:
         r = self._send(flow, body=attempt)
         if r is None:
             return
+        if self._is_uniqueness_conflict(r):
+            # Earlier tests already created this object; retry once with fresh identifiers.
+            payload = self._with_unique_identifiers(payload)
+            attempt = dict(payload)
+            attempt.update(extra)
+            r = self._send(flow, body=attempt)
+            if r is None:
+                return
         if self._is_processed(r):
             reflected = self._reflected_privileged(r, owner_id)
             if set(reflected) - {"owner_id"}:
                 # Values already present without injection are not caused by the request.
-                base = self._send(flow, body=payload)
+                base = self._send(flow, body=self._with_unique_identifiers(payload))
                 already = set(self._reflected_privileged(base, owner_id)) if base is not None and self._is_processed(base) else None
                 reflected = [f for f in reflected if f == "owner_id" or (already is not None and f not in already)]
             if reflected:

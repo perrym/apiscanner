@@ -14,6 +14,7 @@ except Exception:
 import argparse
 import sqlite3
 import builtins
+import severity_rules
 import json
 import logging
 import queue
@@ -372,6 +373,7 @@ class EvidenceDatabase:
         prepared = []
         for it in issues:
             d = it if isinstance(it, dict) else it.to_dict() if hasattr(it, 'to_dict') else {'raw': repr(it)}
+            d = severity_rules.apply(dict(d))
             method = str(d.get('method') or d.get('http_method') or d.get('verb') or '').upper()
             endpoint = d.get('endpoint') or d.get('url') or d.get('path') or ''
             method, endpoint = _split_method_endpoint(method, endpoint)
@@ -721,6 +723,7 @@ def create_output_directory(base_url: str) -> Path:
 
 #================funtion save_html_report save_html_report =============
 def save_html_report(issues, risk_key: str, url: str, output_dir: Path) -> None:
+    issues = severity_rules.apply_all(issues)
     html_report = HTMLReportGenerator(issues=issues, scanner=RISK_INFO[risk_key]['title'], base_url=url)
     filename = f'api_{manual_file_map[risk_key]}_report.html'
     html_report.save(output_dir / filename)
@@ -1786,6 +1789,7 @@ def main() -> None:
     parser.add_argument('--export_vars', metavar='PATH', help='Export variables template YAML if .yml/.yaml else JSON')
     parser.add_argument('--proxy', help='Optional proxy URL, e.g. http://127.0.0.1:8080')
     parser.add_argument('--headers-file', help='Path to JSON file with header overrides')
+    parser.add_argument('--severity-file', help='JSON list of manual severity rules (title_contains, endpoint, severity, reason); the reason is shown in the report')
     parser.add_argument('--request-data-file', help='JSON mapping METHOD /OpenAPI/path to valid request data for all modules')
     parser.add_argument('--api10-data-file', help='JSON mapping METHOD /OpenAPI/path to valid API10 request data and local files')
     parser.add_argument('--ids-file', help='JSON file mapping path parameter names to concrete values')
@@ -1827,6 +1831,12 @@ def main() -> None:
     elif args.mcp_calls_file:
         parser.error('--mcp-calls-file requires --mcp')
     builtins.args = args
+    if getattr(args, 'severity_file', None):
+        try:
+            _n = severity_rules.load(args.severity_file)
+        except (ValueError, OSError) as exc:
+            parser.error('--severity-file: ' + str(exc))
+        print(f'[severity] {_n} manual severity rule(s) loaded from {args.severity_file}')
     # --- Hardened argument validation (OWASP A03/A05) ---
     try:
         if not isinstance(args.timeout, (int, float)) or args.timeout <= 0 or args.timeout > 600:
@@ -1848,6 +1858,7 @@ def main() -> None:
             ('ids-file',     'ids_file',     _MAX_JSON_FILE_BYTES),
             ('authorization-cases-file','authorization_cases_file',262144),
             ('request-data-file','request_data_file',262144),
+            ('severity-file','severity_file',262144),
             ('api10-data-file','api10_data_file',262144),
         ):
             _val = getattr(args, _attr, None)

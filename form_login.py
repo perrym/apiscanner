@@ -326,6 +326,11 @@ def auto_form_login(args) -> str:
                 # Runtime context only: keep the request that actually authenticated.
                 from copy import deepcopy
                 args._apiscan_login_request = {"url": login_url, "json": deepcopy(body)}
+                try:
+                    from api10_support import set_runtime_context
+                    set_runtime_context('login', resp2.json())
+                except Exception:
+                    pass
             return token
 
         # If no token in direct response, follow the redirect and try again.

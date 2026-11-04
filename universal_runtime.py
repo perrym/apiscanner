@@ -45,7 +45,9 @@ def configure_spec(spec, ids=None, data_file=None):
     result.path_parameter_values = path_values(resolved, ids or {})
     result.request_data = load_request_data(data_file) if data_file else {}
     declared = {op['method']+' '+op['path'] for op in __import__('openapi_universal').iter_operations(result)}
-    unknown = set(result.request_data)-declared
+    from api10_support import _route_shape
+    declared_shapes = {_route_shape(route) for route in declared}
+    unknown = {route for route in result.request_data if route not in declared and _route_shape(route) not in declared_shapes}
     if unknown:
         raise ValueError('Request fixtures are missing from the API specification: '+', '.join(sorted(unknown)))
     return result

@@ -1,7 +1,20 @@
 """Bounded, static request hints. No JavaScript execution or dynamic ID guessing."""
+import os
 import re
 
+DYNAMIC_ROUTES = os.getenv('APISCAN_CRAWL_DYNAMIC', '1').strip().lower() not in ('0', 'false', 'no', 'off')
 STRING = r'''(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)'''
+
+def _param_name(expression):
+    names = re.findall(r'[A-Za-z_][\w]*', expression)
+    names = [n for n in names if n not in ('this', 'const', 'let', 'var')]
+    if not names:
+        return 'param'
+    name = names[-1]
+    if name.lower() == 'id' and len(names) > 1:
+        name = names[-2] + 'Id'
+    return name
+
 
 def _string(token):
     return token[1:-1].replace(r'\/', '/')
@@ -19,11 +32,11 @@ def _resolve(expression, context, seen=None):
             if '${' in value:
                 def template(match):
                     resolved = _resolve(match.group(1), context, seen)
-                    return resolved if resolved is not None else '{dynamic}'
+                    return resolved if resolved is not None else '{dynamic:' + _param_name(match.group(1)) + '}'
                 value = re.sub(r'\$\{([^}]+)\}', template, value)
-                # Unknown server origin can yield a root-relative candidate; dynamic IDs cannot.
-                if value.startswith('{dynamic}/') and re.match(r'\$\{[^}]*\b(?:hostServer|origin)\}', _string(part)):
-                    value = value[len('{dynamic}'):]
+                # Unknown server origin can yield a root-relative candidate; dynamic IDs become path parameters.
+                if value.startswith('{dynamic:') and re.match(r'\$\{[^}]*\b(?:hostServer|origin)\}', _string(part)):
+                    value = value[value.index('}') + 1:]
             result += value
         elif re.fullmatch(r'(?:this\.)?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*', part):
             if part in seen:
@@ -37,6 +50,9 @@ def _resolve(expression, context, seen=None):
                     continue
                 if '?' in result:
                     continue  # Preserve the declared query key with an empty example.
+                if result.endswith('/') and DYNAMIC_ROUTES:
+                    result += '{dynamic:' + _param_name(part) + '}'
+                    continue
                 return None
             result += value
         else:
@@ -45,9 +61,14 @@ def _resolve(expression, context, seen=None):
             return None
     if '?' in result:
         path,query=result.split('?',1)
-        result=path+'?'+query.replace('{dynamic}','')
+        result=path+'?'+re.sub(r'\{dynamic:[^}]*\}','',query)
     relative = re.fullmatch(r'[A-Za-z0-9_.-]+/[^\s]+',result)
-    return result if (result.startswith(('/', 'http://', 'https://')) or relative) and '{dynamic}' not in result else None
+    if '{dynamic:' in result:
+        # A dynamic segment becomes an OpenAPI path parameter, but only after a literal path.
+        if not DYNAMIC_ROUTES or not result.startswith('/') or result.startswith('/{dynamic:'):
+            return None
+        result = re.sub(r'\{dynamic:([^}]*)\}', r'{\1}', result)
+    return result if (result.startswith(('/', 'http://', 'https://')) or relative) else None
 
 
 def _parts(text, delimiter=',', stop_call=False):

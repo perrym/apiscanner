@@ -302,6 +302,8 @@ class APISCANApp:
         self.headers_file_var = StringVar()
         self.ids_file_var = StringVar()
         self.request_data_file_var = StringVar()
+        self.api10_data_file_var = StringVar()
+        self.severity_file_var = StringVar()
         self.authorization_cases_file_var = StringVar()
         self.api_vars: dict[str, BooleanVar] = {}
 
@@ -623,13 +625,28 @@ class APISCANApp:
         ttk.Button(add_files_frame, text="...", width=3, style="Small.TButton",
                    command=lambda: self._browse_file("ids_file_var", "*.json")
                    ).pack(side="left", padx=(2, 0))
-        request_files_frame = ttk.Frame(inner, style="Card.TFrame")
-        request_files_frame.grid(row=9, column=0, sticky="ew", padx=14, pady=(2, 4))
+        request_block = ttk.Frame(inner, style="Card.TFrame")
+        request_block.grid(row=9, column=0, sticky="ew", padx=14, pady=(2, 4))
+        request_files_frame = ttk.Frame(request_block, style="Card.TFrame")
+        request_files_frame.pack(side="top", anchor="w", fill="x")
+        api10_files_frame = ttk.Frame(request_block, style="Card.TFrame")
+        api10_files_frame.pack(side="top", anchor="w", fill="x", pady=(4, 0))
+        ttk.Label(api10_files_frame, text="API10 Data", style="Card.TLabel",
+                  width=16, anchor=E).pack(side="left", padx=(0, 8))
+        ttk.Entry(api10_files_frame, textvariable=self.api10_data_file_var, width=42).pack(side="left")
+        ttk.Button(api10_files_frame, text="...", width=3, style="Small.TButton",
+                   command=lambda: self._browse_file("api10_data_file_var", "*.json")
+                   ).pack(side="left", padx=(2, 0))
         ttk.Label(request_files_frame, text="Request Data", style="Card.TLabel",
                   width=16, anchor=E).pack(side="left", padx=(0, 8))
         ttk.Entry(request_files_frame, textvariable=self.request_data_file_var, width=42).pack(side="left")
         ttk.Button(request_files_frame, text="...", width=3, style="Small.TButton",
                    command=lambda: self._browse_file("request_data_file_var", "*.json")
+                   ).pack(side="left", padx=(2, 0))
+        ttk.Label(request_files_frame, text="Severity Rules", style="Card.TLabel").pack(side="left", padx=(10, 6))
+        ttk.Entry(request_files_frame, textvariable=self.severity_file_var, width=24).pack(side="left")
+        ttk.Button(request_files_frame, text="...", width=3, style="Small.TButton",
+                   command=lambda: self._browse_file("severity_file_var", "*.json")
                    ).pack(side="left", padx=(2, 0))
 
 
@@ -1875,6 +1892,12 @@ class APISCANApp:
 
         if self.request_data_file_var.get().strip() and not self.mcp_var.get():
             args.extend(["--request-data-file", self.request_data_file_var.get().strip()])
+
+        if self.api10_data_file_var.get().strip() and not self.mcp_var.get():
+            args.extend(["--api10-data-file", self.api10_data_file_var.get().strip()])
+
+        if self.severity_file_var.get().strip():
+            args.extend(["--severity-file", self.severity_file_var.get().strip()])
 
         if self.authorization_cases_file_var.get().strip() and not self.mcp_var.get():
             args.extend(["--authorization-cases-file", self.authorization_cases_file_var.get().strip()])

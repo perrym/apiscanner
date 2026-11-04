@@ -2,6 +2,52 @@
 import base64, copy, json
 from pathlib import Path
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jK1sAAAAASUVORK5CYII=')
+import re as _re
+import uuid as _uuid
+import time as _time
+
+_PLACEHOLDER = _re.compile(r'\{\{\s*(unique|uuid|timestamp|run_id|[A-Za-z_]\w*(?:\.[\w\-]+)+)\s*\}\}')
+_RUNTIME = {}
+
+def set_runtime_context(name, data):
+    """Keep a parsed response in memory so fixtures can reference it as {{name.path.to.value}}."""
+    if isinstance(data, (dict, list)):
+        _RUNTIME[str(name)] = data
+
+def _from_runtime(path):
+    head, *rest = path.split('.')
+    node = _RUNTIME.get(head)
+    for part in rest:
+        if isinstance(node, dict) and part in node:
+            node = node[part]
+        elif isinstance(node, list) and part.isdigit() and int(part) < len(node):
+            node = node[int(part)]
+        else:
+            return None
+    return node if isinstance(node, (str, int, float)) and not isinstance(node, bool) else None
+
+def expand_placeholders(value, run_id=''):
+    """Replace {{unique}}, {{uuid}}, {{timestamp}} and {{run_id}} in fixture strings.
+    Every expansion is fresh, so a fixture can create a new object on each request."""
+    if isinstance(value, str):
+        def pick(match):
+            name = match.group(1)
+            if name == 'unique': return _uuid.uuid4().hex[:10]
+            if name == 'uuid': return str(_uuid.uuid4())
+            if name == 'timestamp': return str(int(_time.time()))
+            if name == 'run_id': return str(run_id)
+            found = _from_runtime(name)
+            return match.group(0) if found is None else str(found)
+        return _PLACEHOLDER.sub(pick, value)
+    if isinstance(value, dict):
+        return {k: expand_placeholders(v, run_id) for k, v in value.items()}
+    if isinstance(value, list):
+        return [expand_placeholders(v, run_id) for v in value]
+    return value
+
+def _route_shape(route):
+    return _re.sub(r'\{[^}]*\}','{}',route)
+
 def load_request_data(path):
     p=Path(path)
     if p.stat().st_size>262144:raise ValueError('Request data file exceeds 256 KiB')
@@ -49,7 +95,13 @@ def prepare_sql_request(req, op, overrides, run_id):
         if not req.get('files'):
             req['files']={name:(None,str(value)) for name,value in form.items()}
             req.pop('data',None)
-    fixture=overrides.get(op['method'].upper()+' '+op['path'],{})
+    key=op['method'].upper()+' '+op['path']
+    fixture=overrides.get(key)
+    if fixture is None:
+        # Match on the route shape so {e}, {id} and {productId} are interchangeable.
+        shape=_route_shape(key)
+        fixture=next((v for k,v in overrides.items() if _route_shape(k)==shape),{})
+    fixture=expand_placeholders(fixture,run_id)
     for key,value in fixture.items():
         if key=='headers':req.setdefault('headers',{}).update(copy.deepcopy(value))
         else:req[key]=copy.deepcopy(value)

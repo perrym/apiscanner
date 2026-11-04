@@ -19,6 +19,7 @@ import time
 import hashlib
 import hmac
 import base64
+import binascii
 import sys
 from collections import defaultdict
 from datetime import datetime
@@ -73,9 +74,10 @@ PROBLEM_JSON_CT = 'application/problem+json'
 stop_requested = threading.Event()
 # Input or baseline prevented the test from starting; not an execution failure.
 UNTESTED_ISSUES = frozenset(('SQL baseline unsuitable', 'SQL request input unavailable',
-                             'SQL test unavailable', 'NoSQL baseline unsuitable'))
+                             'SQL test unavailable', 'NoSQL baseline unsuitable',
+                             'JWT test unavailable', 'JWT test inconclusive'))
 
-os.environ.setdefault('APISCAN_MAX_WORKERS', '6')
+os.environ.setdefault('APISCAN_MAX_WORKERS', '4')
 os.environ.setdefault('APISCAN_TIMEOUT', '2')
 os.environ.setdefault('APISCAN_RATE_LIMIT', '0')
 os.environ.setdefault('APISCAN_DEEP_SCAN', '0')
@@ -668,26 +670,8 @@ class SafeConsumptionAuditor:
             sys.exit(1)
 
 
-        self.DB_SPECIFIC_PATTERNS = {
-            'mysql': ['mysql_error', 'mysqli_', 'you have an error in your sql syntax',
-                     'mysql server version', 'for the right syntax to use'],
-            'postgres': ['postgresql error', 'pg_', 'syntax error at position',
-                        'postgresql', 'pqexec', 'libpq'],
-            'oracle': ['ora-', 'pl/sql', 'oracle error', 'ora_', 'oracle.*exception'],
-            'mssql': ['microsoft sql server', 'sqlserver', 'incorrect syntax near',
-                     'sql server', 'odbc sql server', 'sqlcmd'],
-            'sqlite': ['sqlite error', 'sqlite3.', 'sqlite exception', 'sqlite3 error']
-        }
 
 
-        self.TIME_PATTERNS = [
-            r'(\d+)\s*second',
-            r'delay\s*[\'"]?\d+',
-            r'benchmark\([^)]+\)',
-            r'pg_sleep',
-            r'sleep\(',
-            r'waitfor\s+delay'
-        ]
 
         self._print_banner()
         print(f"  \033[96m\u25c6\033[0m  \033[96mInfo\033[0m  Auditor ready  \033[2m{self.base_url}  timeout={self.timeout}s  workers={self.max_workers}  intensity={self.intensity}\033[0m")
@@ -1059,7 +1043,11 @@ class SafeConsumptionAuditor:
 
                 try:
                     ct = (response.headers.get('Content-Type') or '').lower()
-                    if not self._is_generic_html_error(response) and (not ct.startswith(('image/', 'video/', 'audio/'))) and ('application/octet-stream' not in ct):
+                    binary_type = ct.startswith(('image/', 'video/', 'audio/')) or 'application/octet-stream' in ct
+                    # Generic HTML error pages are not stored unless they carry database error evidence.
+                    keep_text = (not binary_type) and (not self._is_generic_html_error(response)
+                                 or self._has_sql_evidence_improved(response.text or ''))
+                    if keep_text:
                         entry['response_body'] = (response.text or '')[:20000]
                         entry['response_body_len'] = len(response.text or '')
                     else:
@@ -1204,66 +1192,181 @@ class SafeConsumptionAuditor:
 
 
 
+    #================ _jwt_extra_endpoints JWT check independent of the endpoint cap ##########
+    def _jwt_extra_endpoints(self, ordered, kept):
+        source = getattr(self.session, 'source', self.session)
+        headers = getattr(source, 'headers', None) or {}
+        if not str(headers.get('Authorization', '')).lower().startswith('bearer '):
+            return []
+        try:
+            limit = max(0, int(os.getenv('APISCAN_JWT_ENDPOINTS', '5')))
+        except ValueError:
+            limit = 5
+        candidates = [e for e in ordered if e not in kept and '{' not in str(e)]
+        selected = []
+        for endpoint in candidates[:max(limit * 4, 20)]:
+            if len(selected) >= limit or stop_requested.is_set():
+                break
+            if self._anonymous_status(endpoint) in (401, 403):
+                selected.append(endpoint)
+        return selected
+
+    #================ _anonymous_status unauthenticated GET status ##########
+    def _anonymous_status(self, endpoint):
+        source = getattr(self.session, 'source', self.session)
+        try:
+            self._throttle(urlparse.urlparse(endpoint).netloc)
+            return requests.get(endpoint, timeout=(3, self.timeout), allow_redirects=False,
+                                verify=getattr(source, 'verify', True)).status_code
+        except requests.RequestException:
+            return None
+
     #================ _test_jwt_vulnerabilities description ##########
     def _test_jwt_vulnerabilities(self, endpoint: str) -> None:
+        from probe_policy import ProbeSkipped
+
         if stop_requested.is_set():
             return
 
+        source = getattr(self.session, 'source', self.session)
+        if not isinstance(source, requests.Session):
+            self._record_telemetry('JWT test unavailable', endpoint,
+                                   extra={'note': 'JWT controls require a requests session'})
+            return
+        if source.auth is not None or source.cert:
+            self._record_telemetry('JWT test unavailable', endpoint,
+                                   extra={'note': 'Additional session authentication cannot be isolated'})
+            return
+
+        authorization = source.headers.get('Authorization', '')
+        scheme, separator, token = authorization.partition(' ')
+        if not separator or scheme.lower() != 'bearer' or not token.strip():
+            self._record_telemetry('JWT test unavailable', endpoint,
+                                   extra={'note': 'A Bearer JWT is required'})
+            return
+        token = token.strip()
+
+        def decode_part(part: str) -> bytes:
+            return base64.b64decode(part + '=' * (-len(part) % 4), altchars=b'-_', validate=True)
+
+        def encode_part(part: bytes) -> str:
+            return base64.urlsafe_b64encode(part).rstrip(b'=').decode('ascii')
+
         try:
-            parsed = urlparse.urlparse(endpoint)
-            domain = parsed.netloc or parsed.hostname or ''
+            header_part, payload_part, signature_part = token.split('.')
+            header = json.loads(decode_part(header_part))
+            claims = json.loads(decode_part(payload_part))
+            signature = decode_part(signature_part)
+            if (not isinstance(header, dict) or not isinstance(claims, dict)
+                    or not isinstance(header.get('alg'), str)
+                    or header['alg'].lower() == 'none' or not signature):
+                raise ValueError('Not a signed JWT')
+            altered_signature = bytes([signature[0] ^ 1]) + signature[1:]
+            invalid_token = f'{header_part}.{payload_part}.{encode_part(altered_signature)}'
+            unsigned_header = dict(header, alg='none')
+            unsigned_token = (
+                f'{encode_part(json.dumps(unsigned_header, separators=(",", ":")).encode("utf-8"))}'
+                f'.{payload_part}.'
+            )
+        except (ValueError, TypeError, UnicodeDecodeError, binascii.Error):
+            self._record_telemetry('JWT test unavailable', endpoint,
+                                   extra={'note': 'Bearer token is not a supported signed JWT'})
+            return
 
-            for jwt_token in self.JWT_PAYLOADS:
-                if stop_requested.is_set():
-                    return
+        domain = urlparse.urlparse(endpoint).netloc
 
-                try:
-                    self._throttle(domain)
+        def request_with_token(value: Optional[str]):
+            self._throttle(domain)
+            authorization = 'Bearer ' + value if value is not None else None
+            return self.session.get(
+                endpoint,
+                headers={'Authorization': authorization, 'Cookie': '',
+                         'X-Auth-Token': None, 'X-JWT-Token': None,
+                         'X-API-Key': None, 'API-Key': None},
+                auth=lambda request: request,
+                timeout=(3, self.timeout),
+                allow_redirects=False,
+            )
 
-                    headers_list = [
-                        {'Authorization': f'Bearer {jwt_token}'},
-                        {'Authorization': f'Token {jwt_token}'},
-                        {'Authorization': f'JWT {jwt_token}'},
-                        {'X-Auth-Token': jwt_token},
-                        {'X-JWT-Token': jwt_token}
-                    ]
 
-                    for headers in headers_list:
-                        try:
-                            r = self.session.get(endpoint, headers=headers, timeout=(3, self.timeout), allow_redirects=False)
-                            body_low = (r.text or '').lower()
+        def inconclusive(note: str, **details) -> None:
+            self._record_telemetry('JWT test inconclusive', endpoint,
+                                   extra={'note': note, **details})
 
-                            if any(kw in body_low for kw in self.JWT_ERROR_KEYWORDS):
-                                # A validation message means the forged token was rejected: diagnostic only.
-                                with self._options_cache_lock:
-                                    seen = self.__dict__.setdefault('_jwt_reject_seen', set())
-                                    first = endpoint not in seen
-                                    seen.add(endpoint)
-                                if first:
-                                    self._record_telemetry('JWT rejection message observed', endpoint,
-                                        payload=jwt_token[:50] + '...', response=r,
-                                        extra={'execution_status': 'response_received',
-                                               'note': 'Forged token rejected with a validation message; expected behaviour'})
+        try:
+            valid = request_with_token(token)
+            if stop_requested.is_set():
+                return
+            if valid.status_code != 200:
+                inconclusive('Valid-token control did not return HTTP 200',
+                             valid_status=valid.status_code)
+                return
+            if 'json' not in valid.headers.get('Content-Type', '').lower():
+                inconclusive('Valid-token control did not return JSON',
+                             valid_status=valid.status_code)
+                return
+            try:
+                valid_body = valid.json()
+            except ValueError:
+                inconclusive('Valid-token control returned invalid JSON')
+                return
+            if not isinstance(valid_body, (dict, list)) or not valid_body:
+                inconclusive('Valid-token control did not return a non-empty JSON object or array')
+                return
+            if isinstance(valid_body, dict) and {str(key).lower() for key in valid_body}.issubset(
+                    {'error', 'errors', 'message', 'detail', 'details', 'code', 'status',
+                     'title', 'type', 'timestamp', 'path', 'traceid', 'requestid', 'correlationid'}):
+                inconclusive('Valid-token control returned an error-like JSON response')
+                return
 
-                            if 'alg' in jwt_token and 'none' in jwt_token.lower():
-                                if r.status_code < 400:
-                                    self._log(
-                                        'Possible JWT algorithm confusion',
-                                        endpoint,
-                                        'High',
-                                        payload=jwt_token[:50] + '...',
-                                        response=r,
-                                        extra={'vulnerability': 'JWT alg=none accepted'}
-                                    )
+            invalid = request_with_token(invalid_token)
+            if stop_requested.is_set():
+                return
+            if invalid.status_code not in (401, 403):
+                inconclusive('Invalid-signature control was not rejected with HTTP 401 or 403',
+                             valid_status=valid.status_code, invalid_status=invalid.status_code)
+                return
 
-                        except Exception:
-                            continue
-
-                except Exception as e:
-                    self._log('JWT test failed', endpoint, 'Info', extra={'error': str(e)})
-
-        except Exception as e:
-            self._log('JWT test setup failed', endpoint, 'Info', extra={'error': str(e)})
+            unsigned = request_with_token(unsigned_token)
+            statuses = {'valid_status': valid.status_code, 'invalid_status': invalid.status_code,
+                        'unsigned_status': unsigned.status_code}
+            if unsigned.status_code in (401, 403):
+                self._record_telemetry('JWT alg=none rejected', endpoint,
+                                       extra={'execution_status': 'response_received', **statuses})
+                return
+            if unsigned.status_code != 200 or 'json' not in unsigned.headers.get('Content-Type', '').lower():
+                inconclusive('Unsigned-token response was neither a rejection nor comparable JSON', **statuses)
+                return
+            try:
+                unsigned_body = unsigned.json()
+            except ValueError:
+                inconclusive('Unsigned-token response returned invalid JSON', **statuses)
+                return
+            if unsigned_body != valid_body:
+                inconclusive('Unsigned-token response differs from the valid-token control', **statuses)
+                return
+            if stop_requested.is_set():
+                return
+            unauthenticated = request_with_token(None)
+            statuses['unauthenticated_status'] = unauthenticated.status_code
+            if unauthenticated.status_code not in (401, 403):
+                inconclusive('Unauthenticated control was not rejected with HTTP 401 or 403', **statuses)
+                return
+            self._log(
+                'Possible JWT alg=none authentication bypass', endpoint, 'High',
+                payload='Unsigned JWT derived from the configured Bearer token',
+                extra={'vulnerability': 'JWT alg=none potentially accepted',
+                       'status_code': unsigned.status_code,
+                       'note': 'Unsigned token returned the same JSON as the valid control; '
+                               'the invalid-signature and unauthenticated controls were rejected. '
+                               'Verify manually.',
+                       **statuses},
+            )
+        except ProbeSkipped:
+            raise
+        except requests.RequestException as exc:
+            self._record_telemetry('JWT test failed', endpoint,
+                                   extra={'error': f'JWT request failed ({type(exc).__name__})'})
 
 
     #================ _test_rate_limit_bypass description ##########
@@ -2122,6 +2225,11 @@ class SafeConsumptionAuditor:
         if sql_only:
             batches.append((partial(self._test_schema_sql), sql_only))
             print(f'{Colors.WHITE}  [SQL] Schema SQL probes also run on {len(sql_only)} endpoints outside the Phase 2 cap{Colors.RESET}')
+
+        jwt_extra = self._jwt_extra_endpoints(all_prioritized, kept)
+        if jwt_extra:
+            batches.append((partial(self._test_jwt_vulnerabilities), jwt_extra))
+            print(f'{Colors.WHITE}  [JWT] alg=none check also runs on {len(jwt_extra)} endpoints outside the Phase 2 cap (APISCAN_JWT_ENDPOINTS){Colors.RESET}')
 
         if hasattr(self, 'coverage'):
             self.coverage['phase2_selection'] = {
@@ -3754,18 +3862,30 @@ class SafeConsumptionAuditor:
                     self._record_telemetry('SQL request input unavailable', url,
                         extra={'method':op['method'],'reason':detail['reason']})
                 continue
-            try:
-                self._throttle(urlsplit(url).netloc)
-                baseline = self.session.request(**deepcopy(req))
-                detail['baseline_status'] = baseline.status_code
-                record = write_record(req, baseline, self.sql_run_marker, 'baseline')
-                if record:
-                    with self._options_cache_lock:
-                        self.sql_write_journal.append(record)
-            except requests.RequestException as exc:
+            baseline = None
+            baseline_exc = None
+            # A slow or busy target should not leave the operation untested: retry with longer timeouts.
+            for attempt, scale in enumerate((1, 3, 6)):
+                if attempt:
+                    time.sleep(1.5 * attempt)
+                try:
+                    self._throttle(urlsplit(url).netloc)
+                    attempt_req = deepcopy(req)
+                    if attempt:
+                        attempt_req['timeout'] = (3, max(self.timeout, 5) * scale)
+                    baseline = self.session.request(**attempt_req)
+                    break
+                except requests.RequestException as exc:
+                    baseline_exc = exc
+            if baseline is None:
                 detail.update(state='incomplete', reason='Baseline transport error')
-                self._record_telemetry('SQL baseline failed', url, extra={'error': str(exc)})
+                self._record_telemetry('SQL baseline failed', url, extra={'error': str(baseline_exc)})
                 continue
+            detail['baseline_status'] = baseline.status_code
+            record = write_record(req, baseline, self.sql_run_marker, 'baseline')
+            if record:
+                with self._options_cache_lock:
+                    self.sql_write_journal.append(record)
             baseline_db_error = self._has_sql_evidence_improved(baseline.text or '')
             if baseline_db_error or baseline.status_code >= 500:
                 self._inspect_sql_error_response(baseline, url, baseline=True)
@@ -3787,6 +3907,14 @@ class SafeConsumptionAuditor:
                     307: 'Set the authorized canonical API base URL and recheck the operation baseline',
                     308: 'Set the authorized canonical API base URL and recheck the operation baseline',
                 }.get(baseline.status_code, 'Inspect saved baseline response body and resolve server errors before differential SQL testing')
+                from response_evidence import baseline_hint
+                hint_reason, hint_action = baseline_hint(baseline.status_code, self._has_auth_configured())
+                if hint_reason and not baseline_db_error:
+                    detail['reason'] = hint_reason
+                    detail['next_action'] = hint_action
+                    snippet = (baseline.text or '').strip()[:200]
+                    if snippet and not snippet.lstrip().startswith('<'):
+                        detail['baseline_message'] = snippet
 
                 self._record_telemetry('SQL baseline unsuitable', url,
                     extra={'error': 'Baseline unsuitable or already contains database errors',
@@ -4387,13 +4515,17 @@ class SafeConsumptionAuditor:
             if any((re.search(pat, low) for pat in blocked_patterns)):
                 return False
 
-            specific = any((re.search(p, low) for p in (
-                r'xxe',
-                r'xml.*parser.*error',
-                r'entity.*reference',
-                r'doctype.*not.*allowed'
-            )))
-            return specific or self._has_engine_marker(low, 'xxe')
+            patterns = (r'xml.*parser.*error', r'entity.*reference', r'doctype.*not.*allowed')
+            def signatures(body):
+                body = (body or '').lower()
+                found = {p for p in patterns if re.search(p, body)}
+                found |= {k for k in self.XXE_ERROR_KEYWORDS | self.STACKTRACE_MARKERS if k in body}
+                return found
+            # Only evidence that is absent from the baseline counts; normal content may mention XML or XXE.
+            evidence = signatures(low)
+            if baseline_response is not None:
+                evidence -= signatures(getattr(baseline_response, 'text', '') or '')
+            return bool(evidence)
 
         return False
 
@@ -4411,6 +4543,25 @@ class SafeConsumptionAuditor:
         if attack_type == 'xxe':
             return any((k in t for k in self.XXE_ERROR_KEYWORDS | self.STACKTRACE_MARKERS))
         return False
+
+    DB_SPECIFIC_PATTERNS = {
+        'mysql': ['mysql_error', 'mysqli_', 'you have an error in your sql syntax',
+                 'mysql server version', 'for the right syntax to use'],
+        'postgres': ['postgresql error', 'pg_', 'syntax error at position',
+                    'postgresql', 'pqexec', 'libpq'],
+        'oracle': ['ora-', 'pl/sql', 'oracle error', 'ora_', 'oracle.*exception'],
+        'mssql': ['microsoft sql server', 'sqlserver', 'incorrect syntax near',
+                 'sql server', 'odbc sql server', 'sqlcmd'],
+        'sqlite': ['sqlite error', 'sqlite3.', 'sqlite exception', 'sqlite3 error', 'sqlite_error']
+    }
+    TIME_PATTERNS = [
+        r'(\d+)\s*second',
+        r'delay\s*[\'"]?\d+',
+        r'benchmark\([^)]+\)',
+        r'pg_sleep',
+        r'sleep\(',
+        r'waitfor\s+delay'
+    ]
 
     SQL_ENGINE_MARKERS = {'sqlsyntaxerror', 'psql:', 'psycopg2', 'org.hibernate', 'mysql server version', 'sqlite error', 'sqlserverexception', 'odbc sql', 'syntax error at or near', 'unclosed quotation mark', 'ora-', 'pls-', 'ora-00933', 'ora-01756'}
     NOSQL_ENGINE_MARKERS = {'mongoerror', 'bson', 'cast to objectid', 'pymongo.errors', 'elasticsearch_exception'}

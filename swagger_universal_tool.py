@@ -158,9 +158,9 @@ class UltimateSwaggerGenerator:
         # MongoDB ObjectID (24 hex chars)
         path = re.sub(r"/[a-f0-9]{24}", "/{objectId}", path, flags=re.I)
         # Pure numeric IDs
-        path = re.sub(r"/\d+", "/{id}", path)
-        # Slugs that look like param names ending in Id/ID
-        path = re.sub(r"/([^/]*_?[iI][dD])", r"/{\1}", path)
+        path = re.sub(r"/\d+(?=/|$)", "/{id}", path)
+        # Whole segments that look like param names ending in Id/ID (not "identity" or "2fa")
+        path = re.sub(r"/(?!\{)([A-Za-z_]\w*(?:[a-z0-9]I[dD]|_[iI][dD]))(?=/|$)", r"/{\1}", path)
         # Short hex tokens (e.g. reset tokens, 32-64 hex chars)
         path = re.sub(r"/[a-f0-9]{32,64}(?=/|$)", "/{token}", path, flags=re.I)
         return path
@@ -834,6 +834,11 @@ class UltimateSwaggerGenerator:
             api_url = urljoin(self.document_url, hint['url'])
             if not self._same_host(api_url):
                 continue
+            templated = re.findall(r'\{(\w+)\}', urlparse(api_url).path)
+            if templated:
+                # Dynamic ID in the path: inventory it as a path parameter, never request the literal template.
+                self._add_templated_js_operation(api_url, hint, templated)
+                continue
             if hint['method'] in ('get','head','options'):
                 read_urls.add(api_url)
                 self._process_possible_api(api_url)
@@ -882,6 +887,35 @@ class UltimateSwaggerGenerator:
         for api_url in sorted(candidates):
             print(f"[+] JS API candidate: {api_url}")
             self._process_possible_api(api_url)
+
+    #================funtion _add_templated_js_operation route with a dynamic ID from JS ##########
+    def _add_templated_js_operation(self, api_url: str, hint, names):
+        path = urlparse(api_url).path
+        method = hint['method']
+        op = {'summary': 'Static JavaScript request with a dynamic path segment; server behavior unverified',
+              'x-discovery-source': 'javascript-request',
+              'x-discovery-state': 'unverified',
+              'responses': {'default': {'description': 'No request sent during discovery'}}}
+        if method in ('post', 'put', 'patch'):
+            if hint.get('body_schema') and hint.get('content_type'):
+                op['requestBody'] = {'required': True, 'content': {hint['content_type']: {'schema': hint['body_schema']}}}
+            if hint.get('requires_body') or not hint.get('body_schema'):
+                op['x-requires-request-data'] = True
+        existing = self.swagger['paths'].setdefault(path, {}).setdefault(method, op)
+        if 'requestBody' in op:
+            existing.setdefault('requestBody', op['requestBody'])
+        params = existing.setdefault('parameters', [])
+        declared = {(p.get('in'), p.get('name')) for p in params}
+        for name in names:
+            if ('path', name) not in declared:
+                if name.lower().endswith('id'):
+                    params.append({'name': name, 'in': 'path', 'required': True, 'schema': {'type': 'integer'}})
+                else:
+                    # Minified code gives no usable name; use the same example "1" as crawl validation.
+                    params.append({'name': name, 'in': 'path', 'required': True, 'schema': {'type': 'string'},
+                                   'example': '1', 'x-discovery-source': 'javascript-request'})
+        self._merge_js_context(existing, hint)
+        print(f"[+] JS request inventoried: {method.upper()} {path} (unverified, path parameter)")
 
     def _merge_js_context(self, operation, hint):
         if hint.get('body_schema') and hint.get('content_type'):

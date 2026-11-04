@@ -834,13 +834,60 @@ class MisconfigurationAuditorPro:
                                     for k in item if str(k).lower() in
                                     {'email', 'role', 'password', 'token', 'secret', 'ssn', 'deluxetoken'}})
                     if names:
-                        desc_parts.append('Potentially sensitive fields in configured-session response: '
-                                          + ', '.join(names)
-                                          + '; anonymous access and authorization policy unverified')
+                        sev = self._sensitive_fields_verdict(resp, names, sev, desc_parts)
         except (ValueError, TypeError, AttributeError):
             pass
 
         return self._build_finding(ep, payload, resp, dur, ", ".join(desc_parts), sev)
+
+    _CREDENTIAL_FIELDS = {'password', 'token', 'secret', 'ssn', 'deluxetoken'}
+    _SEV_RANK = {'Info': 0, 'Low': 1, 'Medium': 2, 'High': 3, 'Critical': 4}
+
+    #================funtion _anonymous_probe unauthenticated GET of the same URL ##########
+    def _anonymous_probe(self, url, names):
+        cache = self.__dict__.setdefault('_anon_cache', {})
+        if url in cache:
+            return cache[url]
+        result = (None, False)
+        try:
+            self._enforce_rate_limit()
+            anon = requests.get(url, headers={'Accept': 'application/json'}, timeout=min(float(self.timeout or 10), 10),
+                                allow_redirects=False, verify=getattr(self.session, 'verify', True))
+            seen = False
+            if anon.status_code == 200 and 'json' in (anon.headers.get('Content-Type') or '').lower():
+                data = anon.json()
+                records = data.get('data') if isinstance(data, dict) else data
+                if isinstance(records, list):
+                    keys = {str(k).lower() for item in records[:25] if isinstance(item, dict) for k in item}
+                    seen = bool(keys & {n.lower() for n in names})
+            result = (anon.status_code, seen)
+        except (requests.RequestException, ValueError):
+            pass
+        cache[url] = result
+        return result
+
+    #================funtion _sensitive_fields_verdict severity from verified anonymous access ##########
+    def _sensitive_fields_verdict(self, resp, names, sev, desc_parts):
+        label = 'Potentially sensitive fields in response: ' + ', '.join(names)
+        req = getattr(resp, 'request', None)
+        url = getattr(req, 'url', '') or getattr(resp, 'url', '')
+        method = str(getattr(req, 'method', 'GET') or 'GET').upper()
+        sent = {str(k).lower() for k in (getattr(req, 'headers', {}) or {})}
+        has_creds = bool(sent & {'authorization', 'x-api-key', 'x-auth-token', 'cookie'})
+        if method != 'GET' or not url:
+            desc_parts.append(label + '; anonymous access unverified')
+            return sev
+        status, seen = (resp.status_code, True) if not has_creds else self._anonymous_probe(url, names)
+        lowered = {n.lower() for n in names}
+        if status == 200 and seen:
+            new = 'High' if (lowered & self._CREDENTIAL_FIELDS or {'email', 'role'} <= lowered) else 'Medium'
+            desc_parts.append(label + '; anonymous access confirmed (unauthenticated GET returned HTTP 200 with these fields)')
+            return new if self._SEV_RANK[new] > self._SEV_RANK.get(sev, 0) else sev
+        if status in (401, 403):
+            desc_parts.append(label + '; unauthenticated GET returned HTTP %d (authentication required); authorization policy unverified' % status)
+        else:
+            desc_parts.append(label + '; anonymous access unverified' + (' (HTTP %s)' % status if status else ''))
+        return sev
 
     #================funtion _server_error_analyzer flag 5xx server errors ########## flag 5xx server errors ##########
     def _server_error_analyzer(self, ep, payload, resp, dur):

@@ -8,6 +8,7 @@
 from __future__ import annotations
 import argparse
 import json
+import severity_rules
 import re
 import sqlite3
 import webbrowser
@@ -833,6 +834,7 @@ def build_review(db_path: Path, out_path: Path, template: Path | None=None, run_
     items = [it for it in items if it.get('severity') in ALLOWED_SEVERITIES]
     for it in items:
         it['severity'] = _reclassify(it)
+        severity_rules.apply(it)
     items = [_normalize_for_ui(it) for it in items if not _is_false_positive(it)]
     RISK_SEVERITIES = {'critical', 'high', 'medium', 'low', 'info'}
     items = [it for it in items if it.get('severity') in RISK_SEVERITIES]

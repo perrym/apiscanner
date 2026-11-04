@@ -2,6 +2,67 @@
 Version:5.5.0 release 03-11-2026
 Author: Perry Mertens pamsniffer@gmail.com
 
+04-11-2026 — v5.5.0 follow-up (found while scanning OWASP Juice Shop)
+Reporting
+- New --severity-file (GUI: Severity Rules): JSON rules that set the severity of matching findings with a
+  mandatory reason. The report shows the reason, all_audit_findings.json keeps reported_severity.
+API2 / API8 / API10 / GUI
+- API2 password hash check only judges password-named fields: weak hash = High, bcrypt/Argon2 ignored,
+  masked value (****) = Info observation. A hex string elsewhere in a response no longer triggers it.
+- API8 sensitive-field finding now sends one unauthenticated GET to the same URL: HTTP 200 with the same
+  fields = anonymous access confirmed (High for credential fields or email+role); 401/403 keeps the severity.
+- API10 JWT alg=none check also runs on up to 5 endpoints outside the Phase 2 cap (APISCAN_JWT_ENDPOINTS).
+- JWT extra endpoints are chosen among those where an unauthenticated GET returns 401/403, so public
+  endpoints no longer use up the slots.
+- GUI: new field API10 Data (--api10-data-file).
+Documentation
+- index.html, index.md and README.md: OAuth2 with Microsoft Entra ID (client credentials,
+  authorization code, limits), request data files (placeholders, {{login...}}), crawler dynamic routes.
+API10 (Safe Consumption)
+- SQL error detail inside a generic HTML 500 page was dropped before filtering, so a
+  working SQL injection was downgraded to "Server error without SQL evidence". Such
+  pages are now kept when they carry database error evidence. SQLite "SQLITE_ERROR"
+  pages are recognised.
+- The SQL baseline request is retried with longer timeouts before the operation is
+  marked incomplete; one slow response no longer leaves an endpoint untested.
+- XXE: only evidence that is absent from the baseline response counts. Content that
+  merely mentions "XXE" (for example an educational hint) is no longer a finding.
+- JWT alg=none: an unauthenticated request is now a required control. A possible
+  bypass is only reported when the invalid-signature and the unauthenticated
+  requests are rejected with 401/403; other outcomes are inconclusive.
+- SQL coverage report: a 401/403 baseline with authentication configured is now
+  reported as "Rejected despite configured authentication" with a short server
+  message, instead of "Supply valid authentication".
+Crawler
+- Routes with a dynamic ID in the path (for example this.host + '/' + id + '/reviews')
+  are now inventoried as OpenAPI path parameters, such as /rest/products/{id}/reviews,
+  instead of being dropped. They are never requested with the literal template; the
+  value comes from the declared example, 1 for integer IDs, or --ids-file. A dynamic
+  segment is only accepted after a literal path prefix. Set APISCAN_CRAWL_DYNAMIC=0
+  to restore the old behaviour.
+- Path normalisation only replaces whole path segments. "/rest/2fa/verify" used to
+  become "/rest/{{id}}fa/verify" and "/api/identity" became "/api/{id}entity"; numeric
+  IDs no longer end up with double braces.
+- Dynamic parameters without a usable name (minified code) get the example "1",
+  the same value the crawl validation already uses.
+Fixtures
+- A fixture key matches on the route shape, so "PUT /rest/products/{id}/reviews" also
+  applies to a crawled "{e}" route, and the startup check for fixtures that are
+  missing from the specification compares route shapes as well. A fixture for a
+  route that does not exist is still rejected.
+API6 (Business Flows)
+- Mass-assignment test: when earlier tests already created the object and the server
+  answers with a uniqueness conflict (409, or 400/422 "must be unique"/"already
+  exists"), the test retries once with fresh e-mail/username values instead of
+  silently missing the finding.
+Fixtures
+- --request-data-file and --api10-data-file accept {{unique}}, {{uuid}}, {{timestamp}}
+  and {{run_id}}. Each request gets a fresh value, so a fixture can create a new
+  object (for example a new account) on every use.
+- Fixtures can also read values from the form-login response, for example
+  {{login.authentication.bid}}, so IDs that belong to the logged-in account no
+  longer have to be hard-coded. Unresolved placeholders are sent unchanged.
+
 03-11-2026 — v5.5.0 stability, fewer false positives, wider coverage
 API10 (Safe Consumption)
 - Fixed a deadlock: directory-traversal created a tqdm progress bar per worker

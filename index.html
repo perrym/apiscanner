@@ -699,6 +699,16 @@ python test_env.py</code></pre>
   --token-url "https://auth.example.com/oauth/token" \
   --scope "api.read api.write"</code></pre>
       </article>
+
+      <article class="card">
+        <h3>OAuth2 with Microsoft Entra ID</h3>
+        <pre><code>python apiscan.py --url https://api.example.com --swagger openapi.json --flow client \
+  --client-id "&lt;client-id&gt;" --client-secret "$CLIENT_SECRET" \
+  --token-url "https://login.microsoftonline.com/&lt;tenant-id&gt;/oauth2/v2.0/token" \
+  --scope "api://&lt;api-app-id&gt;/.default"</code></pre>
+        <p>Use a dedicated app registration with an app role on the API and admin consent. For a signed-in user use <code>--flow auth</code> with <code>--auth-url</code> and <code>--redirect-uri http://localhost:8765/callback</code> (platform "Web", client secret required).</p>
+        <p>Limits: no PKCE, no token refresh (an Entra token lasts about an hour, so split long scans) and no <code>audience</code>/<code>resource</code> parameter. Otherwise obtain a token elsewhere and use <code>--flow token</code>. Keep the client secret in an environment variable.</p>
+      </article>
       
       <article class="card">
         <h3>Planning Phase Only</h3>
@@ -732,6 +742,51 @@ python apiscan.py --url https://api.example.com \
   --swagger openapi.json \
   --ids-file ids.json \
   --flow token --token "&lt;JWT&gt;"</code></pre>
+      </article>
+
+      <article class="card">
+        <h3>Request Data File</h3>
+        <pre><code># fixtures.json
+{
+  "POST /api/users": {
+    "json": { "email": "audit-{{unique}}@example.com", "password": "TestPassword1!" }
+  },
+  "POST /api/basket/items": {
+    "json": { "basketId": "{{login.basket.id}}", "productId": 1, "quantity": 1 }
+  },
+  "PUT /api/products/{id}/reviews": {
+    "json": { "message": "audit test" }
+  }
+}
+
+python apiscan.py --url https://api.example.com \
+  --swagger openapi.json \
+  --request-data-file fixtures.json \
+  --flow token --token "&lt;JWT&gt;"</code></pre>
+        <p>Endpoints with a request body stay <code>untested</code> without valid input (see <code>api10_sql_coverage.json</code>). Keys are <code>METHOD /path</code>; parameter names in braces are interchangeable, and a key for a route that is not in the specification stops the scan at startup. Fields per entry: <code>json</code>, <code>data</code>, <code>params</code>, <code>headers</code>, <code>files</code>. Use <code>--api10-data-file</code> for API10 only.</p>
+        <p>Placeholders, new for every request: <code>{{unique}}</code>, <code>{{uuid}}</code>, <code>{{timestamp}}</code>, <code>{{run_id}}</code>. <code>{{login.path.to.value}}</code> reads a value from the <code>--flow form</code> login response (memory only).</p>
+      </article>
+
+      <article class="card">
+        <h3>Manual Severity Rules</h3>
+        <pre><code># rules.json
+[
+  {
+    "title_contains": "password hash",
+    "endpoint": "GET /api/Users",
+    "severity": "Info",
+    "reason": "password field is masked, no hash exposed"
+  }
+]
+
+python apiscan.py --url https://api.example.com \
+  --swagger openapi.json --severity-file rules.json</code></pre>
+        <p>Rules are applied after the scan. Fields: title_contains, category_contains, endpoint (METHOD /path, /path or *; parameter names in braces are interchangeable), severity (Critical, High, Medium, Low, Info) and reason (required). All given fields must match; the first matching rule wins. The report shows the new severity with the reason, and all_audit_findings.json keeps the original in reported_severity. An invalid file stops the scan at startup.</p>
+      </article>
+
+      <article class="card">
+        <h3>Crawler: Dynamic Routes</h3>
+        <p>With <code>--crawl</code>, a route such as <code>this.host + '/' + id + '/reviews'</code> is inventoried as <code>/rest/products/{id}/reviews</code> with a path parameter and is never requested with the literal template. Integer IDs use <code>1</code>; provide real values with <code>--ids-file</code>. Set <code>APISCAN_CRAWL_DYNAMIC=0</code> to disable this.</p>
       </article>
       
       <article class="card">

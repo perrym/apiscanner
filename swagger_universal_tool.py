@@ -618,6 +618,18 @@ class UltimateSwaggerGenerator:
             print(f"[!] Error processing API {url}: {str(e)}")
 
                                                                     
+    #================funtion _anonymous_denied unauthenticated GET refused with 401/403 ##########
+    def _anonymous_denied(self, url: str) -> bool:
+        cache = self.__dict__.setdefault("_anon_denied_cache", {})
+        if url not in cache:
+            try:
+                r = requests.get(url, timeout=5, allow_redirects=False,
+                                 verify=getattr(self.session, "verify", True))
+                cache[url] = r.status_code in (401, 403)
+            except requests.RequestException:
+                cache[url] = False
+        return cache[url]
+
     #================funtion _ensure_operation_exists create operation shell in swagger ##########
     def _ensure_operation_exists(self, url: str, method: str, status: str = "default"):
         swagger_path = self._normalise_path(url)
@@ -675,10 +687,12 @@ class UltimateSwaggerGenerator:
                 pass
 
         security = []
-        if self.session.auth:
-            security.append({"basicAuth": []})
-        if self.auth_tokens:
-            security.append({"bearerAuth": []})
+        # Only claim that auth is required when an anonymous GET was actually refused.
+        if (self.session.auth or self.auth_tokens) and method.lower() == "get" and self._anonymous_denied(url):
+            if self.session.auth:
+                security.append({"basicAuth": []})
+            if self.auth_tokens:
+                security.append({"bearerAuth": []})
 
         if swagger_path not in self.swagger['paths']:
             self.swagger['paths'][swagger_path] = {}

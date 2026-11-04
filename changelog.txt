@@ -14,6 +14,8 @@ API2 / API8 / API10 / GUI
 - API10 JWT alg=none check also runs on up to 5 endpoints outside the Phase 2 cap (APISCAN_JWT_ENDPOINTS).
 - JWT extra endpoints are chosen among those where an unauthenticated GET returns 401/403, so public
   endpoints no longer use up the slots.
+- Crawler: an operation is only marked as requiring authentication in the generated spec when an anonymous GET
+  was refused with 401/403. Public endpoints (manifest, jwks) no longer give a High in API5.
 - GUI: new field API10 Data (--api10-data-file).
 Documentation
 - index.html, index.md and README.md: OAuth2 with Microsoft Entra ID (client credentials,

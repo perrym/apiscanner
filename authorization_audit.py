@@ -639,6 +639,7 @@ class AuthorizationAuditor:
             try:
                 tmp = requests.Session()
                 tmp.verify = getattr(self.session, "verify", True)
+                tmp.proxies = dict(getattr(self.session, "proxies", {}) or {})
                 anon = tmp.get(url, timeout=self.timeout, allow_redirects=False)
                 if anon.status_code != 200:
                     continue

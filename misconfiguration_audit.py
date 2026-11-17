@@ -852,7 +852,8 @@ class MisconfigurationAuditorPro:
         try:
             self._enforce_rate_limit()
             anon = requests.get(url, headers={'Accept': 'application/json'}, timeout=min(float(self.timeout or 10), 10),
-                                allow_redirects=False, verify=getattr(self.session, 'verify', True))
+                                allow_redirects=False, verify=getattr(self.session, 'verify', True),
+                                proxies=getattr(self.session, 'proxies', None) or None)
             seen = False
             if anon.status_code == 200 and 'json' in (anon.headers.get('Content-Type') or '').lower():
                 data = anon.json()

@@ -1217,7 +1217,8 @@ class SafeConsumptionAuditor:
         try:
             self._throttle(urlparse.urlparse(endpoint).netloc)
             return requests.get(endpoint, timeout=(3, self.timeout), allow_redirects=False,
-                                verify=getattr(source, 'verify', True)).status_code
+                                verify=getattr(source, 'verify', True),
+                                proxies=getattr(source, 'proxies', None) or None).status_code
         except requests.RequestException:
             return None
 

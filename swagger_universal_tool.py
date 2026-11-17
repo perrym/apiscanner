@@ -624,7 +624,8 @@ class UltimateSwaggerGenerator:
         if url not in cache:
             try:
                 r = requests.get(url, timeout=5, allow_redirects=False,
-                                 verify=getattr(self.session, "verify", True))
+                                 verify=getattr(self.session, "verify", True),
+                                 proxies=getattr(self.session, "proxies", None) or None)
                 cache[url] = r.status_code in (401, 403)
             except requests.RequestException:
                 cache[url] = False

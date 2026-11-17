@@ -16,6 +16,8 @@ API2 / API8 / API10 / GUI
   endpoints no longer use up the slots.
 - Crawler: an operation is only marked as requiring authentication in the generated spec when an anonymous GET
   was refused with 401/403. Public endpoints (manifest, jwks) no longer give a High in API5.
+- API5 guest/anonymous control requests now honour --proxy (they bypassed it before).
+- Anonymous control requests (API8, API10 JWT selection, crawler) now honour --proxy.
 - GUI: new field API10 Data (--api10-data-file).
 Documentation
 - index.html, index.md and README.md: OAuth2 with Microsoft Entra ID (client credentials,
